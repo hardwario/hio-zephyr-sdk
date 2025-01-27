@@ -1,0 +1,9 @@
+menu "Subsystems"
+
+rsource "hio_buf/Kconfig"
+rsource "hio_config/Kconfig"
+rsource "hio_lte/Kconfig"
+rsource "hio_rtc/Kconfig"
+rsource "hio_util/Kconfig"
+
+endmenu

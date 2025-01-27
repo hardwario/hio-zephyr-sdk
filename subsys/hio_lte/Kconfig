@@ -1,0 +1,35 @@
+config HIO_LTE
+	bool "HIO_LTE"
+	select HIO_CONFIG
+	select HIO_BUF
+	select PM_DEVICE
+	select POSIX_API
+	select REQUIRES_FULL_LIBC
+	select RING_BUFFER
+	select NRF_MODEM_LIB
+	select AT_MONITOR
+
+if HIO_LTE
+
+config HIO_LTE_INIT_PRIORITY
+	int "HIO_LTE_INIT_PRIORITY"
+	default 99
+
+config HIO_LTE_THREAD_STACK_SIZE
+	int "HIO_LTE_THREAD_STACK_SIZE"
+	default 4096
+
+config HIO_LTE_THREAD_PRIORITY
+	int "HIO_LTE_THREAD_PRIORITY"
+	default 10
+
+config HEAP_MEM_POOL_SIZE
+	int "HEAP_MEM_POOL_SIZE"
+	default 8192
+
+
+module = HIO_LTE
+module-str = HIO LTE Subsystem
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # HIO_LTE

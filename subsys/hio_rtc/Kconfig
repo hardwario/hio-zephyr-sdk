@@ -1,0 +1,18 @@
+config HIO_RTC
+	bool "HIO_RTC"
+	depends on SHELL
+	select EVENTS
+	select NRFX_RTC0
+	select POLL
+
+if HIO_RTC
+
+module = HIO_RTC
+module-str = HIO Real-time Clock Subsystem
+source "subsys/logging/Kconfig.template.log_config"
+
+config HIO_RTC_INIT_PRIORITY
+	int "Initialization priority"
+	default 3
+
+endif # HIO_RTC

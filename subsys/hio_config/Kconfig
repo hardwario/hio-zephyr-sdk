@@ -1,0 +1,23 @@
+config HIO_CONFIG
+	bool "HIO_CONFIG"
+	depends on SHELL
+	select HIO_UTIL
+	select CBPRINTF_FP_SUPPORT
+	select FLASH
+	select FLASH_MAP
+	select NVS
+	select REBOOT
+	select SETTINGS
+	select SETTINGS_RUNTIME
+
+if HIO_CONFIG
+
+module = HIO_CONFIG
+module-str = HIO Configuration Subsystem
+source "subsys/logging/Kconfig.template.log_config"
+
+config HIO_CONFIG_INIT_PRIORITY
+	int "Initialization priority"
+	default 0
+
+endif # HIO_CONFIG

@@ -1,0 +1,10 @@
+config HIO_BUF
+	bool "HIO_BUF"
+
+if HIO_BUF
+
+module = HIO_BUF
+module-str = HIO BUF Subsystem
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # HIO_BUF

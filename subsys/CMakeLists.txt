@@ -1,0 +1,5 @@
+add_subdirectory_ifdef(CONFIG_HIO_LTE hio_lte)
+add_subdirectory_ifdef(CONFIG_HIO_CONFIG hio_config)
+add_subdirectory_ifdef(CONFIG_HIO_BUF hio_buf)
+add_subdirectory_ifdef(CONFIG_HIO_RTC hio_rtc)
+add_subdirectory_ifdef(CONFIG_HIO_UTIL hio_util)
