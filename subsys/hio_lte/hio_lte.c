@@ -78,33 +78,32 @@ static struct hio_lte_fsm_state *get_fsm_state(enum hio_lte_state state);
 
 struct attach_timeout get_attach_timeout(int count)
 {
-	return (struct attach_timeout){K_NO_WAIT, K_MINUTES(5)};
-	// switch (count) {
-	// case 0:
-	// 	return (struct attach_timeout){K_NO_WAIT, K_MINUTES(1)};
-	// case 1:
-	// 	return (struct attach_timeout){K_NO_WAIT, K_MINUTES(5)};
-	// case 2:
-	// 	return (struct attach_timeout){K_MINUTES(5), K_MINUTES(45)};
-	// case 3:
-	// 	return (struct attach_timeout){K_HOURS(1), K_MINUTES(5)};
-	// case 4:
-	// 	return (struct attach_timeout){K_MINUTES(5), K_MINUTES(45)};
-	// case 5:
-	// 	return (struct attach_timeout){K_HOURS(6), K_MINUTES(5)};
-	// case 6:
-	// 	return (struct attach_timeout){K_MINUTES(5), K_MINUTES(45)};
-	// case 7:
-	// 	return (struct attach_timeout){K_HOURS(24), K_MINUTES(5)};
-	// case 8:
-	// 	return (struct attach_timeout){K_MINUTES(5), K_MINUTES(45)};
-	// default:
-	// 	if (count % 2 != 0) { /*  9, 11 ... */
-	// 		return (struct attach_timeout){K_HOURS(168), K_MINUTES(5)};
-	// 	} else { /* 10, 12 ... */
-	// 		return (struct attach_timeout){K_MINUTES(5), K_MINUTES(45)};
-	// 	}
-	// }
+	switch (count) {
+	case 0:
+		return (struct attach_timeout){K_NO_WAIT, K_MINUTES(1)};
+	case 1:
+		return (struct attach_timeout){K_NO_WAIT, K_MINUTES(5)};
+	case 2:
+		return (struct attach_timeout){K_MINUTES(5), K_MINUTES(45)};
+	case 3:
+		return (struct attach_timeout){K_HOURS(1), K_MINUTES(5)};
+	case 4:
+		return (struct attach_timeout){K_MINUTES(5), K_MINUTES(45)};
+	case 5:
+		return (struct attach_timeout){K_HOURS(6), K_MINUTES(5)};
+	case 6:
+		return (struct attach_timeout){K_MINUTES(5), K_MINUTES(45)};
+	case 7:
+		return (struct attach_timeout){K_HOURS(24), K_MINUTES(5)};
+	case 8:
+		return (struct attach_timeout){K_MINUTES(5), K_MINUTES(45)};
+	default:
+		if (count % 2 != 0) { /*  9, 11 ... */
+			return (struct attach_timeout){K_HOURS(168), K_MINUTES(5)};
+		} else { /* 10, 12 ... */
+			return (struct attach_timeout){K_MINUTES(5), K_MINUTES(45)};
+		}
+	}
 }
 
 const char *hio_lte_state_str(enum hio_lte_state state)
