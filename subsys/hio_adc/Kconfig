@@ -1,0 +1,17 @@
+#
+# Copyright (c) 2023 HARDWARIO a.s.
+#
+# SPDX-License-Identifier: LicenseRef-HARDWARIO-5-Clause
+#
+
+config HIO_ADC
+	bool "HIO_ADC"
+	select ADC
+
+if HIO_ADC
+
+module = HIO_ADC
+module-str = HARDWARIO ADC Subsystem
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # HIO_ADC
