@@ -43,7 +43,7 @@ AT_MONITOR(hio_lte_flow, ANY, monitor_handler);
 #define XRECVFROM_TIMEOUT_SEC 5
 
 #define SEND_TIMEOUT_SEC     1
-#define RESPONSE_TIMEOUT_SEC 30
+#define RESPONSE_TIMEOUT_SEC 10
 
 static K_EVENT_DEFINE(m_flow_events);
 
@@ -824,7 +824,7 @@ int hio_lte_flow_recv(const struct hio_lte_send_recv_param *param)
 		}
 	}
 
-	if (param->rai && !param->recv_buf) {
+	if (param->rai) {
 		int option = NRF_RAI_NO_DATA;
 		ret = nrf_setsockopt(m_socket_fd, NRF_SOL_SOCKET, NRF_SO_RAI, &option,
 				     sizeof(option));
@@ -945,12 +945,19 @@ int hio_lte_flow_cmd_test_cmd(const struct shell *shell, size_t argc, char **arg
 		return -ENOEXEC;
 	}
 
-	ret = hio_lte_talk_(argv[1]);
-	if (ret < 0) {
-		LOG_ERR("Call `hio_lte_talk_` failed: %d", ret);
+	char buf[128] = {0};
+	ret = hio_lte_talk_at_cmd_with_resp(argv[1], buf, sizeof(buf));
+	if (!ret) {
+		LOG_ERR("Call `hio_lte_talk_at_cmd_with_resp` failed: %d", ret);
 		shell_error(shell, "command failed");
 		return ret;
 	}
+
+	if (buf[0]) {
+		shell_print(shell, "%s", buf);
+	}
+
+	shell_print(shell, "command succeeded");
 
 	return 0;
 }
