@@ -15,7 +15,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-LOG_MODULE_REGISTER(hio_lte_talk, LOG_LEVEL_INF);
+LOG_MODULE_REGISTER(hio_lte_talk, CONFIG_HIO_LTE_LOG_LEVEL);
 
 static char m_talk_buffer[512];
 
@@ -353,11 +353,11 @@ int hio_lte_talk_at_cpsms(int *p1, const char *p2, const char *p3)
 	} else if (p1 && !p2 && !p3) {
 		ret = nrf_modem_at_cmd(m_talk_buffer, sizeof(m_talk_buffer), "AT+CPSMS=%d", *p1);
 	} else if (p1 && p2 && !p3) {
-		ret = nrf_modem_at_cmd(m_talk_buffer, sizeof(m_talk_buffer), "AT+CPSMS=%d,\"%s\"",
-				       *p1, p2);
+		ret = nrf_modem_at_cmd(m_talk_buffer, sizeof(m_talk_buffer), "AT+CPSMS=%d,\"\",\"\",\"%s\"",
+		*p1, p2);
 	} else if (p1 && p2 && p3) {
 		ret = nrf_modem_at_cmd(m_talk_buffer, sizeof(m_talk_buffer),
-				       "AT+CPSMS=%d,\"%s\",\"%s\"", *p1, p2, p3);
+				       "AT+CPSMS=%d,\"\",\"\",\"%s\",\"%s\"", *p1, p2, p3);
 	} else {
 		return -EINVAL;
 	}
@@ -559,21 +559,6 @@ int hio_lte_talk_at_xsim(int p1)
 	int ret;
 
 	ret = nrf_modem_at_cmd(m_talk_buffer, sizeof(m_talk_buffer), "AT%%XSIM=%d", p1);
-	if (ret < 0) {
-		LOG_ERR("Call `nrf_modem_at_cmd` failed: %d", ret);
-		return ret;
-	} else if (ret > 0) {
-		return -EILSEQ;
-	}
-
-	return 0;
-}
-
-int hio_lte_talk_at_xsleep(int p1)
-{
-	int ret;
-
-	ret = nrf_modem_at_cmd(m_talk_buffer, sizeof(m_talk_buffer), "AT%%XSLEEP=%d", p1);
 	if (ret < 0) {
 		LOG_ERR("Call `nrf_modem_at_cmd` failed: %d", ret);
 		return ret;

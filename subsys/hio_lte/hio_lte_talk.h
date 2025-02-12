@@ -42,7 +42,6 @@ int hio_lte_talk_at_xmodemsleep(int p1, int *p2, int *p3);
 int hio_lte_talk_at_xnettime(int p1, int *p2);
 int hio_lte_talk_at_xpofwarn(int p1, int p2);
 int hio_lte_talk_at_xsim(int p1);
-int hio_lte_talk_at_xsleep(int p1);
 int hio_lte_talk_at_xsocket(int p1, int *p2, int *p3, char *buf, size_t size);
 int hio_lte_talk_at_xsocketopt(int p1, int p2, int *p3);
 int hio_lte_talk_at_xsystemmode(int p1, int p2, int p3, int p4);
