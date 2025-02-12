@@ -27,3 +27,21 @@ config SYSTEM_WORKQUEUE_STACK_SIZE
 
 config IMG_BLOCK_BUF_SIZE
 	default 256 if HIO_DEFAULTS
+
+config SERIAL
+	default n if HIO_DEFAULTS
+
+config UART_CONSOLE
+	default n if HIO_DEFAULTS
+
+config SPI
+	default n if HIO_DEFAULTS
+
+config SPI_NOR
+	default n if HIO_DEFAULTS
+
+config FLASH
+	default n if HIO_DEFAULTS
+
+config FLASH_MAP
+	default n if HIO_DEFAULTS
