@@ -37,7 +37,6 @@ enum hio_lte_state {
 	HIO_LTE_STATE_OPEN_SOCKET,
 	HIO_LTE_STATE_READY,
 	HIO_LTE_STATE_SLEEP,
-	HIO_LTE_STATE_WAKEUP,
 	HIO_LTE_STATE_SEND,
 	HIO_LTE_STATE_RECEIVE,
 	HIO_LTE_STATE_CONEVAL,
@@ -48,11 +47,6 @@ struct hio_lte_fsm_state {
 	int (*on_enter)(void);
 	int (*on_leave)(void);
 	int (*event_handler)(enum hio_lte_event event);
-};
-
-struct attach_timeout {
-	k_timeout_t retry_delay;
-	k_timeout_t attach_timeout;
 };
 
 int m_attach_retry_count = 0;
@@ -76,34 +70,39 @@ K_MUTEX_DEFINE(m_metrics_lock);
 
 static struct hio_lte_fsm_state *get_fsm_state(enum hio_lte_state state);
 
-struct attach_timeout get_attach_timeout(int count)
+struct hio_lte_attach_timeout get_attach_timeout(int count)
 {
+	return (struct hio_lte_attach_timeout){K_NO_WAIT, K_MINUTES(5)};
 	switch (count) {
 	case 0:
-		return (struct attach_timeout){K_NO_WAIT, K_MINUTES(1)};
+		return (struct hio_lte_attach_timeout){K_NO_WAIT, K_MINUTES(1)};
 	case 1:
-		return (struct attach_timeout){K_NO_WAIT, K_MINUTES(5)};
+		return (struct hio_lte_attach_timeout){K_NO_WAIT, K_MINUTES(5)};
 	case 2:
-		return (struct attach_timeout){K_MINUTES(5), K_MINUTES(45)};
+		return (struct hio_lte_attach_timeout){K_MINUTES(5), K_MINUTES(45)};
 	case 3:
-		return (struct attach_timeout){K_HOURS(1), K_MINUTES(5)};
+		return (struct hio_lte_attach_timeout){K_HOURS(1), K_MINUTES(5)};
 	case 4:
-		return (struct attach_timeout){K_MINUTES(5), K_MINUTES(45)};
+		return (struct hio_lte_attach_timeout){K_MINUTES(5), K_MINUTES(45)};
 	case 5:
-		return (struct attach_timeout){K_HOURS(6), K_MINUTES(5)};
+		return (struct hio_lte_attach_timeout){K_HOURS(6), K_MINUTES(5)};
 	case 6:
-		return (struct attach_timeout){K_MINUTES(5), K_MINUTES(45)};
+		return (struct hio_lte_attach_timeout){K_MINUTES(5), K_MINUTES(45)};
 	case 7:
-		return (struct attach_timeout){K_HOURS(24), K_MINUTES(5)};
+		return (struct hio_lte_attach_timeout){K_HOURS(24), K_MINUTES(5)};
 	case 8:
-		return (struct attach_timeout){K_MINUTES(5), K_MINUTES(45)};
+		return (struct hio_lte_attach_timeout){K_MINUTES(5), K_MINUTES(45)};
 	default:
 		if (count % 2 != 0) { /*  9, 11 ... */
-			return (struct attach_timeout){K_HOURS(168), K_MINUTES(5)};
+			return (struct hio_lte_attach_timeout){K_HOURS(168), K_MINUTES(5)};
 		} else { /* 10, 12 ... */
-			return (struct attach_timeout){K_MINUTES(5), K_MINUTES(45)};
+			return (struct hio_lte_attach_timeout){K_MINUTES(5), K_MINUTES(45)};
 		}
 	}
+}
+
+struct hio_lte_attach_timeout hio_lte_get_curr_attach_timeout(void){
+	return get_attach_timeout(m_attach_retry_count);
 }
 
 const char *hio_lte_state_str(enum hio_lte_state state)
@@ -127,8 +126,6 @@ const char *hio_lte_state_str(enum hio_lte_state state)
 		return "READY";
 	case HIO_LTE_STATE_SLEEP:
 		return "SLEEP";
-	case HIO_LTE_STATE_WAKEUP:
-		return "WAKEUP";
 	case HIO_LTE_STATE_SEND:
 		return "SEND";
 	case HIO_LTE_STATE_RECEIVE:
@@ -574,7 +571,7 @@ static int on_enter_retry_delay(void)
 
 	k_sleep(K_SECONDS(5));
 
-	struct attach_timeout timeout = get_attach_timeout(m_attach_retry_count++);
+	struct hio_lte_attach_timeout timeout = get_attach_timeout(m_attach_retry_count++);
 
 	LOG_INF("Waiting %lld minutes before attach retry",
 		k_ticks_to_ms_floor64(timeout.retry_delay.ticks) / MSEC_PER_SEC / 60);
@@ -602,7 +599,7 @@ static int on_enter_attach(void)
 {
 	k_event_clear(&m_states_event, CONNECTED_BIT);
 
-	struct attach_timeout timeout = get_attach_timeout(m_attach_retry_count);
+	struct hio_lte_attach_timeout timeout = get_attach_timeout(m_attach_retry_count);
 
 	LOG_INF("Try to attach with timeout %lld s",
 		k_ticks_to_ms_floor64(timeout.attach_timeout.ticks) / MSEC_PER_SEC);
@@ -744,41 +741,14 @@ static int sleep_event_handler(enum hio_lte_event event)
 {
 	switch (event) {
 	case HIO_LTE_EVENT_SEND:
-	case HIO_LTE_EVENT_XGPS_ENABLE:
-		enter_state(HIO_LTE_STATE_WAKEUP);
+		enter_state(HIO_LTE_STATE_SEND);
 		break;
-	default:
-		break;
-	}
-	return 0;
-}
-
-static int on_enter_wakeup(void)
-{
-	start_timer(WAKEUP_TIMEOUT);
-
-	return 0;
-}
-
-static int wakeup_event_handler(enum hio_lte_event event)
-{
-	switch (event) {
-	case HIO_LTE_EVENT_READY:
-		enter_state(HIO_LTE_STATE_READY);
-		break;
-	case HIO_LTE_EVENT_TIMEOUT:
 	case HIO_LTE_EVENT_ERROR:
 		enter_state(HIO_LTE_STATE_ERROR);
 		break;
 	default:
 		break;
 	}
-	return 0;
-}
-
-static int on_leave_wakeup(void)
-{
-	stop_timer();
 	return 0;
 }
 
@@ -985,7 +955,6 @@ static struct hio_lte_fsm_state m_fsm_states[] = {
 	{HIO_LTE_STATE_OPEN_SOCKET, on_enter_open_socket, NULL, open_socket_event_handler},
 	{HIO_LTE_STATE_READY, on_enter_ready, NULL, ready_event_handler},
 	{HIO_LTE_STATE_SLEEP, on_enter_sleep, NULL, sleep_event_handler},
-	{HIO_LTE_STATE_WAKEUP, on_enter_wakeup, on_leave_wakeup, wakeup_event_handler},
 	{HIO_LTE_STATE_SEND, on_enter_send, on_leave_send, send_event_handler},
 	{HIO_LTE_STATE_RECEIVE, on_enter_receive, NULL, receive_event_handler},
 	{HIO_LTE_STATE_CONEVAL, on_enter_coneval, NULL, coneval_event_handler},
