@@ -43,7 +43,7 @@ AT_MONITOR(hio_lte_flow, ANY, monitor_handler);
 #define XRECVFROM_TIMEOUT_SEC 5
 
 #define SEND_TIMEOUT_SEC     1
-#define RESPONSE_TIMEOUT_SEC 10
+#define RESPONSE_TIMEOUT_SEC 5
 
 static K_EVENT_DEFINE(m_flow_events);
 
@@ -54,11 +54,6 @@ static struct nrf_sockaddr_in m_addr_info;
 
 static int m_socket_fd;
 K_MUTEX_DEFINE(m_socket_fd_lock);
-
-struct hio_timeval {
-	int64_t tv_sec;
-	int64_t tv_usec;
-};
 
 static int parse_cereg(const char *line, struct hio_lte_cereg_param *param)
 {
@@ -608,13 +603,13 @@ int hio_lte_flow_open_socket(void)
 
 	m_socket_fd = ret;
 
-	struct hio_timeval tv = {
+	struct nrf_timeval tv = {
 		.tv_sec = SEND_TIMEOUT_SEC,
 		.tv_usec = 0,
 	};
 
 	ret = nrf_setsockopt(m_socket_fd, NRF_SOL_SOCKET, NRF_SO_SNDTIMEO, (const void *)&tv,
-			     sizeof(struct hio_timeval));
+			     sizeof(struct nrf_timeval));
 	if (ret < 0) {
 		LOG_ERR("Call `nrf_setsockopt` failed: %d", -ret);
 		nrf_close(m_socket_fd);
@@ -626,7 +621,7 @@ int hio_lte_flow_open_socket(void)
 	tv.tv_usec = 0;
 
 	ret = nrf_setsockopt(m_socket_fd, NRF_SOL_SOCKET, NRF_SO_RCVTIMEO, (const void *)&tv,
-			     sizeof(struct hio_timeval));
+			     sizeof(struct nrf_timeval));
 	if (ret < 0) {
 		LOG_ERR("Call `nrf_setsockopt` failed: %d", -ret);
 		nrf_close(m_socket_fd);
@@ -791,6 +786,21 @@ int hio_lte_flow_recv(const struct hio_lte_send_recv_param *param)
 	if (!param->recv_buf || !param->recv_size || !param->recv_len) {
 		return -EINVAL;
 	}
+
+	struct nrf_timeval tv = {
+		.tv_sec = RESPONSE_TIMEOUT_SEC,
+		.tv_usec = 0,
+	};
+
+	ret = nrf_setsockopt(m_socket_fd, NRF_SOL_SOCKET, NRF_SO_RCVTIMEO, (const void *)&tv,
+			     sizeof(struct nrf_timeval));
+	if (ret < 0) {
+		LOG_ERR("Call `nrf_setsockopt` failed: %d", -ret);
+		nrf_close(m_socket_fd);
+		m_socket_fd = -1;
+		return ret;
+	}
+
 
 	LOG_INF("Receiving data from socket_fd %d, expecting %u bytes", m_socket_fd,
 		param->recv_size);
