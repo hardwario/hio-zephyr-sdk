@@ -1,0 +1,23 @@
+#
+# Copyright (c) 2023 HARDWARIO a.s.
+#
+# SPDX-License-Identifier: LicenseRef-HARDWARIO-5-Clause
+#
+
+config HIO_BUTTON
+	bool "HIO_BUTTON"
+	depends on SHELL
+	select GPIO
+	select HIO_EDGE
+
+if HIO_BUTTON
+
+module = HIO_BUTTON
+module-str = HARDWARIO Button Subsystem
+source "subsys/logging/Kconfig.template.log_config"
+
+config HIO_BUTTON_INIT_PRIORITY
+	int "Initialization priority"
+	default APPLICATION_INIT_PRIORITY
+
+endif # HIO_BUTTON

@@ -1,0 +1,17 @@
+#
+# Copyright (c) 2023 HARDWARIO a.s.
+#
+# SPDX-License-Identifier: LicenseRef-HARDWARIO-5-Clause
+#
+
+config HIO_EDGE
+	bool "HIO_EDGE"
+	depends on GPIO
+
+if HIO_EDGE
+
+module = HIO_EDGE
+module-str = HARDWARIO Edge Filtering Subsystem
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # HIO_EDGE

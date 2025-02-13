@@ -6,5 +6,7 @@ rsource "hio_lte/Kconfig"
 rsource "hio_rtc/Kconfig"
 rsource "hio_util/Kconfig"
 rsource "hio_adc/Kconfig"
+rsource "hio_edge/Kconfig"
+rsource "hio_button/Kconfig"
 
 endmenu
