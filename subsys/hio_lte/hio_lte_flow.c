@@ -805,7 +805,7 @@ int hio_lte_flow_recv(const struct hio_lte_send_recv_param *param)
 	}
 
 
-	LOG_INF("Receiving data from socket_fd %d, expecting %u bytes", m_socket_fd,
+	LOG_INF("Receiving data from socket_fd %d, expecting up to %u bytes", m_socket_fd,
 		param->recv_size);
 
 	ssize_t readb =
