@@ -425,12 +425,15 @@ int hio_lte_flow_prepare(void)
 		return ret;
 	}
 
-	if (!g_hio_lte_config.autoconn) {
+	if (g_hio_lte_config.autoconn) {
+		ret = hio_lte_talk_at_cops(0, NULL, NULL);
+	} else {
 		ret = hio_lte_talk_at_cops(1, (int[]){2}, g_hio_lte_config.plmnid);
-		if (ret) {
-			LOG_ERR("Call `hio_lte_talk_at_cops` failed: %d", ret);
-			return ret;
-		}
+	}
+	
+	if (ret) {
+		LOG_ERR("Call `hio_lte_talk_at_cops` failed: %d", ret);
+		return ret;
 	}
 
 	if (strlen(g_hio_lte_config.apn)) {
