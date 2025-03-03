@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: LicenseRef-HARDWARIO-5-Clause
  */
 
-/* CHESTER includes */
+/* HARDWARIO includes */
 #include <hio/hio_adc.h>
 
 /* Zephyr includes */
@@ -73,8 +73,7 @@ int hio_adc_read(uint8_t channel, uint16_t *sample)
 
 	*sample = (int16_t)*sample < 0 ? 0 : *sample;
 
-	LOG_DBG("Channel %s: %" PRIu16 " (0x%04" PRIx16 ")", get_channel_name(channel), *sample,
-		*sample);
+	LOG_DBG("Channel %d: %" PRIu16 " (0x%04" PRIx16 ")", channel, *sample, *sample);
 
 	return 0;
 }
