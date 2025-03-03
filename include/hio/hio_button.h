@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: LicenseRef-HARDWARIO-5-Clause
  */
 
-#ifndef CHESTER_INCLUDE_HIO_BUTTON_H_
-#define CHESTER_INCLUDE_HIO_BUTTON_H_
+#ifndef INCLUDE_HIO_BUTTON_H_
+#define INCLUDE_HIO_BUTTON_H_
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,4 +37,4 @@ int hio_button_set_event_cb(hio_button_event_cb cb, void *user_data);
 }
 #endif
 
-#endif /* CHESTER_INCLUDE_HIO_BUTTON_H_ */
+#endif /* INCLUDE_HIO_BUTTON_H_ */

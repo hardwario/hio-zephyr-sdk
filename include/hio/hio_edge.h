@@ -4,8 +4,8 @@
  * SPDX-License-Identifier: LicenseRef-HARDWARIO-5-Clause
  */
 
-#ifndef CHESTER_INCLUDE_HIO_EDGE_H_
-#define CHESTER_INCLUDE_HIO_EDGE_H_
+#ifndef INCLUDE_HIO_EDGE_H_
+#define INCLUDE_HIO_EDGE_H_
 
 /* Zephyr includes */
 #include <zephyr/drivers/gpio.h>
@@ -65,4 +65,4 @@ int hio_edge_unwatch(struct hio_edge *edge);
 }
 #endif
 
-#endif /* CHESTER_INCLUDE_HIO_EDGE_H_ */
+#endif /* INCLUDE_HIO_EDGE_H_ */

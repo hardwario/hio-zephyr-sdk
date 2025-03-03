@@ -1,5 +1,5 @@
-#ifndef HIO_INCLUDE_CTR_UTIL_H_
-#define HIO_INCLUDE_CTR_UTIL_H_
+#ifndef HIO_INCLUDE_HIO_UTIL_H_
+#define HIO_INCLUDE_HIO_UTIL_H_
 
 /* Standard includes */
 #include <stdbool.h>
@@ -23,4 +23,4 @@ int hio_hex2buf(const char *src, void *dst, size_t dst_size, bool allow_spaces);
 }
 #endif
 
-#endif /* HIO_INCLUDE_CTR_UTIL_H_ */
+#endif /* HIO_INCLUDE_HIO_UTIL_H_ */
