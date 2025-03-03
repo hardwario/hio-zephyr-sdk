@@ -1,0 +1,41 @@
+#
+# Copyright (c) 2023 HARDWARIO a.s.
+#
+# SPDX-License-Identifier: LicenseRef-HARDWARIO-5-Clause
+#
+
+config HIO_ACCEL
+	bool "HIO_ACCEL"
+	select CBPRINTF_FP_SUPPORT if HIO_ACCEL_LOG_LEVEL_DBG || HIO_ACCEL_SHELL
+	select I2C
+	select LIS2DH
+	select REQUIRES_FULL_LIBC
+	select SENSOR
+
+if HIO_ACCEL
+
+module = HIO_ACCEL
+module-str = CHESTER Accelerometer Subsystem
+source "subsys/logging/Kconfig.template.log_config"
+
+config HIO_ACCEL_SHELL
+	bool "HIO_ACCEL_SHELL"
+	depends on SHELL
+	default y
+
+choice LIS2DH_ACCEL_RANGE
+	default LIS2DH_ACCEL_RANGE_4G
+endchoice
+
+config LIS2DH_BLOCK_DATA_UPDATE
+	default y
+
+choice LIS2DH_ODR
+	default LIS2DH_ODR_2
+endchoice
+
+choice LIS2DH_TRIGGER_MODE
+	default LIS2DH_TRIGGER_GLOBAL_THREAD
+endchoice
+
+endif # HIO_ACCEL

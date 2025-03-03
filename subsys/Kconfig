@@ -8,5 +8,7 @@ rsource "hio_util/Kconfig"
 rsource "hio_adc/Kconfig"
 rsource "hio_edge/Kconfig"
 rsource "hio_button/Kconfig"
+rsource "hio_therm/Kconfig"
+rsource "hio_accel/Kconfig"
 
 endmenu
