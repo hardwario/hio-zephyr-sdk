@@ -1,0 +1,25 @@
+#
+# Copyright (c) 2023 HARDWARIO a.s.
+#
+# SPDX-License-Identifier: LicenseRef-HARDWARIO-5-Clause
+#
+
+config HIO_THERM
+	bool "HIO_THERM"
+	select CBPRINTF_FP_SUPPORT if HIO_THERM_LOG_LEVEL_DBG || HIO_THERM_SHELL
+	select I2C
+	select SENSOR
+	select TMP112
+
+if HIO_THERM
+
+module = HIO_THERM
+module-str = CHESTER Thermometer Subsystem
+source "subsys/logging/Kconfig.template.log_config"
+
+config HIO_THERM_SHELL
+	bool "HIO_THERM_SHELL"
+	depends on SHELL
+	default y
+
+endif # HIO_THERM
