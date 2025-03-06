@@ -61,6 +61,14 @@ struct hio_lte_send_recv_param {
 	k_timeout_t timeout;
 };
 
+struct hio_lte_rai_param {
+	bool valid;
+	bool as_rai;
+	bool cp_rai;
+	int cell_id;
+	int plmn;
+}
+
 struct hio_lte_metrics {
 	uint32_t uplink_count;
 	uint32_t uplink_bytes;

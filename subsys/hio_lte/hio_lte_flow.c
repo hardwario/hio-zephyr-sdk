@@ -116,20 +116,56 @@ static int parse_xmodemsleep(const char *line, int *p1, int *p2)
 	return 0;
 }
 
+static int parse_rai(const char *line, struct hio_lte_rai_param *param)
+{
+	int ret;
+	char cell_id[9];
+	char plmn[6];
+	int as_rai;
+	int cp_rai;
+
+	memset(param, 0, sizeof(*param));
+	ret = sscanf(line, "\"%8[0-9A-F]\",\"%5[0-9A-F]\",%d,%d", cell_id, plmn, &as_rai, &cp_rai);
+	if (ret != 4) {
+		LOG_ERR("Failed to parse rai: %d", ret);
+		return -EINVAL;
+	}
+
+	int cell_id_int = strtol(cell_id, NULL, 16);
+	cell_id_int = ((cell_id_int & 0xFF000000) >> 24) | ((cell_id_int & 0x00FF0000) >> 8) |
+		      ((cell_id_int & 0x0000FF00) << 8) | ((cell_id_int & 0x000000FF) << 24);
+
+	if (!strcpy(param->cell_id, cell_id)) {
+		LOG_ERR("Failed to copy cell_id parameter");
+		return -EINVAL;
+	}
+
+	if (!strcpy(param->plmn, plmn)) {
+		LOG_ERR("Failed to copy plmn parameter");
+		return -EINVAL;
+	}
+
+	param->as_rai = as_rai != 0;
+	param->cp_rai = cp_rai != 0;
+
+	param->valid = true;
+
+	return 0;
+}
+
 static void monitor_handler(const char *line)
 {
+	int ret;
+
 	LOG_INF("URC: %s", line);
 
 	if (!strcmp(line, "Ready")) {
 		m_event_delegate_cb(HIO_LTE_EVENT_READY);
-
 	} else if (!strncmp(line, "%XSIM: 1", 8)) {
 		m_event_delegate_cb(HIO_LTE_EVENT_SIMDETECTED);
-
 	} else if (!strncmp(line, "%XTIME:", 7)) {
 		m_event_delegate_cb(HIO_LTE_EVENT_XTIME);
 	} else if (!strncmp(line, "+CEREG: ", 8)) {
-		int ret;
 		struct hio_lte_cereg_param cereg_param;
 
 		ret = parse_cereg(&line[8], &cereg_param);
@@ -161,7 +197,7 @@ static void monitor_handler(const char *line)
 	} else if (!strncmp(line, "+CSCON: 1", 9)) {
 		m_event_delegate_cb(HIO_LTE_EVENT_CSCON_1);
 	} else if (!strncmp(line, "%XMODEMSLEEP: ", 14)) {
-		int ret, p1, p2;
+		int p1, p2;
 
 		ret = parse_xmodemsleep(line + 14, &p1, &p2);
 		if (ret) {
@@ -171,6 +207,15 @@ static void monitor_handler(const char *line)
 		if (p2 > 0) {
 			m_event_delegate_cb(HIO_LTE_EVENT_XMODEMSLEEP);
 		}
+	} else if (!strncmp(line, "%RAI: ", 6)) {
+		struct hio_lte_rai_param rai_param;
+		ret = parse_rai(line + 6, &rai_param);
+		if (ret) {
+			LOG_WRN("Call `parse_rai` failed: %d", ret);
+			return;
+		}
+
+		hio_lte_state_set_rai_param(&rai_param);
 	}
 }
 
@@ -377,7 +422,8 @@ int hio_lte_flow_prepare(void)
 		return ret;
 	}
 
-	ret = hio_lte_talk_at_rai(1);
+	/* Enable RAI with notifications */
+	ret = hio_lte_talk_at_rai(2);
 	if (ret) {
 		LOG_ERR("Call `hio_lte_talk_at_rai` failed: %d", ret);
 		return ret;
@@ -430,7 +476,7 @@ int hio_lte_flow_prepare(void)
 	} else {
 		ret = hio_lte_talk_at_cops(1, (int[]){2}, g_hio_lte_config.plmnid);
 	}
-	
+
 	if (ret) {
 		LOG_ERR("Call `hio_lte_talk_at_cops` failed: %d", ret);
 		return ret;
