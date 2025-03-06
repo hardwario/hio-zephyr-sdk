@@ -908,11 +908,11 @@ static int receive_event_handler(enum hio_lte_event event)
 
 static int on_enter_coneval(void)
 {
-	int ret = hio_lte_flow_coneval();
-	if (ret < 0) {
-		LOG_ERR("Call `hio_lte_flow_coneval` failed: %d", ret);
-		return ret;
-	}
+	// int ret = hio_lte_flow_coneval();
+	// if (ret < 0) {
+	// 	LOG_ERR("Call `hio_lte_flow_coneval` failed: %d", ret);
+	// 	return ret;
+	// }
 
 	delegate_event(HIO_LTE_EVENT_READY);
 
