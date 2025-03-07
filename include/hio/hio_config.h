@@ -88,6 +88,18 @@ enum hio_config_item_type {
 		.default_string = _default,                                                        \
 	}
 
+#define HIO_CONFIG_ITEM_STRING_PARSE_CB(_name_d, _var, _help, _default, _cb)                       \
+	{                                                                                          \
+		.module = SETTINGS_PFX,                                                            \
+		.name = _name_d,                                                                   \
+		.type = CTR_CONFIG_TYPE_STRING,                                                    \
+		.variable = _var,                                                                  \
+		.size = ARRAY_SIZE(_var),                                                          \
+		.help = _help,                                                                     \
+		.default_string = _default,                                                        \
+		.parse_cb = _cb,                                                                   \
+	}
+
 #define HIO_CONFIG_ITEM_HEX(_name_d, _var, _help, _default)                                        \
 	{                                                                                          \
 		.module = SETTINGS_PFX,                                                            \
@@ -98,6 +110,11 @@ enum hio_config_item_type {
 		.help = _help,                                                                     \
 		.default_hex = _default,                                                           \
 	}
+
+struct hio_config_item;
+
+typedef int (*hio_config_parse_cb)(const struct shell *shell, char *argv,
+	const struct hio_config_item *item);
 
 struct hio_config_item {
 	const char *module;
@@ -117,6 +134,7 @@ struct hio_config_item {
 		const char *default_string;
 		const uint8_t *default_hex;
 	};
+	hio_config_parse_cb parse_cb;
 };
 
 typedef int (*hio_config_show_cb)(const struct shell *shell, size_t argc, char **argv);
