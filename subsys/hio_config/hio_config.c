@@ -166,11 +166,11 @@ int hio_config_show_item(const struct shell *shell, const struct hio_config_item
 		int32_t val = 0;
 		memcpy(&val, item->variable, item->size);
 
-		shell_print(shell, "%s config %s %s", mod, item->name, item->enums[val]);
+		shell_print(shell, "%s config %s \"%s\"", mod, item->name, item->enums[val]);
 		break;
 	}
 	case HIO_CONFIG_TYPE_STRING:
-		shell_print(shell, "%s config %s %s", mod, item->name, (char *)item->variable);
+		shell_print(shell, "%s config %s \"%s\"", mod, item->name, (char *)item->variable);
 		break;
 
 	case HIO_CONFIG_TYPE_HEX:
