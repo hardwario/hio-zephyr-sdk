@@ -184,7 +184,7 @@ void hio_lte_state_set_cereg_param(const struct hio_lte_cereg_param *param)
 int hio_lte_state_get_rai_param(struct hio_lte_rai_param *param)
 {
 	if (!param) {
-		return;
+		return -EINVAL;
 	}
 
 	k_mutex_lock(&m_lock, K_FOREVER);
