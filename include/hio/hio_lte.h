@@ -67,7 +67,7 @@ struct hio_lte_rai_param {
 	bool cp_rai;
 	int cell_id;
 	int plmn;
-}
+};
 
 struct hio_lte_metrics {
 	uint32_t uplink_count;

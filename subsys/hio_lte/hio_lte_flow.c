@@ -131,19 +131,23 @@ static int parse_rai(const char *line, struct hio_lte_rai_param *param)
 		return -EINVAL;
 	}
 
-	int cell_id_int = strtol(cell_id, NULL, 16);
-	cell_id_int = ((cell_id_int & 0xFF000000) >> 24) | ((cell_id_int & 0x00FF0000) >> 8) |
-		      ((cell_id_int & 0x0000FF00) << 8) | ((cell_id_int & 0x000000FF) << 24);
-
-	if (!strcpy(param->cell_id, cell_id)) {
-		LOG_ERR("Failed to copy cell_id parameter");
+	char *tol_end = NULL;
+	int cell_id_int = strtol(cell_id, &tol_end, 16);
+	if (tol_end != cell_id + 8) {
+		LOG_ERR("Failed to parse cell_id parameter");
 		return -EINVAL;
 	}
 
-	if (!strcpy(param->plmn, plmn)) {
-		LOG_ERR("Failed to copy plmn parameter");
+	param->cell_id = cell_id_int;
+
+	tol_end = NULL;
+	long plmn_int = strtol(plmn, &tol_end, 10);
+	if (tol_end != plmn + 5) {
+		LOG_ERR("Failed to parse plmn parameter");
 		return -EINVAL;
 	}
+
+	param->plmn = (int)plmn_int;
 
 	param->as_rai = as_rai != 0;
 	param->cp_rai = cp_rai != 0;
@@ -979,6 +983,14 @@ int hio_lte_flow_coneval(void)
 int hio_lte_flow_cmd(const char *s)
 {
 	int ret;
+
+	if (!s) {
+		return -EINVAL;
+	}
+
+	if (!nrf_modem_is_initialized()) {
+		return -ENOTCONN;
+	}
 
 	ret = hio_lte_talk_(s);
 	if (ret) {
