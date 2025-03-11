@@ -1,0 +1,17 @@
+#
+# Copyright (c) 2023 HARDWARIO a.s.
+#
+# SPDX-License-Identifier: LicenseRef-HARDWARIO-5-Clause
+#
+
+config HIO_WDOG
+	bool "HIO_WDOG"
+	select WATCHDOG
+
+if HIO_WDOG
+
+module = HIO_WDOG
+module-str = HARDWARIO Watchdog Subsystem
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # HIO_WDOG

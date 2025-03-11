@@ -10,5 +10,6 @@ rsource "hio_edge/Kconfig"
 rsource "hio_button/Kconfig"
 rsource "hio_therm/Kconfig"
 rsource "hio_accel/Kconfig"
+rsource "hio_wdog/Kconfig"
 
 endmenu
