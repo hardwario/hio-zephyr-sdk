@@ -27,6 +27,12 @@ LOG_MODULE_REGISTER(hio_lte, CONFIG_HIO_LTE_LOG_LEVEL);
 #define SEND_CSCON_1_TIMEOUT   K_SECONDS(30)
 #define CONEVAL_TIMEOUT        K_SECONDS(30)
 
+#define WORK_Q_STACK_SIZE 4096
+#define WORK_Q_PRIORITY   K_LOWEST_APPLICATION_THREAD_PRIO
+
+static struct k_work_q m_work_q;
+static K_THREAD_STACK_DEFINE(m_work_q_stack, WORK_Q_STACK_SIZE);
+
 enum hio_lte_state {
 	HIO_LTE_STATE_DISABLED = 0,
 	HIO_LTE_STATE_ERROR,
@@ -208,6 +214,12 @@ const char *hio_lte_get_state(void)
 	return hio_lte_state_str(m_state);
 }
 
+int hio_lte_get_timemout_remaining(void)
+{
+	k_ticks_t ticks = k_work_delayable_remaining_get(&m_timeout_work);
+	return k_ticks_to_ms_ceil32(ticks);
+}
+
 static void start_timer(k_timeout_t timeout)
 {
 	k_work_schedule(&m_timeout_work, timeout);
@@ -221,9 +233,18 @@ static void stop_timer(void)
 static void delegate_event(enum hio_lte_event event)
 {
 	k_mutex_lock(&m_event_rb_lock, K_FOREVER);
-	ring_buf_put(&m_event_rb, (uint8_t *)&event, 1);
+	int ret = ring_buf_put(&m_event_rb, (uint8_t *)&event, 1);
 	k_mutex_unlock(&m_event_rb_lock);
-	k_work_submit(&m_event_dispatch_work);
+
+	if (ret < 0) {
+		LOG_WRN("Failed to put event in ring buffer");
+		return;
+	}
+
+	ret = k_work_submit_to_queue(&m_work_q, &m_event_dispatch_work);
+	if (ret < 0) {
+		LOG_WRN("Failed to submit work to queue");
+	}
 }
 
 static void event_handler(enum hio_lte_event event)
@@ -661,7 +682,7 @@ static int open_socket_event_handler(enum hio_lte_event event)
 {
 	switch (event) {
 	case HIO_LTE_EVENT_SOCKET_OPENED:
-		k_event_set(&m_states_event, CONNECTED_BIT);
+		k_event_post(&m_states_event, CONNECTED_BIT);
 		enter_state(HIO_LTE_STATE_CONEVAL);
 		break;
 	case HIO_LTE_EVENT_CSCON_0:
@@ -807,7 +828,7 @@ static int send_event_handler(enum hio_lte_event event)
 				enter_state(HIO_LTE_STATE_RECEIVE);
 			} else {
 				m_send_recv_param = NULL;
-				k_event_set(&m_states_event, SEND_RECV_BIT);
+				k_event_post(&m_states_event, SEND_RECV_BIT);
 				enter_state(HIO_LTE_STATE_CONEVAL);
 			}
 		} else {
@@ -877,7 +898,7 @@ static int on_enter_receive(void)
 	}
 
 	m_send_recv_param = NULL;
-	k_event_set(&m_states_event, SEND_RECV_BIT);
+	k_event_post(&m_states_event, SEND_RECV_BIT);
 
 	return 0;
 }
@@ -993,6 +1014,11 @@ static int init(void)
 	}
 
 	m_state = HIO_LTE_STATE_DISABLED;
+
+	k_work_queue_init(&m_work_q);
+
+	k_work_queue_start(&m_work_q, m_work_q_stack, K_THREAD_STACK_SIZEOF(m_work_q_stack),
+			   WORK_Q_PRIORITY, NULL);
 
 	k_work_init_delayable(&m_timeout_work, timeout_work_handler);
 	k_work_init(&m_event_dispatch_work, event_dispatch_work_handler);
