@@ -235,6 +235,107 @@ static int cmd_metrics(const struct shell *shell, size_t argc, char **argv)
 	return 0;
 }
 
+static int cmd_test_modem(const struct shell *shell, size_t argc, char **argv)
+{
+	int ret;
+
+	if (argc > 2) {
+		shell_error(shell, "command not found: %s", argv[2]);
+		shell_help(shell);
+		return -EINVAL;
+	}
+
+	if (!g_hio_lte_config.test) {
+		shell_error(shell, "test mode is not activated");
+		return -ENOEXEC;
+	}
+
+	if (strlen(argv[1]) == 5 && strncmp(argv[1], "start", 5) == 0) {
+		ret = hio_lte_flow_start();
+		if (ret) {
+			LOG_ERR("Call `hio_lte_flow_start` failed: %d", ret);
+			shell_error(shell, "command failed");
+			return ret;
+		}
+
+		shell_info(shell, "command succeeded");
+
+		return 0;
+	}
+
+	if (strlen(argv[1]) == 4 && strncmp(argv[1], "stop", 4) == 0) {
+		ret = hio_lte_flow_stop();
+		if (ret) {
+			LOG_ERR("Call `hio_lte_flow_stop` failed: %d", ret);
+			shell_error(shell, "command failed");
+			return ret;
+		}
+
+		shell_info(shell, "command succeeded");
+
+		return 0;
+	}
+
+	shell_help(shell);
+	return -EINVAL;
+}
+
+static int cmd_test_prepare(const struct shell *shell, size_t argc, char **argv)
+{
+	int ret;
+
+	if (argc > 1) {
+		shell_error(shell, "command not found: %s", argv[1]);
+		shell_help(shell);
+		return -EINVAL;
+	}
+
+	if (!g_hio_lte_config.test) {
+		shell_error(shell, "test mode is not activated");
+		return -ENOEXEC;
+	}
+
+	ret = hio_lte_flow_prepare();
+	if (ret) {
+		LOG_ERR("Call `hio_lte_flow_prepare` failed: %d", ret);
+		shell_error(shell, "command failed");
+		return ret;
+	}
+
+	shell_info(shell, "command succeeded");
+
+	return 0;
+}
+
+static int cmd_test_cmd(const struct shell *shell, size_t argc, char **argv)
+{
+	int ret;
+
+	if (argc > 2) {
+		shell_error(shell, "only one argument is accepted (use quotes?)");
+		shell_help(shell);
+		return -EINVAL;
+	}
+
+	if (!g_hio_lte_config.test) {
+		shell_error(shell, "test mode is not activated");
+		return -ENOEXEC;
+	}
+
+	ret = hio_lte_flow_cmd(argv[1]);
+	if (ret) {
+		if (ret == -ENOTCONN) {
+			shell_warn(shell, "modem is not connected");
+			return 0;
+		}
+		LOG_ERR("Call `hio_lte_flow_cmd_without_response` failed: %d", ret);
+		shell_error(shell, "command failed");
+		return ret;
+	}
+
+	return 0;
+}
+
 static int print_help(const struct shell *shell, size_t argc, char **argv)
 {
 	if (argc > 1) {
@@ -253,9 +354,17 @@ static int print_help(const struct shell *shell, size_t argc, char **argv)
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	sub_lte_test,
 
+	SHELL_CMD_ARG(modem, NULL,
+	              "Start/stop modem library (format: <start|stop>).",
+	              cmd_test_modem, 2, 0),
+
 	SHELL_CMD_ARG(cmd, NULL,
 	              "Send command to modem. (format: <command>)",
-	              hio_lte_flow_cmd_test_cmd, 2, 0),
+	              cmd_test_cmd, 2, 0),
+
+	SHELL_CMD_ARG(prepare, NULL,
+	              "Run prepare modem sequence.",
+		      cmd_test_prepare, 1, 0),
 
 	SHELL_SUBCMD_SET_END
 );

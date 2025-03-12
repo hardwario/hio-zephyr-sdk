@@ -36,6 +36,9 @@ config SHELL_PROMPT_RTT
 config SHELL_RTT_RX_POLL_PERIOD
 	default 200 if HIO_SHELL
 
+config SEGGER_RTT_BUFFER_SIZE_DOWN
+	default 256 if HIO_SHELL
+
 config SHELL_STACK_SIZE
 	default 4096 if HIO_SHELL
 

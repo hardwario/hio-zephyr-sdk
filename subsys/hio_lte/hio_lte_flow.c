@@ -61,10 +61,10 @@ static int parse_cereg(const char *line, struct hio_lte_cereg_param *param)
 
 	memset(param, 0, sizeof(*param));
 
-	int stat;
-	char tac[5];
-	char cid[9];
-	int act;
+	int stat = 0;
+	char tac[5] = "";
+	char cid[9] = "";
+	int act = 0;
 
 	ret = sscanf(line, "%d,\"%4[0-9A-F]\",\"%8[0-9A-F]\",%d", &stat, tac, cid, &act);
 	if (ret != 1 && ret != 4) {
@@ -96,8 +96,8 @@ static int parse_xmodemsleep(const char *line, int *p1, int *p2)
 {
 	int ret;
 
-	int p1_;
-	int p2_;
+	int p1_ = 0;
+	int p2_ = 0;
 
 	ret = sscanf(line, "%d,%d", &p1_, &p2_);
 	if (ret != 1 && ret != 2) {
@@ -170,7 +170,7 @@ static void monitor_handler(const char *line)
 	} else if (!strncmp(line, "%XTIME:", 7)) {
 		m_event_delegate_cb(HIO_LTE_EVENT_XTIME);
 	} else if (!strncmp(line, "+CEREG: ", 8)) {
-		struct hio_lte_cereg_param cereg_param;
+		struct hio_lte_cereg_param cereg_param = {0};
 
 		ret = parse_cereg(&line[8], &cereg_param);
 		if (ret) {
@@ -201,7 +201,7 @@ static void monitor_handler(const char *line)
 	} else if (!strncmp(line, "+CSCON: 1", 9)) {
 		m_event_delegate_cb(HIO_LTE_EVENT_CSCON_1);
 	} else if (!strncmp(line, "%XMODEMSLEEP: ", 14)) {
-		int p1, p2;
+		int p1 = 0, p2 = 0;
 
 		ret = parse_xmodemsleep(line + 14, &p1, &p2);
 		if (ret) {
@@ -212,7 +212,7 @@ static void monitor_handler(const char *line)
 			m_event_delegate_cb(HIO_LTE_EVENT_XMODEMSLEEP);
 		}
 	} else if (!strncmp(line, "%RAI: ", 6)) {
-		struct hio_lte_rai_param rai_param;
+		struct hio_lte_rai_param rai_param = {0};
 		ret = parse_rai(line + 6, &rai_param);
 		if (ret) {
 			LOG_WRN("Call `parse_rai` failed: %d", ret);
@@ -853,7 +853,6 @@ int hio_lte_flow_recv(const struct hio_lte_send_recv_param *param)
 		m_socket_fd = -1;
 		return ret;
 	}
-
 
 	LOG_INF("Receiving data from socket_fd %d, expecting up to %u bytes", m_socket_fd,
 		param->recv_size);
