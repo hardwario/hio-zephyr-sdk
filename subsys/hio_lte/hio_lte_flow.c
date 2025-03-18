@@ -1049,5 +1049,17 @@ int hio_lte_flow_init(hio_lte_flow_event_delegate_cb cb)
 {
 	m_event_delegate_cb = cb;
 
+	int ret = nrf_modem_lib_init();
+	if (ret) {
+		LOG_ERR("Call `nrf_modem_lib_init` failed: %d", ret);
+		return ret;
+	}
+
+	ret = hio_lte_talk_at_cfun(0);
+	if (ret) {
+		LOG_ERR("Call `hio_lte_talk_at_cfun: 0` failed: %d", ret);
+		return ret;
+	}
+
 	return 0;
 }
