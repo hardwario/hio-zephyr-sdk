@@ -1,5 +1,5 @@
 manifest:
   version: "1.2"
   self:
-    path: application
+    path: hio-zephyr-sdk
     west-commands: scripts/west-commands.yml
