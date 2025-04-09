@@ -92,7 +92,7 @@ enum hio_config_item_type {
 	{                                                                                          \
 		.module = SETTINGS_PFX,                                                            \
 		.name = _name_d,                                                                   \
-		.type = CTR_CONFIG_TYPE_STRING,                                                    \
+		.type = HIO_CONFIG_TYPE_STRING,                                                    \
 		.variable = _var,                                                                  \
 		.size = ARRAY_SIZE(_var),                                                          \
 		.help = _help,                                                                     \
@@ -114,7 +114,7 @@ enum hio_config_item_type {
 struct hio_config_item;
 
 typedef int (*hio_config_parse_cb)(const struct shell *shell, char *argv,
-	const struct hio_config_item *item);
+				   const struct hio_config_item *item);
 
 struct hio_config_item {
 	const char *module;
