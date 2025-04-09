@@ -139,7 +139,7 @@ void hio_config_append_show(const char *name, hio_config_show_cb cb)
 int hio_config_show_item(const struct shell *shell, const struct hio_config_item *item)
 {
 	char mod[32];
-	{ // truncate anything after - from the module name
+	{ /* truncate anything after - from the module name */
 		mod[31] = 0;
 		strncpy(mod, item->module, sizeof(mod) - 1);
 		char *s;
