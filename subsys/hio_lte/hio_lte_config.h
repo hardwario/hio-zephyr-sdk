@@ -23,14 +23,15 @@ struct hio_lte_config {
 	bool test;
 	bool nb_iot_mode;
 	bool lte_m_mode;
-	bool autoconn;
-	char plmnid[6 + 1];
+	char bands[41 + 1];
+	char mode[20 + 1];
+	char network[6 + 1];
 	char apn[63 + 1];
 	enum hio_lte_config_auth auth;
 	char username[32 + 1];
 	char password[32 + 1];
+
 	char addr[15 + 1];
-	int port;
 	bool modemtrace;
 };
 

@@ -2,6 +2,7 @@
 #include "hio_lte_flow.h"
 #include "hio_lte_state.h"
 #include "hio_lte_talk.h"
+#include "hio_lte_tok.h"
 
 /* HIO includes */
 #include <hio/hio_rtc.h>
@@ -59,6 +60,10 @@ static int parse_cereg(const char *line, struct hio_lte_cereg_param *param)
 {
 	int ret;
 
+	if (!line || !param) {
+		return -EINVAL;
+	}
+
 	memset(param, 0, sizeof(*param));
 
 	int stat = 0;
@@ -96,6 +101,10 @@ static int parse_xmodemsleep(const char *line, int *p1, int *p2)
 {
 	int ret;
 
+	if (!line) {
+		return -EINVAL;
+	}
+
 	int p1_ = 0;
 	int p2_ = 0;
 
@@ -123,6 +132,10 @@ static int parse_rai(const char *line, struct hio_lte_rai_param *param)
 	char plmn[6];
 	int as_rai;
 	int cp_rai;
+
+	if (!line || !param) {
+		return -EINVAL;
+	}
 
 	memset(param, 0, sizeof(*param));
 	ret = sscanf(line, "\"%8[0-9A-F]\",\"%5[0-9A-F]\",%d,%d", cell_id, plmn, &as_rai, &cp_rai);
@@ -272,6 +285,41 @@ int hio_lte_flow_stop(void)
 	return 0;
 }
 
+static int fill_bands(char *bands)
+{
+	size_t len = strlen(bands);
+	const char *p = g_hio_lte_config.bands;
+	bool def;
+	long band;
+	while (p) {
+		if (!(p = hio_lte_tok_num(p, &def, &band)) || !def || band < 0 || band > 255) {
+			LOG_ERR("Invalid number format");
+			return -EINVAL;
+		}
+
+		LOG_INF("Band: %ld", band);
+
+		int n = len - band; /* band 1 is first 1 in bands from right */
+		if (n < 0) {
+			LOG_ERR("Invalid band number");
+			return -EINVAL;
+		}
+
+		bands[n] = '1';
+
+		if (hio_lte_tok_end(p)) {
+			break;
+		}
+
+		if (!(p = hio_lte_tok_sep(p))) {
+			LOG_ERR("Expected comma");
+			return -EINVAL;
+		}
+	}
+
+	return 0;
+}
+
 int hio_lte_flow_prepare(void)
 {
 	int ret;
@@ -345,9 +393,19 @@ int hio_lte_flow_prepare(void)
 		return ret;
 	}
 
-	int gnss_enable = 0;
-	ret = hio_lte_talk_at_xsystemmode(g_hio_lte_config.lte_m_mode ? 1 : 0,
-					  g_hio_lte_config.nb_iot_mode ? 1 : 0, gnss_enable, 0);
+	int gnss_mode = 0;
+
+	char *pos_let_m = strstr(g_hio_lte_config.mode, "lte-m");
+	char *pos_nb_iot = strstr(g_hio_lte_config.mode, "nb-iot");
+
+	int lte_m_mode = pos_let_m ? 1 : 0;
+	int nb_iot_mode = pos_nb_iot ? 1 : 0;
+	int preference = 0;
+	if (pos_let_m && pos_nb_iot) {
+		preference = pos_let_m < pos_nb_iot ? 1 : 2;
+	}
+
+	ret = hio_lte_talk_at_xsystemmode(lte_m_mode, nb_iot_mode, gnss_mode, preference);
 	if (ret) {
 		LOG_ERR("Call `hio_lte_talk_at_xsystemmode` failed: %d", ret);
 		return ret;
@@ -359,50 +417,20 @@ int hio_lte_flow_prepare(void)
 		return ret;
 	}
 
-	/* Enabled bands: B2, B4, B5, B8, B12, B20, B28 */
-#if 1
-	const char *bands =
-		/* B88 - B81 */
-		"00000000"
-		/* B80 - B71 */
-		"0000000000"
-		/* B70 - B61 */
-		"0000100000"
-		/* B60 - B51 */
-		"0000000000"
-		/* B50 - B41 */
-		"0000000000"
-		/* B40 - B31 */
-		"0000000000"
-		/* B30 - B21 */
-		"0010110000"
-		/* B20 - B11 */
-		"1111001110"
-		/* B10 -  B1 */
-		"0010011010";
-#else
-	const char *bands =
-		/* B88 - B81 */
-		"111111"
-		/* B80 - B71 */
-		"1111111111"
-		/* B70 - B61 */
-		"1111111111"
-		/* B60 - B51 */
-		"1111111111"
-		/* B50 - B41 */
-		"1111111111"
-		/* B40 - B31 */
-		"1111111111"
-		/* B30 - B21 */
-		"1111111111"
-		/* B20 - B11 */
-		"1111111111"
-		/* B10 - B01 */
-		"1111111111";
-#endif
+	if (!strlen(g_hio_lte_config.bands)) {
+		ret = hio_lte_talk_at_xbandlock(0, NULL);
+	} else {
+		char bands[] =
+			"00000000000000000000000000000000000000000000000000000000000000000000"
+			"00000000000000000000";
 
-	ret = hio_lte_talk_at_xbandlock(1, bands);
+		ret = fill_bands(bands);
+		if (ret) {
+			LOG_ERR("Call `fill_bands` failed: %d", ret);
+			return ret;
+		}
+		ret = hio_lte_talk_at_xbandlock(1, bands);
+	}
 	if (ret) {
 		LOG_ERR("Call `hio_lte_talk_at_xbandlock` failed: %d", ret);
 		return ret;
@@ -475,23 +503,24 @@ int hio_lte_flow_prepare(void)
 		return ret;
 	}
 
-	if (g_hio_lte_config.autoconn) {
+	if (!strlen(g_hio_lte_config.network)) {
 		ret = hio_lte_talk_at_cops(0, NULL, NULL);
 	} else {
-		ret = hio_lte_talk_at_cops(1, (int[]){2}, g_hio_lte_config.plmnid);
+		ret = hio_lte_talk_at_cops(1, (int[]){2}, g_hio_lte_config.network);
 	}
-
 	if (ret) {
 		LOG_ERR("Call `hio_lte_talk_at_cops` failed: %d", ret);
 		return ret;
 	}
 
-	if (strlen(g_hio_lte_config.apn)) {
+	if (!strlen(g_hio_lte_config.apn)) {
+		ret = hio_lte_talk_at_cgdcont(0, "IP", NULL);
+	} else {
 		ret = hio_lte_talk_at_cgdcont(0, "IP", g_hio_lte_config.apn);
-		if (ret) {
-			LOG_ERR("Call `hio_lte_talk_at_cgdcont` failed: %d", ret);
-			return ret;
-		}
+	}
+	if (ret) {
+		LOG_ERR("Call `hio_lte_talk_at_cgdcont` failed: %d", ret);
+		return ret;
 	}
 
 	if (g_hio_lte_config.auth == HIO_LTE_CONFIG_AUTH_PAP ||
@@ -639,7 +668,7 @@ int hio_lte_flow_open_socket(void)
 
 	k_mutex_lock(&m_addr_info_lock, K_FOREVER);
 	m_addr_info.sin_family = NRF_AF_INET;
-	m_addr_info.sin_port = nrf_htons(g_hio_lte_config.port);
+	m_addr_info.sin_port = nrf_htons(CONFIG_HIO_LTE_PORT);
 	if (nrf_inet_pton(m_addr_info.sin_family, g_hio_lte_config.addr, &m_addr_info.sin_addr) <=
 	    0) {
 		LOG_ERR("Invalid IP address: %s", g_hio_lte_config.addr);
@@ -901,6 +930,10 @@ int hio_lte_flow_recv(const struct hio_lte_send_recv_param *param)
 int parse_coneval(const char *str, struct hio_lte_conn_param *params)
 {
 	int ret;
+
+	if (!str || !params) {
+		return -EINVAL;
+	}
 
 	/* 0,1,5,8,2,14,"011B0780”,"26295",7,1575,3,1,1,23,16,32,130 */
 	/* r,-,e,r,r,s ,"CIDCIDCI","PLMNI",f,g   ,h,i,j,k ,l ,m ,n  */
