@@ -758,7 +758,8 @@ static int ready_event_handler(enum hio_lte_event event)
 			}
 			return ret;
 		}
-		enter_state(FSM_STATE_SEND);
+		// enter_state(FSM_STATE_SEND);
+		enter_state(FSM_STATE_CONEVAL);
 		break;
 	case HIO_LTE_EVENT_DEREGISTERED:
 		enter_state(FSM_STATE_ATTACH);
@@ -954,7 +955,8 @@ static int receive_event_handler(enum hio_lte_event event)
 		break;
 	case HIO_LTE_EVENT_CSCON_0:
 		m_cscon = false;
-		enter_state(FSM_STATE_CONEVAL);
+		// enter_state(FSM_STATE_CONEVAL);
+		enter_state(FSM_STATE_READY);
 		break;
 	case HIO_LTE_EVENT_DEREGISTERED:
 		enter_state(FSM_STATE_ATTACH);
@@ -970,13 +972,17 @@ static int receive_event_handler(enum hio_lte_event event)
 
 static int on_enter_coneval(void)
 {
-	// int ret = hio_lte_flow_coneval();
-	// if (ret < 0) {
-	// 	LOG_ERR("Call `hio_lte_flow_coneval` failed: %d", ret);
-	// 	return ret;
-	// }
+	int ret = hio_lte_flow_coneval();
+	if (ret < 0) {
+		LOG_ERR("Call `hio_lte_flow_coneval` failed: %d", ret);
+		return ret;
+	}
 
-	delegate_event(HIO_LTE_EVENT_READY);
+	if (m_send_recv_param) {
+		delegate_event(HIO_LTE_EVENT_SEND);
+	} else {
+		delegate_event(HIO_LTE_EVENT_READY);
+	}
 
 	return 0;
 }
@@ -988,6 +994,9 @@ static int coneval_event_handler(enum hio_lte_event event)
 		__fallthrough;
 	case HIO_LTE_EVENT_TIMEOUT:
 		enter_state(FSM_STATE_READY);
+		break;
+	case HIO_LTE_EVENT_SEND:
+		enter_state(FSM_STATE_SEND);
 		break;
 	case HIO_LTE_EVENT_CSCON_0:
 		m_cscon = false;
