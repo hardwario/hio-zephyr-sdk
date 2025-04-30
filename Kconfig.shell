@@ -25,7 +25,7 @@ config SHELL_CMD_BUFF_SIZE
 	default 256 if HIO_SHELL
 
 config SHELL_ECHO_STATUS
-	default y if HIO_SHELL
+	default n if HIO_SHELL
 
 config SHELL_LOG_BACKEND
 	default y if HIO_SHELL

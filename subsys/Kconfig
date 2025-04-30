@@ -1,15 +1,16 @@
 menu "Subsystems"
 
+rsource "hio_accel/Kconfig"
+rsource "hio_adc/Kconfig"
 rsource "hio_buf/Kconfig"
+rsource "hio_button/Kconfig"
 rsource "hio_config/Kconfig"
+rsource "hio_edge/Kconfig"
+rsource "hio_info/Kconfig"
 rsource "hio_lte/Kconfig"
 rsource "hio_rtc/Kconfig"
-rsource "hio_util/Kconfig"
-rsource "hio_adc/Kconfig"
-rsource "hio_edge/Kconfig"
-rsource "hio_button/Kconfig"
 rsource "hio_therm/Kconfig"
-rsource "hio_accel/Kconfig"
+rsource "hio_util/Kconfig"
 rsource "hio_wdog/Kconfig"
 
 endmenu
