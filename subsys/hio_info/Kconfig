@@ -1,0 +1,33 @@
+#
+# Copyright (c) 2025 HARDWARIO a.s.
+#
+# SPDX-License-Identifier: LicenseRef-HARDWARIO-5-Clause
+#
+
+config HIO_INFO
+	bool "HIO_INFO"
+	select CRC
+
+if HIO_INFO
+
+config HIO_INFO_SHELL
+	bool "HIO_INFO_SHELL"
+	default y if SHELL
+
+config HIO_INFO_SHELL_BLE
+	bool "HIO_INFO_SHELL_BLE"
+	default y if SOC_SERIES_NRF52X
+
+config HIO_INFO_BLE
+	bool "HIO_INFO_BLE"
+	default y if BT && SOC_SERIES_NRF52X
+
+config HIO_INFO_INIT_PRIORITY
+	int "Initialization priority"
+	default 0
+
+module = HIO_INFO
+module-str = Firmware Information Subsystem
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # HIO_INFO
