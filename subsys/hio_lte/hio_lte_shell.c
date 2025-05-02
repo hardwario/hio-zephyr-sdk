@@ -15,7 +15,9 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 LOG_MODULE_REGISTER(hio_lte_shell, CONFIG_HIO_LTE_LOG_LEVEL);
 
@@ -235,6 +237,42 @@ static int cmd_metrics(const struct shell *shell, size_t argc, char **argv)
 	return 0;
 }
 
+static int cmd_ncells(const struct shell *shell, size_t argc, char **argv)
+{
+	int ret;
+
+	if (argc > 1) {
+		shell_error(shell, "command not found: %s", argv[1]);
+		shell_help(shell);
+		return -EINVAL;
+	}
+
+	struct hio_lte_ncellmeas_param ncellmeas_param;
+	ret = hio_lte_state_get_ncellmeas_param(&ncellmeas_param);
+	if (ret) {
+		shell_error(shell, "hio_lte_get_ncellmeas_param failed: %d", ret);
+		return ret;
+	}
+
+	if (!ncellmeas_param.valid) {
+		shell_print(shell, "%s", "No measurements");
+	} else {
+		for (int i = 0; i < ncellmeas_param.num_cells; i++) {
+			shell_print(shell,
+				    "\tearcfn: %d, phy_cell_id: %d, rsrp: %d, rsrq: %d, time diff "
+				    "(ms): %d",
+				    ncellmeas_param.cells[i].earfcn,
+				    ncellmeas_param.cells[i].phys_cell_id,
+				    ncellmeas_param.cells[i].rsrp, ncellmeas_param.cells[i].rsrq,
+				    ncellmeas_param.cells[i].time_diff);
+		}
+	}
+
+	shell_print(shell, "command succeeded");
+
+	return 0;
+}
+
 static int cmd_test_modem(const struct shell *shell, size_t argc, char **argv)
 {
 	int ret;
@@ -399,6 +437,10 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(metrics, NULL,
 		     "Get LTE metrics.",
 	              cmd_metrics, 1, 0),
+
+	SHELL_CMD_ARG(ncells, NULL,
+		     "Get neighboring cells.",
+	              cmd_ncells, 1, 0),
 
 	SHELL_CMD_ARG(test, &sub_lte_test,
 	              "Test commands.",
