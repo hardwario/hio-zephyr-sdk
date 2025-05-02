@@ -73,6 +73,26 @@ struct hio_lte_rai_param {
 	int plmn;
 };
 
+struct hio_lte_ncellmeas_cell_param {
+	int earfcn;
+	int phys_cell_id;
+	int rsrp;
+	int rsrq;
+	int time_diff;
+};
+
+struct hio_lte_ncellmeas_param {
+	bool valid;
+	int cell_id;
+	int plmn;
+	char tac[5];
+	int meas_time_ms;
+	int timing_adv_ms;
+
+	int num_cells;
+	struct hio_lte_ncellmeas_cell_param cells[CONFIG_HIO_LTE_NCELLMEAS_MAX];
+};
+
 struct hio_lte_metrics {
 	uint32_t attach_count;
 	uint32_t attach_fail_count;
@@ -110,6 +130,7 @@ int hio_lte_get_iccid(char **iccid);
 int hio_lte_get_modem_fw_version(char **version);
 int hio_lte_get_conn_param(struct hio_lte_conn_param *param);
 int hio_lte_get_cereg_param(struct hio_lte_cereg_param *param);
+int hio_lte_get_ncellmes_param(struct hio_lte_ncellmeas_param *param);
 int hio_lte_get_metrics(struct hio_lte_metrics *metrics);
 
 const char *hio_lte_coneval_result_str(int result);

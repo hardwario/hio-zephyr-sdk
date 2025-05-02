@@ -170,6 +170,84 @@ static int parse_rai(const char *line, struct hio_lte_rai_param *param)
 	return 0;
 }
 
+static int parse_ncellmeas(const char *line, struct hio_lte_ncellmeas_param *param)
+{
+	int ret;
+
+	if (!line || !param) {
+		return -EINVAL;
+	}
+
+	// %NCELLMEAS: 0,"0690700B","26801","001A",65535,
+	// 6300,12,58,23,61667
+	// 6300,35,55,16,0
+	// 6300,193,43,1,0
+	// 0
+
+	// 0,"0690700B","26801","001A",65535,6300,12,58,23,61667,6300,35,55,16,0,6300,193,43,1,0,0
+
+	char *str = (char *)line;
+
+	char cell_id[9];
+	char plmn[6];
+	char tac[5];
+	int meas_time_ms;
+	int consumed;
+
+	ret = sscanf(str, "%*d,\"%8[0-9A-F]\",\"%5[0-9A-F]\",\"%5[0-9A-F]\",%d%n", cell_id, plmn,
+		     tac, &meas_time_ms, &consumed);
+	if (ret != 4) {
+		LOG_ERR("Failed to parse ncellmeas: %d", ret);
+		return -EINVAL;
+	}
+
+	str += consumed;
+
+	int earfcn;
+	int phys_cell_id;
+	int rsrp;
+	int rsrq;
+	int time_diff;
+
+	int entries = 0;
+
+	ret = 0;
+
+	while (entries < CONFIG_HIO_LTE_NCELLMEAS_MAX) {
+		ret = sscanf(str, ",%d,%d,%d,%d,%d%n", &earfcn, &phys_cell_id, &rsrp, &rsrq,
+			     &time_diff, &consumed);
+		if (ret != 5 || consumed == 0) {
+			break;
+		}
+
+		param->cells[entries].earfcn = earfcn;
+		param->cells[entries].phys_cell_id = phys_cell_id;
+		param->cells[entries].rsrp = rsrp;
+		param->cells[entries].rsrq = rsrq;
+		param->cells[entries].time_diff = time_diff;
+
+		entries++;
+		str += consumed;
+	}
+
+	param->num_cells = entries;
+
+	/* Check if there is a timing advance */
+	if (ret == 1) {
+		int timing_adv_ms;
+		ret = sscanf(str, ",%d", &timing_adv_ms);
+		if (ret != 1) {
+			LOG_ERR("Failed to parse ncellmeas: %d", ret);
+			return -EINVAL;
+		}
+		param->timing_adv_ms = timing_adv_ms;
+	}
+
+	param->valid = true;
+
+	return 0;
+}
+
 static void monitor_handler(const char *line)
 {
 	int ret;
@@ -233,6 +311,20 @@ static void monitor_handler(const char *line)
 		}
 
 		hio_lte_state_set_rai_param(&rai_param);
+	} else if (!strncmp(line, "%NCELLMEAS: ", 12)) {
+		struct hio_lte_ncellmeas_param ncellmeas_param = {0};
+		ret = parse_ncellmeas(line + 12, &ncellmeas_param);
+		if (ret) {
+			LOG_WRN("Call `parse_ncellmeas` failed: %d", ret);
+			return;
+		}
+
+		if (ncellmeas_param.valid) {
+			LOG_INF("NCELLMEAS: %d cells", ncellmeas_param.num_cells);
+
+			m_event_delegate_cb(HIO_LTE_EVENT_NCELLMEAS);
+			hio_lte_state_set_ncellmeas_param(&ncellmeas_param);
+		}
 	}
 }
 
