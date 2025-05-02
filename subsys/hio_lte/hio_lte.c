@@ -25,12 +25,15 @@ LOG_MODULE_REGISTER(hio_lte, CONFIG_HIO_LTE_LOG_LEVEL);
 #define MDMEV_RESET_LOOP_DELAY K_MINUTES(32)
 #define SEND_CSCON_1_TIMEOUT   K_SECONDS(30)
 #define CONEVAL_TIMEOUT        K_SECONDS(30)
+#define NCELLMEAS_TIMEOUT      K_MINUTES(5)
 
 #define WORK_Q_STACK_SIZE 4096
 #define WORK_Q_PRIORITY   K_LOWEST_APPLICATION_THREAD_PRIO
 
 static struct k_work_q m_work_q;
 static K_THREAD_STACK_DEFINE(m_work_q_stack, WORK_Q_STACK_SIZE);
+
+static bool m_ncellmeasured = false;
 
 enum fsm_state {
 	FSM_STATE_DISABLED = 0,
@@ -39,6 +42,7 @@ enum fsm_state {
 	FSM_STATE_ATTACH,
 	FSM_STATE_RETRY_DELAY,
 	FSM_STATE_RESET_LOOP,
+	FSM_STATE_NCELLMEAS,
 	FSM_STATE_OPEN_SOCKET,
 	FSM_STATE_READY,
 	FSM_STATE_SLEEP,
@@ -132,6 +136,8 @@ const char *fsm_state_str(enum fsm_state state)
 		return "attach";
 	case FSM_STATE_OPEN_SOCKET:
 		return "open_socket";
+	case FSM_STATE_NCELLMEAS:
+		return "ncellmeas";
 	case FSM_STATE_READY:
 		return "ready";
 	case FSM_STATE_SLEEP:
@@ -662,7 +668,8 @@ static int attach_event_handler(enum hio_lte_event event)
 		m_metrics.attach_last_duration_ms = k_uptime_get_32() - m_start;
 		m_metrics.attach_duration_ms += m_metrics.attach_last_duration_ms;
 		k_mutex_unlock(&m_metrics_lock);
-		enter_state(FSM_STATE_OPEN_SOCKET);
+		enter_state(FSM_STATE_NCELLMEAS);
+		// enter_state(FSM_STATE_OPEN_SOCKET);
 		break;
 	case HIO_LTE_EVENT_CSCON_1:
 		m_cscon = true;
@@ -694,6 +701,58 @@ static int attach_event_handler(enum hio_lte_event event)
 static int on_leave_attach(void)
 {
 	stop_timer();
+	return 0;
+}
+
+static int on_enter_ncellmeas(void)
+{
+	if (m_ncellmeasured) {
+		enter_state(HIO_LTE_STATE_OPEN_SOCKET);
+		return 0;
+	}
+
+	start_timer(K_MINUTES(5));
+
+	return 0;
+}
+
+static int ncellmeas_event_handler(enum hio_lte_event event)
+{
+	int ret;
+
+	switch (event) {
+	case HIO_LTE_EVENT_TIMEOUT:
+		m_ncellmeasured = true;
+		enter_state(HIO_LTE_STATE_OPEN_SOCKET);
+		break;
+	case HIO_LTE_EVENT_CSCON_0:
+		m_cscon = false;
+		start_timer(NCELLMEAS_TIMEOUT);
+		ret = hio_lte_flow_cmd("AT%NCELLMEAS=1,3");
+		if (ret < 0) {
+			LOG_ERR("Call `hio_lte_flow_cmd` failed: %d", ret);
+			return ret;
+		}
+		break;
+	case HIO_LTE_EVENT_CSCON_1:
+		m_cscon = true;
+		break;
+	case HIO_LTE_EVENT_ERROR:
+		enter_state(HIO_LTE_STATE_ERROR);
+		break;
+	default:
+		break;
+	}
+	return 0;
+}
+
+static int on_leave_ncellmeas(void)
+{
+	int ret = hio_lte_flow_cmd("AT%NCELLMEASSTOP");
+	if (ret < 0) {
+		LOG_ERR("Call `hio_lte_flow_cmd` failed: %d", ret);
+	}
+
 	return 0;
 }
 
@@ -1015,6 +1074,7 @@ static struct fsm_state_desc m_fsm_states[] = {
 	{FSM_STATE_ATTACH, on_enter_attach, on_leave_attach, attach_event_handler},
 	{FSM_STATE_RETRY_DELAY, on_enter_retry_delay, NULL, retry_delay_event_handler},
 	{FSM_STATE_RESET_LOOP, on_enter_reset_loop, on_leave_reset_loop, reset_loop_event_handler},
+	{FSM_STATE_NCELLMEAS, on_enter_ncellmeas, on_leave_ncellmeas(), ncellmeas_event_handler},
 	{FSM_STATE_OPEN_SOCKET, on_enter_open_socket, NULL, open_socket_event_handler},
 	{FSM_STATE_READY, on_enter_ready, on_leave_ready, ready_event_handler},
 	{FSM_STATE_SLEEP, on_enter_sleep, NULL, sleep_event_handler},
