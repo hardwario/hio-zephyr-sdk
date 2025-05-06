@@ -11,6 +11,34 @@ config HIO_LTE
 
 if HIO_LTE
 
+config HIO_LTE_DEFAULT_MODE
+	string "HIO_LTE_DEFAULT_MODE"
+	default "nb-iot"
+
+config HIO_LTE_DEFAULT_BANDS
+	string "HIO_LTE_DEFAULT_BANDS"
+	default ""
+	help
+		original value: "2,4,5,8,12,13,17,18,19,20,25,26,28,66"
+
+config HIO_LTE_DEFAULT_NETWORK
+	string "HIO_LTE_DEFAULT_NETWORK"
+	default ""
+
+config HIO_LTE_DEFAULT_APN
+	string "HIO_LTE_DEFAULT_APN"
+	default ""
+	help
+		original value: "hardwario"
+
+config HIO_LTE_DEFAULT_ADDR
+	string "HIO_LTE_DEFAULT_ADDR"
+	default "192.168.192.4"
+
+config HIO_LTE_PORT
+	int "HIO_LTE_PORT"
+	default 5002
+
 config HIO_LTE_INIT_PRIORITY
 	int "HIO_LTE_INIT_PRIORITY"
 	default 99
