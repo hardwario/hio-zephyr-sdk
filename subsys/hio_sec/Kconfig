@@ -1,0 +1,26 @@
+config HIO_SEC
+	bool "HIO_SEC"
+	select HIO_LTE
+	select NRF_SECURITY
+	select MODEM_KEY_MGMT
+	select MBEDTLS_PSA_CRYPTO_C
+	select MBEDTLS_PSA_CRYPTO_C
+	select MBEDTLS_PSA_CRYPTO_STORAGE_C
+	# select PSA_CRYPTO_CLIENT
+	# select PSA_WANT_ALG_CTR
+	# select PSA_WANT_ALG_ECDSA
+	# select PSA_WANT_ALG_ECDH
+	# select PSA_WANT_KEY_TYPE_ECC_KEY_PAIR_IMPORT
+
+config HIO_SEC_SAVE
+	bool "HIO_SEC_SAVE"
+	default n
+
+config HIO_SEC_EXPORT
+	bool "HIO_SEC_EXPORT"
+	default n
+	select PSA_WANT_KEY_TYPE_ECC_KEY_PAIR_EXPORT
+
+config HIO_SEC_TAG_INDEX
+	int "HIO_SEC_TAG_INDEX"
+	default 1

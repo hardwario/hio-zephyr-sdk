@@ -26,6 +26,9 @@
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/net/socket_ncs.h>
 #include <zephyr/sys/timeutil.h>
+#ifdef CONFIG_HIO_LTE_DTLS
+#include <zephyr/net/tls_credentials.h>
+#endif /* CONFIG_HIO_LTE_DTLS */
 
 /* Standard includes */
 #include <errno.h>
@@ -55,6 +58,10 @@ static struct nrf_sockaddr_in m_addr_info;
 
 static int m_socket_fd;
 K_MUTEX_DEFINE(m_socket_fd_lock);
+
+#if defined(CONFIG_HIO_LTE_DTLS)
+sec_tag_t sec_tag_list[] = {CONFIG_HIO_LTE_SEC_TAG_INDEX};
+#endif
 
 static int parse_cereg(const char *line, struct hio_lte_cereg_param *param)
 {
@@ -677,7 +684,11 @@ int hio_lte_flow_open_socket(void)
 	}
 	k_mutex_unlock(&m_addr_info_lock);
 
+#ifdef CONFIG_HIO_LTE_DTLS
+	ret = nrf_socket(m_addr_info.sin_family, NRF_SOCK_DGRAM, NRF_SPROTO_DTLS1v2);
+#else
 	ret = nrf_socket(m_addr_info.sin_family, NRF_SOCK_DGRAM, 0);
+#endif /* CONFIG_HIO_LTE_DTLS */
 	if (ret == -1) {
 		ret = -errno;
 		LOG_ERR("Call `nrf_socket` failed: %d", ret);
@@ -711,6 +722,19 @@ int hio_lte_flow_open_socket(void)
 		return ret;
 	}
 
+#ifdef CONFIG_HIO_LTE_DTLS
+	LOG_INF("Setting up DTLS security tag");
+
+	ret = nrf_setsockopt(m_socket_fd, NRF_SOL_SOCKET, NRF_SO_SEC_TAG_LIST, sec_tag_list,
+			     sizeof(sec_tag_list));
+	if (ret < 0) {
+		LOG_ERR("Call `setsockopt` failed: %d", -ret);
+		nrf_close(m_socket_fd);
+		m_socket_fd = -1;
+		return ret;
+	}
+
+#endif /* (CONFIG_HIO_LTE_DTLS) */
 	LOG_INF("Socket opened: %d", m_socket_fd);
 
 	ret = nrf_connect(m_socket_fd, (struct nrf_sockaddr *)&m_addr_info, sizeof(m_addr_info));
