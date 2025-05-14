@@ -28,7 +28,7 @@ config SHELL_ECHO_STATUS
 	default n if HIO_SHELL
 
 config SHELL_LOG_BACKEND
-	default y if HIO_SHELL
+	default n if HIO_SHELL
 
 config SHELL_PROMPT_RTT
 	default "" if HIO_SHELL

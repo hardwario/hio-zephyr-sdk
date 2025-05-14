@@ -2,6 +2,7 @@ menu "Subsystems"
 
 rsource "hio_accel/Kconfig"
 rsource "hio_adc/Kconfig"
+rsource "hio_atci/Kconfig"
 rsource "hio_buf/Kconfig"
 rsource "hio_button/Kconfig"
 rsource "hio_config/Kconfig"
