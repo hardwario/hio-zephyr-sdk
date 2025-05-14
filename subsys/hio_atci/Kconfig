@@ -1,0 +1,50 @@
+#
+# Copyright (c) 2025 HARDWARIO a.s.
+#
+# SPDX-License-Identifier: LicenseRef-HARDWARIO-5-Clause
+#
+
+config HIO_ATCI
+	bool "HIO_ATCI"
+
+if HIO_ATCI
+
+rsource "backends/Kconfig.backends"
+
+config HIO_ATCI_STACK_SIZE
+	int "ATCI thread stack size"
+	default 2048 if MULTITHREADING
+	default 0 if !MULTITHREADING
+	help
+	  Stack size for thread created for each instance.
+
+config HIO_ATCI_CMD_SHELL
+	bool "HIO_ATCI_CMD_SHELL"
+	default y if SHELL
+	select SHELL_BACKEND_DUMMY
+
+config HIO_ATCI_CMD_SHELL_ACL
+	int "HIO_ATCI_CMD_SHELL_ACL"
+	default 0
+
+config HIO_ATCI_CMD_BUFF_SIZE
+	int "ATCI command buffer size"
+	default 256
+	help
+	  Maximum command size in bytes. One byte is reserved for the string
+	  terminator character.
+
+config HIO_ATCI_PRINTF_BUFF_SIZE
+	int "ATCI print buffer size"
+	default 30
+	help
+	  Maximum text buffer size for fprintf function.
+	  It is working like stdio buffering in Linux systems
+	  to limit number of peripheral access calls.
+
+module = HIO_ATCI
+module-str = HIO ATCI Subsystem
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # HIO_ATCI
+

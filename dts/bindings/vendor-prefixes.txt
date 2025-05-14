@@ -1,0 +1,5 @@
+# <vendor-prefix><TAB><Full name of vendor>
+
+# zephyr-keep-sorted-start
+hio	HARDWARIO
+# zephyr-keep-sorted-stop

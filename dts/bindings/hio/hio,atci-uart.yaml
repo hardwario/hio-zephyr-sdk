@@ -1,0 +1,16 @@
+# hio,atci-uart.yaml
+compatible: "hio,atci-uart"
+include: base.yaml
+
+description: HIO ATCI UART backend node that references an existing UART device.
+
+properties:
+  uart:
+    type: phandle
+    required: true
+    description: Reference to the UART device used by the ATCI backend
+
+  enable-gpios:
+    type: phandle-array
+    required: false
+    description: Optional GPIO used to enable or disable the UART

@@ -14,6 +14,10 @@ config HIO_INFO_SHELL
 	bool "HIO_INFO_SHELL"
 	default y if SHELL
 
+config HIO_INFO_ATCI
+	bool "HIO_INFO_ATCI"
+	default y if HIO_ATCI
+
 config HIO_INFO_SHELL_BLE
 	bool "HIO_INFO_SHELL_BLE"
 	default y if SOC_SERIES_NRF52X

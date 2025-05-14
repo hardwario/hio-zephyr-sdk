@@ -1,0 +1,27 @@
+&uart0 {
+	status = "okay";
+};
+
+
+&gpio0 {
+	status = "okay";
+};
+
+/ {
+
+	atci_uart0: atci_uart0 {
+		compatible = "hio,atci-uart";
+		status = "okay";
+		uart = <&uart0>;
+		enable-gpios = <&gpio0 8 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+		wakeup-source;
+	};
+
+	// Sample for UART1 without eneble/disable GPIO
+	// atci_uart1: atci_uart1 {
+	// 	compatible = "hio,atci-uart";
+	// 	status = "okay";
+	// 	uart = <&uart1>;
+	// };
+
+};

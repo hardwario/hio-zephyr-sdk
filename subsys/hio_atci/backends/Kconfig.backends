@@ -1,0 +1,56 @@
+#
+# Copyright (c) 2025 HARDWARIO a.s.
+#
+# SPDX-License-Identifier: LicenseRef-HARDWARIO-5-Clause
+#
+
+config HIO_ATCI_BACKEND_UART
+	bool "Serial backend"
+	# Serial (UART) requires interrupts and the RTT backend cannot be used from an ISR context.
+	default y
+	select SERIAL
+	select UART_ASYNC_API
+	select UART_ASYNC_RX_HELPER
+	select RING_BUFFER
+	select EVENTS
+	select PM_DEVICE
+	select GPIO
+	help
+	  Enable serial backend.
+
+if HIO_ATCI_BACKEND_UART
+
+config HIO_ATCI_BACKEND_INIT_PRIORITY
+	int "HIO_ATCI_BACKEND_INIT_PRIORITY"
+	default APPLICATION_INIT_PRIORITY
+	range 0 99
+	help
+	  Initialization priority for UART backend. This must be bigger than
+	  the initialization priority of the used serial device.
+
+config HIO_ATCI_BACKEND_UART_ASYNC_RX_TIMEOUT
+	int "RX inactivity timeout (in microseconds)"
+	default 10000
+	help
+	  Inactivity timeout after which received data is reported.
+
+config HIO_ATCI_BACKEND_UART_ASYNC_RX_BUFFER_COUNT
+	int "Number of RX buffers"
+	default 4
+	range 2 64
+	help
+	  Number of RX buffers. Some UART driver implementations changes buffers
+	  on timeout so this number should be big enough to cover handling on
+	  time incoming data. 4 should be enough for almost all the cases unless
+	  CPU load is high and there is very high atci thread latency.
+
+config HIO_ATCI_BACKEND_UART_ASYNC_RX_BUFFER_SIZE
+	int "Size of the RX buffer"
+	default 16
+	help
+	  Size of a single RX buffer. Together with buffer count it defines the
+	  space that can hold RX data. It may be decreased if atci input is
+	  slow and may need to be increased if long messages are pasted directly
+	  to the atci prompt.
+
+endif # HIO_ATCI_BACKEND_UART

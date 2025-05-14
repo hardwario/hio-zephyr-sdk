@@ -1,5 +1,6 @@
 add_subdirectory_ifdef(CONFIG_HIO_ACCEL hio_accel)
 add_subdirectory_ifdef(CONFIG_HIO_ADC hio_adc)
+add_subdirectory_ifdef(CONFIG_HIO_ATCI hio_atci)
 add_subdirectory_ifdef(CONFIG_HIO_BUF hio_buf)
 add_subdirectory_ifdef(CONFIG_HIO_BUTTON hio_button)
 add_subdirectory_ifdef(CONFIG_HIO_CONFIG hio_config)
