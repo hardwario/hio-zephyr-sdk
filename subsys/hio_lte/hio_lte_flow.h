@@ -35,6 +35,7 @@ enum hio_lte_event {
 	HIO_LTE_EVENT_XGPS_ENABLE,
 	HIO_LTE_EVENT_XGPS_DISABLE,
 	HIO_LTE_EVENT_XGPS,
+	HIO_LTE_EVENT_NCELLMEAS,
 };
 
 typedef void (*hio_lte_flow_event_delegate_cb)(enum hio_lte_event event);
