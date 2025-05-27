@@ -9,9 +9,10 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/settings/settings.h>
-#include <zephyr/shell/shell.h>
 #include <zephyr/storage/flash_map.h>
 #include <zephyr/sys/reboot.h>
+#include <zephyr/sys/slist.h>
+#include <zephyr/sys/crc.h>
 
 /* Standard includes */
 #include <ctype.h>
@@ -20,17 +21,122 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#define SETTINGS_PFX ""
+
 LOG_MODULE_REGISTER(hio_config, CONFIG_HIO_CONFIG_LOG_LEVEL);
 
-struct show_item {
-	const char *name;
-	hio_config_show_cb cb;
-	sys_snode_t node;
-};
+#define CONFIG_EVENT_READY BIT(0)
+static K_EVENT_DEFINE(m_event);
+static sys_slist_t m_list = SYS_SLIST_STATIC_INIT(&m_list);
 
-static sys_slist_t m_show_list = SYS_SLIST_STATIC_INIT(&m_show_list);
+static int item_init(const struct hio_config_item *item)
+{
+	switch (item->type) {
+	case HIO_CONFIG_TYPE_INT:
+		*(int *)item->variable = item->default_int;
+		return 0;
+	case HIO_CONFIG_TYPE_FLOAT:
+		*(float *)item->variable = item->default_float;
+		return 0;
+	case HIO_CONFIG_TYPE_BOOL:
+		*(bool *)item->variable = item->default_bool;
+		return 0;
+	case HIO_CONFIG_TYPE_ENUM:
+		memcpy(item->variable, &item->default_enum, item->size);
+		return 0;
+	case HIO_CONFIG_TYPE_STRING:
+		strcpy(item->variable, item->default_string);
+		return 0;
+	case HIO_CONFIG_TYPE_HEX:
+		memcpy(item->variable, item->default_hex, item->size);
+		return 0;
+	}
 
-static int save(bool reboot)
+	return -EINVAL;
+}
+
+static int load_direct_cb(const char *key, size_t len, settings_read_cb read_cb, void *cb_arg,
+			  void *param)
+
+{
+	struct hio_config *module = (struct hio_config *)param;
+
+	LOG_DBG("moudule: %s key: %s", module->name, key);
+
+	int ret;
+	const char *next;
+
+	for (int i = 0; i < module->nitems; i++) {
+		struct hio_config_item *item = &module->items[i];
+		if (settings_name_steq(key, item->name, &next) && !next) {
+			if (len != item->size) {
+				return -EINVAL;
+			}
+			ret = read_cb(cb_arg, item->variable, len);
+			if (ret < 0) {
+				LOG_ERR("Call `read_cb` failed: %d", ret);
+				return ret;
+			}
+			return 0;
+		}
+	}
+
+	return -ENOENT;
+}
+
+int hio_config_register(struct hio_config *module)
+{
+	int ret;
+
+	if (module == NULL) {
+		LOG_ERR("Invalid module");
+		return -EINVAL;
+	}
+
+	if (module->name == NULL) {
+		LOG_ERR("Module has no name");
+		return -EINVAL;
+	}
+
+	k_event_wait(&m_event, CONFIG_EVENT_READY, false, K_FOREVER);
+
+	/* Check for duplicate */
+	struct hio_config *existing;
+	SYS_SLIST_FOR_EACH_CONTAINER(&m_list, existing, node) {
+		if (strcmp(existing->name, module->name) == 0) {
+			LOG_ERR("Config module '%s' is already registered", module->name);
+			return -EALREADY;
+		}
+	}
+
+	for (int i = 0; i < module->nitems; i++) {
+		ret = item_init(&module->items[i]);
+		if (ret) {
+			LOG_WRN("Initializing item '%s' in module '%s' failed: %d",
+				module->items[i].name, module->name, ret);
+		}
+	}
+
+	sys_slist_append(&m_list, &module->node);
+
+	LOG_INF("Config '%s' registered (%d items)", module->name, module->nitems);
+
+	/* Load settings from the storage*/
+	if (module->items != NULL && module->nitems > 0) {
+		const char *subtree = module->storage_name ? module->storage_name : module->name;
+		ret = settings_load_subtree_direct(subtree, load_direct_cb, (void *)module);
+		if (ret) {
+			LOG_ERR("Could not load module config '%s' (error %d)", module->name, ret);
+			return ret;
+		}
+	}
+
+	LOG_INF("Loaded stored settings for '%s'", module->name);
+
+	return 0;
+}
+
+static int save(void)
 {
 	int ret;
 
@@ -40,14 +146,34 @@ static int save(bool reboot)
 		return ret;
 	}
 
-	if (reboot) {
-		sys_reboot(SYS_REBOOT_COLD);
-	}
+	LOG_INF("Settings was saved");
 
 	return 0;
 }
 
-static int reset(bool reboot)
+int hio_config_save(void)
+{
+	int ret = save();
+	if (ret) {
+		LOG_ERR("Call `save` failed: %d", ret);
+		return ret;
+	}
+
+	LOG_INF("Rebooting system");
+
+	k_sleep(K_SECONDS(1));
+
+	sys_reboot(SYS_REBOOT_COLD);
+
+	return 0;
+}
+
+int hio_config_save_without_reboot(void)
+{
+	return save();
+}
+
+static int reset(void)
 {
 	int ret;
 
@@ -89,154 +215,150 @@ static int reset(bool reboot)
 	flash_area_close(fa);
 #endif /* defined(CONFIG_SETTINGS_FILE) */
 
-	if (reboot) {
-		sys_reboot(SYS_REBOOT_COLD);
-	}
+	LOG_INF("Settings was reset");
 
 	return 0;
 }
 
-int hio_config_save(bool reboot)
+int hio_config_reset(void)
 {
-	int ret;
-
-	ret = save(reboot);
-	if (ret) {
-		LOG_ERR("Call `save` failed: %d", ret);
-		return ret;
-	}
-
-	return 0;
-}
-
-int hio_config_reset(bool reboot)
-{
-	int ret;
-
-	ret = reset(reboot);
+	int ret = reset();
 	if (ret) {
 		LOG_ERR("Call `reset` failed: %d", ret);
 		return ret;
 	}
 
+	LOG_INF("Rebooting system");
+
+	k_sleep(K_SECONDS(1));
+
+	sys_reboot(SYS_REBOOT_COLD);
+
 	return 0;
 }
 
-void hio_config_append_show(const char *name, hio_config_show_cb cb)
+int hio_config_reset_without_reboot(void)
 {
-	struct show_item *item = k_malloc(sizeof(*item));
-	if (item == NULL) {
-		LOG_ERR("Call `k_malloc` failed");
-		return;
-	}
-
-	item->name = name;
-	item->cb = cb;
-
-	sys_slist_append(&m_show_list, &item->node);
+	return reset();
 }
 
-int hio_config_show_item(const struct shell *shell, const struct hio_config_item *item)
+int hio_config_iter_modules(hio_config_module_cb_t cb, void *user_data)
 {
-	char mod[32];
-	{ /* truncate anything after - from the module name */
-		mod[31] = 0;
-		strncpy(mod, item->module, sizeof(mod) - 1);
-		char *s;
-		if ((s = strstr(mod, "-")) != NULL) {
-			*s = 0;
+	struct hio_config *module;
+
+	SYS_SLIST_FOR_EACH_CONTAINER(&m_list, module, node) {
+		int ret = cb(module, user_data);
+		if (ret != 0) {
+			return ret;
 		}
-	}
-
-	switch (item->type) {
-	case HIO_CONFIG_TYPE_INT:
-		shell_print(shell, "%s config %s %d", mod, item->name, *(int *)item->variable);
-		break;
-
-	case HIO_CONFIG_TYPE_FLOAT:
-		shell_print(shell, "%s config %s %.2f", mod, item->name, *(double *)item->variable);
-		break;
-
-	case HIO_CONFIG_TYPE_BOOL:
-		shell_print(shell, "%s config %s %s", mod, item->name,
-			    *(bool *)item->variable ? "true" : "false");
-		break;
-
-	case HIO_CONFIG_TYPE_ENUM: {
-		int32_t val = 0;
-		memcpy(&val, item->variable, item->size);
-
-		shell_print(shell, "%s config %s \"%s\"", mod, item->name, item->enums[val]);
-		break;
-	}
-	case HIO_CONFIG_TYPE_STRING:
-		shell_print(shell, "%s config %s \"%s\"", mod, item->name, (char *)item->variable);
-		break;
-
-	case HIO_CONFIG_TYPE_HEX:
-		shell_fprintf(shell, SHELL_NORMAL, "%s config %s ", mod, item->name);
-		for (int i = 0; i < item->size; i++) {
-			shell_fprintf(shell, SHELL_NORMAL, "%02x", ((uint8_t *)item->variable)[i]);
-		}
-		shell_fprintf(shell, SHELL_NORMAL, "\n");
-		break;
 	}
 
 	return 0;
 }
 
-int hio_config_help_item(const struct shell *shell, const struct hio_config_item *item)
+int hio_config_iter_items(const char *filter_module, hio_config_item_cb_t cb, void *user_data)
 {
-	switch (item->type) {
-	case HIO_CONFIG_TYPE_INT:
-		shell_print(shell, "  %-18s:%s <%d~%d>", item->name, item->help, item->min,
-			    item->max);
-		break;
+	if (cb == NULL) {
+		return -EINVAL;
+	}
 
-	case HIO_CONFIG_TYPE_FLOAT:
-		shell_print(shell, "  %-18s:%s <%.2f~%.2f>", item->name, item->help,
-			    (double)item->min, (double)item->max);
-		break;
+	struct hio_config *module;
 
-	case HIO_CONFIG_TYPE_BOOL:
-		shell_print(shell, "  %-18s:%s <true/false>", item->name, item->help);
-		break;
-
-	case HIO_CONFIG_TYPE_ENUM:
-		shell_print(shell, "  %-18s:%s", item->name, item->help);
-		for (int i = 0; i < item->max; i++) {
-			if (strlen(item->enums[i])) {
-				shell_print(shell, "                     - %s", item->enums[i]);
+	SYS_SLIST_FOR_EACH_CONTAINER(&m_list, module, node) {
+		if (filter_module && filter_module[0] != '\0') {
+			if (strcmp(module->name, filter_module) != 0) {
+				continue;
 			}
 		}
-		break;
 
-	case HIO_CONFIG_TYPE_STRING:
-		shell_print(shell, "  %-18s:%s", item->name, item->help);
-		break;
+		if (module->items != NULL && module->nitems > 0) {
+			for (int i = 0; i < module->nitems; i++) {
+				int ret = cb(module, &module->items[i], user_data);
+				if (ret) {
+					return ret;
+				}
+			}
+		}
 
-	case HIO_CONFIG_TYPE_HEX:
-		shell_print(shell, "  %-18s:%s (len: %d B)", item->name, item->help, item->size);
-		break;
+		if (filter_module && filter_module[0] != '\0') {
+			break; /* if found */
+		}
 	}
 
 	return 0;
 }
 
-static int parse_int(const struct shell *shell, char *argv, const struct hio_config_item *item)
+int hio_config_find_module(const char *name, struct hio_config **module)
+{
+	if (name == NULL) {
+		return -EINVAL;
+	}
+
+	struct hio_config *found_module;
+
+	SYS_SLIST_FOR_EACH_CONTAINER(&m_list, found_module, node) {
+		if (strcmp(found_module->name, name) == 0) {
+			if (module) {
+				*module = found_module;
+			}
+			return 0;
+		}
+	}
+
+	return -ENOENT;
+}
+
+int hio_config_module_find_item(struct hio_config *module, const char *name,
+				const struct hio_config_item **item)
+{
+
+	if (module == NULL || name == NULL) {
+		return -EINVAL;
+	}
+
+	if (module->items != NULL && module->nitems > 0) {
+		for (int i = 0; i < module->nitems; i++) {
+			if (strcmp(module->items[i].name, name) == 0) {
+				if (item) {
+					*item = &module->items[i];
+				}
+				return 0;
+			}
+		}
+	}
+
+	return -ENOENT;
+}
+
+int hio_config_find_item(const char *module_name, const char *name,
+			 const struct hio_config_item **item)
+{
+	if (module_name == NULL || name == NULL) {
+		return -EINVAL;
+	}
+
+	struct hio_config *module;
+
+	int ret = hio_config_find_module(module_name, &module);
+	if (ret) {
+		return ret;
+	}
+
+	return hio_config_module_find_item(module, name, item);
+}
+
+static int parse_int(const struct hio_config_item *item, char *argv, const char **err_msg)
 {
 	for (size_t i = 0; i < strlen(argv); i++) {
 		if (!isdigit((int)argv[i])) {
-			shell_error(shell, "Invalid format");
-			hio_config_help_item(shell, item);
+			*err_msg = "Invalid format";
 			return -EINVAL;
 		}
 	}
 
 	long value = strtol(argv, NULL, 10);
 	if (value < item->min || value > item->max) {
-		shell_error(shell, "Invalid range");
-		hio_config_help_item(shell, item);
+		*err_msg = "Invalid range";
 		return -EINVAL;
 	}
 
@@ -245,20 +367,18 @@ static int parse_int(const struct shell *shell, char *argv, const struct hio_con
 	return 0;
 }
 
-static int parse_float(const struct shell *shell, char *argv, const struct hio_config_item *item)
+static int parse_float(const struct hio_config_item *item, char *argv, const char **err_msg)
 {
 	float value;
 	int ret = sscanf(argv, "%f", &value);
 
 	if (ret != 1) {
-		shell_error(shell, "Invalid value");
-		hio_config_help_item(shell, item);
+		*err_msg = "Invalid value";
 		return -EINVAL;
 	}
 
 	if (value < item->min || value > item->max) {
-		shell_error(shell, "Invalid range");
-		hio_config_help_item(shell, item);
+		*err_msg = "Invalid range";
 		return -EINVAL;
 	}
 
@@ -267,25 +387,23 @@ static int parse_float(const struct shell *shell, char *argv, const struct hio_c
 	return 0;
 }
 
-static int parse_bool(const struct shell *shell, char *argv, const struct hio_config_item *item)
+static int parse_bool(const struct hio_config_item *item, char *argv, const char **err_msg)
 {
 	bool is_false = !strcmp(argv, "false");
 	bool is_true = !strcmp(argv, "true");
 
 	if (is_false) {
 		*((bool *)item->variable) = false;
+		return 0;
 	} else if (is_true) {
 		*((bool *)item->variable) = true;
-	} else {
-		shell_error(shell, "invalid format");
-		hio_config_help_item(shell, item);
-		return -EINVAL;
+		return 0;
 	}
-
-	return 0;
+	*err_msg = "Invalid format";
+	return -EINVAL;
 }
 
-static int parse_enum(const struct shell *shell, char *argv, const struct hio_config_item *item)
+static int parse_enum(const struct hio_config_item *item, char *argv, const char **err_msg)
 {
 	int value = -1;
 
@@ -297,8 +415,7 @@ static int parse_enum(const struct shell *shell, char *argv, const struct hio_co
 	}
 
 	if (value < 0) {
-		shell_error(shell, "invalid option");
-		hio_config_help_item(shell, item);
+		*err_msg = "Invalid option";
 		return -EINVAL;
 	}
 
@@ -307,11 +424,10 @@ static int parse_enum(const struct shell *shell, char *argv, const struct hio_co
 	return 0;
 }
 
-static int parse_string(const struct shell *shell, char *argv, const struct hio_config_item *item)
+static int parse_string(const struct hio_config_item *item, char *argv, const char **err_msg)
 {
 	if (strlen(argv) + 1 > item->size) {
-		shell_error(shell, "value too long");
-		hio_config_help_item(shell, item);
+		*err_msg = "Value too long";
 		return -EINVAL;
 	}
 
@@ -320,296 +436,117 @@ static int parse_string(const struct shell *shell, char *argv, const struct hio_
 	return 0;
 }
 
-static int parse_hex(const struct shell *shell, char *argv, const struct hio_config_item *item)
+static int parse_hex(const struct hio_config_item *item, char *argv, const char **err_msg)
 {
 	int ret = hio_hex2buf(argv, item->variable, item->size, true);
 
 	if (ret != item->size) {
-		shell_error(shell, "Length does not match.");
-		hio_config_help_item(shell, item);
+		*err_msg = "Length does not match";
 		return -EINVAL;
 	}
 
 	return 0;
 }
 
-int hio_config_parse_item(const struct shell *shell, char *argv, const struct hio_config_item *item)
+int hio_config_item_parse(const struct hio_config_item *item, char *argv, const char **err_msg)
 {
 	if (item->parse_cb != NULL) {
-		return item->parse_cb(shell, argv, item);
+		return item->parse_cb(item, argv, err_msg);
 	}
 
 	switch (item->type) {
 	case HIO_CONFIG_TYPE_INT:
-		return parse_int(shell, argv, item);
+		return parse_int(item, argv, err_msg);
 	case HIO_CONFIG_TYPE_FLOAT:
-		return parse_float(shell, argv, item);
+		return parse_float(item, argv, err_msg);
 	case HIO_CONFIG_TYPE_BOOL:
-		return parse_bool(shell, argv, item);
+		return parse_bool(item, argv, err_msg);
 	case HIO_CONFIG_TYPE_ENUM:
-		return parse_enum(shell, argv, item);
+		return parse_enum(item, argv, err_msg);
 	case HIO_CONFIG_TYPE_STRING:
-		return parse_string(shell, argv, item);
+		return parse_string(item, argv, err_msg);
 	case HIO_CONFIG_TYPE_HEX:
-		return parse_hex(shell, argv, item);
+		return parse_hex(item, argv, err_msg);
 	}
 
 	return -EINVAL;
 }
 
-int hio_config_init_item(const struct hio_config_item *item)
+static int h_commit_cb(const struct hio_config *module, void *user_data)
 {
-	switch (item->type) {
-	case HIO_CONFIG_TYPE_INT:
-		*(int *)item->variable = item->default_int;
-		break;
-	case HIO_CONFIG_TYPE_FLOAT:
-		*(float *)item->variable = item->default_float;
-		break;
-	case HIO_CONFIG_TYPE_BOOL:
-		*(bool *)item->variable = item->default_bool;
-		break;
-	case HIO_CONFIG_TYPE_ENUM:
-		memcpy(item->variable, &item->default_enum, item->size);
-		break;
-	case HIO_CONFIG_TYPE_STRING:
-		strcpy(item->variable, item->default_string);
-		break;
-	case HIO_CONFIG_TYPE_HEX:
-		memcpy(item->variable, item->default_hex, item->size);
-		break;
-	}
-
-	return 0;
-}
-
-int hio_config_cmd_config(const struct hio_config_item *items, int nitems,
-			  const struct shell *shell, size_t argc, char **argv)
-{
-	/* No parameter name, print help */
-	if (argc == 1) {
-		for (int i = 0; i < nitems; i++) {
-			hio_config_help_item(shell, &items[i]);
-		}
-
-		return 0;
-	}
-
-	/* Print parameter(s) */
-	else if (argc == 2) {
-		bool found_any = false;
-		bool has_wildcard = argv[1][strlen(argv[1]) - 1] == '*';
-
-		if (strcmp(argv[1], "show") == 0) {
-			for (int i = 0; i < nitems; i++) {
-				hio_config_show_item(shell, &items[i]);
-			}
-
-			return 0;
-		}
-
-		for (int i = 0; i < nitems; i++) {
-			if ((!has_wildcard && strcmp(argv[1], items[i].name) == 0) ||
-			    (has_wildcard &&
-			     strncmp(argv[1], items[i].name, strlen(argv[1]) - 1) == 0)) {
-				hio_config_show_item(shell, &items[i]);
-				found_any = true;
-			}
-		}
-
-		/* Print help item list if not found any item */
-		if (!found_any) {
-			for (int i = 0; i < nitems; i++) {
-				hio_config_help_item(shell, &items[i]);
-			}
-
-			return 0;
-		}
-	}
-
-	/* Write parameter(s) */
-	else if (argc == 3) {
-		bool found_any = false;
-		bool has_wildcard = argv[1][strlen(argv[1]) - 1] == '*';
-
-		for (int i = 0; i < nitems; i++) {
-
-			if ((!has_wildcard && strcmp(argv[1], items[i].name) == 0) ||
-			    (has_wildcard &&
-			     strncmp(argv[1], items[i].name, strlen(argv[1]) - 1) == 0)) {
-
-				found_any = true;
-
-				hio_config_parse_item(shell, argv[2], &items[i]);
-			}
-		}
-
-		/* Print help item list if not found any item */
-		if (!found_any) {
-			for (int i = 0; i < nitems; i++) {
-				hio_config_help_item(shell, &items[i]);
-			}
-
-			return 0;
-		}
-	}
-
-	return 0;
-}
-
-int hio_config_h_set(const struct hio_config_item *items, int nitems, const char *key, size_t len,
-		     settings_read_cb read_cb, void *cb_arg)
-{
-	int ret;
-	const char *next;
-
-	for (int i = 0; i < nitems; i++) {
-		if (settings_name_steq(key, items[i].name, &next) && !next) {
-			if (len != items[i].size) {
-				return -EINVAL;
-			}
-			ret = read_cb(cb_arg, items[i].variable, len);
-			if (ret < 0) {
-				LOG_ERR("Call `read_cb` failed: %d", ret);
-				return ret;
-			}
-			return 0;
-		}
-	}
-
-	return -ENOENT;
-}
-
-int hio_config_h_export(const struct hio_config_item *items, int nitems,
-			int (*export_func)(const char *name, const void *val, size_t val_len))
-{
-	int ret;
-
-	static char name_concat[64];
-
-	for (int i = 0; i < nitems; i++) {
-		snprintf(name_concat, sizeof(name_concat), "%s/%s", items[i].module, items[i].name);
-		ret = export_func(name_concat, items[i].variable, items[i].size);
+	if (module->commit) {
+		int ret = module->commit(module);
 		if (ret) {
-			LOG_ERR("Call `export_func` failed: %d", ret);
-			return ret;
+			LOG_ERR("Commit failed for '%s': %d", module->name, ret);
+			return 0; /* continue iteration */
 		}
+		LOG_DBG("Committed config for '%s'", module->name);
+	} else if (module->interim && module->final && module->size > 0) {
+		memcpy(module->final, module->interim, module->size);
+		LOG_DBG("Default commit for '%s'", module->name);
+	} else {
+		LOG_WRN("No commit logic defined for '%s'", module->name);
 	}
-
 	return 0;
 }
 
-static int cmd_modules(const struct shell *shell, size_t argc, char **argv)
+static int h_commit(void)
 {
-	struct show_item *item;
-	SYS_SLIST_FOR_EACH_CONTAINER(&m_show_list, item, node) {
-		shell_print(shell, "%s", item->name);
-	}
+	LOG_DBG("Committing settings");
 
-	return 0;
+	return hio_config_iter_modules(h_commit_cb, NULL);
 }
 
-static int cmd_show(const struct shell *shell, size_t argc, char **argv)
+static int h_export_cb(const struct hio_config *module, const struct hio_config_item *item,
+		       void *user_data)
 {
-	int ret;
+	char name_concat[64];
+	const char *subtree = module->storage_name ? module->storage_name : module->name;
 
-	struct show_item *item;
-	SYS_SLIST_FOR_EACH_CONTAINER(&m_show_list, item, node) {
-		if (item->cb != NULL) {
-			ret = item->cb(shell, argc, argv);
-			if (ret) {
-				LOG_ERR("Call `item->cb` failed: %d", ret);
-				shell_error(shell, "command failed");
-				return ret;
-			}
-		}
-	}
+	snprintf(name_concat, sizeof(name_concat), "%s/%s", subtree, item->name);
 
-	return 0;
+	int (*export_func)(const char *, const void *, size_t) = user_data;
+
+	return export_func(name_concat, item->variable, item->size);
 }
 
-static int cmd_save(const struct shell *shell, size_t argc, char **argv)
+static int h_export(int (*export_func)(const char *name, const void *val, size_t val_len))
 {
-	int ret;
+	LOG_DBG("Exporting settings");
 
-	ret = save(true);
-	if (ret) {
-		LOG_ERR("Call `save` failed: %d", ret);
-		shell_error(shell, "command failed");
-		return ret;
-	}
-
-	return 0;
+	return hio_config_iter_items(NULL, h_export_cb, export_func);
 }
-
-static int cmd_reset(const struct shell *shell, size_t argc, char **argv)
-{
-	int ret;
-
-	ret = reset(true);
-	if (ret) {
-		LOG_ERR("Call `reset` failed: %d", ret);
-		shell_error(shell, "command failed");
-		return ret;
-	}
-
-	return 0;
-}
-
-static int print_help(const struct shell *shell, size_t argc, char **argv)
-{
-	if (argc > 1) {
-		shell_error(shell, "command not found: %s", argv[1]);
-		shell_help(shell);
-		return -EINVAL;
-	}
-
-	shell_help(shell);
-
-	return 0;
-}
-
-/* clang-format off */
-
-SHELL_STATIC_SUBCMD_SET_CREATE(
-	sub_config,
-
-	SHELL_CMD_ARG(modules, NULL,
-	              "Show all modules.",
-	              cmd_modules, 1, 0),
-
-	SHELL_CMD_ARG(show, NULL,
-	              "Show all configuration.",
-	              cmd_show, 1, 0),
-
-	SHELL_CMD_ARG(save, NULL,
-	              "Save all configuration.",
-	              cmd_save, 1, 0),
-
-	SHELL_CMD_ARG(reset, NULL,
-	              "Reset all configuration.",
-	              cmd_reset, 1, 0),
-
-	SHELL_SUBCMD_SET_END
-);
-
-SHELL_CMD_REGISTER(config, &sub_config, "Configuration commands.", print_help);
 
 /* clang-format on */
-
-static int init(void)
+static int hio_config_init(void)
 {
 	int ret;
 
-	LOG_INF("System initialization");
+	LOG_INF("Initializing HIO config system");
 
 	ret = settings_subsys_init();
 	if (ret) {
-		LOG_ERR("Call `settings_subsys_init` failed: %d", ret);
+		LOG_ERR("settings_subsys_init() failed: %d", ret);
 		return ret;
 	}
+
+	static struct settings_handler sh = {
+		.name = CONFIG_HIO_CONFIG_SETTINGS_PFX, /*  default prefix is "" */
+		.h_commit = h_commit,
+		.h_export = h_export,
+	};
+
+	ret = settings_register(&sh);
+	if (ret) {
+		LOG_ERR("settings_register() failed: %d", ret);
+		return ret;
+	}
+
+	k_event_post(&m_event, CONFIG_EVENT_READY);
+
+	LOG_INF("HIO config system initialized successfully");
 
 	return 0;
 }
 
-SYS_INIT(init, APPLICATION, CONFIG_HIO_CONFIG_INIT_PRIORITY);
+SYS_INIT(hio_config_init, APPLICATION, CONFIG_HIO_CONFIG_INIT_PRIORITY);

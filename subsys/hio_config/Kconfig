@@ -12,12 +12,26 @@ config HIO_CONFIG
 
 if HIO_CONFIG
 
-module = HIO_CONFIG
-module-str = HIO Configuration Subsystem
-source "subsys/logging/Kconfig.template.log_config"
 
 config HIO_CONFIG_INIT_PRIORITY
 	int "Initialization priority"
 	default 0
+
+config HIO_CONFIG_SETTINGS_PFX
+	string "HIO_CONFIG_SETTINGS_PFX"
+	default ""
+
+config HIO_CONFIG_SHELL
+	bool "HIO_CONFIG_SHELL"
+	default y if SHELL
+
+config HIO_CONFIG_ATCI
+	bool "HIO_CONFIG_ATCI"
+	default y if HIO_ATCI
+	select HIO_TOK
+
+module = HIO_CONFIG
+module-str = HIO Configuration Subsystem
+source "subsys/logging/Kconfig.template.log_config"
 
 endif # HIO_CONFIG

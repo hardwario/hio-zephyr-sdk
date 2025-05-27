@@ -1,3 +1,5 @@
 zephyr_library()
 
 zephyr_library_sources_ifdef(CONFIG_HIO_CONFIG hio_config.c)
+zephyr_library_sources_ifdef(CONFIG_HIO_CONFIG_SHELL hio_config_shell.c)
+zephyr_library_sources_ifdef(CONFIG_HIO_CONFIG_ATCI hio_config_atci.c)

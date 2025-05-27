@@ -28,7 +28,6 @@ enum hio_config_item_type {
 
 #define HIO_CONFIG_ITEM_INT(_name_d, _var, _min, _max, _help, _default)                            \
 	{                                                                                          \
-		.module = SETTINGS_PFX,                                                            \
 		.name = _name_d,                                                                   \
 		.type = HIO_CONFIG_TYPE_INT,                                                       \
 		.variable = &_var,                                                                 \
@@ -41,7 +40,6 @@ enum hio_config_item_type {
 
 #define HIO_CONFIG_ITEM_FLOAT(_name_d, _var, _min, _max, _help, _default)                          \
 	{                                                                                          \
-		.module = SETTINGS_PFX,                                                            \
 		.name = _name_d,                                                                   \
 		.type = HIO_CONFIG_TYPE_FLOAT,                                                     \
 		.variable = &_var,                                                                 \
@@ -54,7 +52,6 @@ enum hio_config_item_type {
 
 #define HIO_CONFIG_ITEM_BOOL(_name_d, _var, _help, _default)                                       \
 	{                                                                                          \
-		.module = SETTINGS_PFX,                                                            \
 		.name = _name_d,                                                                   \
 		.type = HIO_CONFIG_TYPE_BOOL,                                                      \
 		.variable = &_var,                                                                 \
@@ -65,7 +62,6 @@ enum hio_config_item_type {
 
 #define HIO_CONFIG_ITEM_ENUM(_name_d, _var, _items_str, _help, _default)                           \
 	{                                                                                          \
-		.module = SETTINGS_PFX,                                                            \
 		.name = _name_d,                                                                   \
 		.type = HIO_CONFIG_TYPE_ENUM,                                                      \
 		.variable = &_var,                                                                 \
@@ -79,7 +75,6 @@ enum hio_config_item_type {
 
 #define HIO_CONFIG_ITEM_STRING(_name_d, _var, _help, _default)                                     \
 	{                                                                                          \
-		.module = SETTINGS_PFX,                                                            \
 		.name = _name_d,                                                                   \
 		.type = HIO_CONFIG_TYPE_STRING,                                                    \
 		.variable = _var,                                                                  \
@@ -90,7 +85,6 @@ enum hio_config_item_type {
 
 #define HIO_CONFIG_ITEM_STRING_PARSE_CB(_name_d, _var, _help, _default, _cb)                       \
 	{                                                                                          \
-		.module = SETTINGS_PFX,                                                            \
 		.name = _name_d,                                                                   \
 		.type = HIO_CONFIG_TYPE_STRING,                                                    \
 		.variable = _var,                                                                  \
@@ -102,7 +96,6 @@ enum hio_config_item_type {
 
 #define HIO_CONFIG_ITEM_HEX(_name_d, _var, _help, _default)                                        \
 	{                                                                                          \
-		.module = SETTINGS_PFX,                                                            \
 		.name = _name_d,                                                                   \
 		.type = HIO_CONFIG_TYPE_HEX,                                                       \
 		.variable = _var,                                                                  \
@@ -113,11 +106,10 @@ enum hio_config_item_type {
 
 struct hio_config_item;
 
-typedef int (*hio_config_parse_cb)(const struct shell *shell, char *argv,
-				   const struct hio_config_item *item);
+typedef int (*hio_config_parse_cb)(const struct hio_config_item *item, char *argv,
+				   const char **err_msg);
 
 struct hio_config_item {
-	const char *module;
 	const char *name;
 	enum hio_config_item_type type;
 	void *variable;
@@ -136,25 +128,169 @@ struct hio_config_item {
 	};
 	hio_config_parse_cb parse_cb;
 };
+struct hio_config {
+	const char *name;              /**< Module name (used as prefix for settings) */
+	const char *storage_name;      /**< Optional name used as prefix for settings storage */
+	struct hio_config_item *items; /**< Configuration items */
+	int nitems;                    /**< Number of configuration items */
 
-typedef int (*hio_config_show_cb)(const struct shell *shell, size_t argc, char **argv);
+	void *interim; /**< Temporary config structure */
+	void *final;   /**< Final config structure */
+	size_t size;   /**< Size of the config structure */
 
-int hio_config_save(bool reboot);
-int hio_config_reset(bool reboot);
-void hio_config_append_show(const char *name, hio_config_show_cb cb);
+	int (*commit)(
+		const struct hio_config *module); /**< Commit function to override default commit */
 
-int hio_config_show_item(const struct shell *shell, const struct hio_config_item *item);
-int hio_config_help_item(const struct shell *shell, const struct hio_config_item *item);
-int hio_config_parse_item(const struct shell *shell, char *argv,
-			  const struct hio_config_item *item);
-int hio_config_init_item(const struct hio_config_item *item);
+	sys_snode_t node;
+};
 
-int hio_config_cmd_config(const struct hio_config_item *items, int nitems,
-			  const struct shell *shell, size_t argc, char **argv);
-int hio_config_h_export(const struct hio_config_item *items, int nitems,
-			int (*export_func)(const char *name, const void *val, size_t val_len));
-int hio_config_h_set(const struct hio_config_item *items, int nitems, const char *key, size_t len,
-		     settings_read_cb read_cb, void *cb_arg);
+/**
+ * @brief Register a configuration module.
+ *
+ * This function registers a configuration module with the given name and
+ * items. The items are used to define the configuration parameters for the
+ * module.
+ *
+ * @param config Pointer to the configuration module to register.
+ *
+ * @return 0 on success, negative error code on failure.
+ */
+int hio_config_register(struct hio_config *module);
+/**
+ * @brief Save configuration to persistent storage and reboot system.
+ */
+int hio_config_save(void);
+
+/**
+ * @brief Save configuration to persistent storage without rebooting.
+ */
+int hio_config_save_without_reboot(void);
+
+/**
+ * @brief Reset configuration to defaults and reboot system.
+ */
+int hio_config_reset(void);
+
+/**
+ * @brief Reset configuration to defaults without rebooting.
+ */
+int hio_config_reset_without_reboot(void);
+
+/**
+ * @brief Callback for iterating over registered modules.
+ *
+ * @param module Pointer to the registered module (struct hio_config).
+ * @param user_data User-defined context pointer.
+ *
+ * @return 0 to continue iteration, non-zero to stop early.
+ */
+typedef int (*hio_config_module_cb_t)(const struct hio_config *module, void *user_data);
+
+/**
+ * @brief Iterate over all registered configuration modules.
+ *
+ * Calls the provided callback for each registered module.
+ *
+ * @param cb         Callback function to call per module.
+ * @param user_data  Pointer passed to the callback.
+ *
+ * @return 0 on success or first non-zero value returned by callback.
+ */
+int hio_config_iter_modules(hio_config_module_cb_t cb, void *user_data);
+
+/**
+ * @brief Callback for iterating over config items.
+ *
+ * @param module      Pointer to the registered module (struct hio_config).
+ * @param item        Pointer to the configuration item.
+ * @param user_data   User-defined context.
+ *
+ * @return 0 to continue iteration, non-zero to stop early.
+ */
+typedef int (*hio_config_item_cb_t)(const struct hio_config *module,
+				    const struct hio_config_item *item, void *user_data);
+
+/**
+ * @brief Iterate over all configuration items across modules.
+ *
+ * If @p filter_module is NULL or empty, all modules are included.
+ * Otherwise, only items from the specified module are passed to the callback.
+ *
+ * @param filter_module Optional module name to filter by.
+ * @param cb            Callback called for each item, receives module name.
+ * @param user_data     User context pointer.
+ *
+ * @return 0 on success or first non-zero value returned by callback.
+ */
+int hio_config_iter_items(const char *filter_module, hio_config_item_cb_t cb, void *user_data);
+
+/**
+ * @brief Find a module by name.
+ *
+ * Searches for a registered module by its name.
+ *
+ * @param name Name of the module to find.
+ * @param module Pointer to store the found module.
+ *
+ * @return 0 on success, negative error code on failure.
+ */
+int hio_config_find_module(const char *name, struct hio_config **module);
+
+/**
+ * @brief Find a configuration item by name.
+ *
+ * Searches for a specific configuration item within a module.
+ *
+ * @param module_name Name of the module.
+ * @param name        Name of the item to find.
+ * @param item        Pointer to store the found item.
+ *
+ * @return 0 on success, negative error code on failure.
+ */
+int hio_config_find_item(const char *module_name, const char *name,
+			 const struct hio_config_item **item);
+
+/**
+ * @brief Find a configuration item within a module
+ *
+ * Searches for a specific configuration item by its name within the given module.
+ *
+ * @param module Pointer to the configuration module.
+ * @param name Name of the item to find.
+ * @param item Pointer to store the found item.
+ *
+ * @return 0 on success, negative error code on failure.
+ *
+ */
+int hio_config_module_find_item(struct hio_config *module, const char *name,
+				const struct hio_config_item **item);
+
+/**
+ * @brief  Parse a configuration item.
+ *
+ * Parses the value of a configuration item from a string.
+ *
+ * @param item Pointer to the configuration item.
+ * @param argv Pointer to the string containing the value.
+ * @param err_msg Pointer to store error message if parsing fails.
+ *
+ * @return 0 on success, negative error code on failure.
+ */
+int hio_config_item_parse(const struct hio_config_item *item, char *argv, const char **err_msg);
+
+#define HIO_CONFIG_SHELL_CMD_ARG                                                                   \
+	SHELL_CMD_ARG(config, NULL, "Configuration commands.", hio_config_shell_cmd, 1, 3)
+
+/**
+ * @brief Shell command to manage configuration.
+ *
+ * @param shell Pointer to the shell instance.
+ * @param argc Number of arguments passed to the command.
+ * @param argv Array of argument strings.
+ *
+ * @return 0 on success, negative error code on failure.
+ */
+int hio_config_shell_cmd(const struct shell *shell, size_t argc, char **argv);
 
 /** @} */
 
