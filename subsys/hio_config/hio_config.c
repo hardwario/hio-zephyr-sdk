@@ -154,7 +154,7 @@ int hio_config_show_item(const struct shell *shell, const struct hio_config_item
 		break;
 
 	case HIO_CONFIG_TYPE_FLOAT:
-		shell_print(shell, "%s config %s %.2f", mod, item->name, *(double *)item->variable);
+		shell_print(shell, "%s config %s %.2f", mod, item->name, (double)*(float *)item->variable);
 		break;
 
 	case HIO_CONFIG_TYPE_BOOL:
