@@ -1,9 +1,6 @@
 #ifndef HIO_INCLUDE_LTE_CONFIG_H_
 #define HIO_INCLUDE_LTE_CONFIG_H_
 
-/* Zephyr includes */
-#include <zephyr/shell/shell.h>
-
 /* Standard includes */
 #include <stdbool.h>
 #include <stddef.h>
@@ -38,8 +35,6 @@ struct hio_lte_config {
 extern struct hio_lte_config g_hio_lte_config;
 
 int hio_lte_config_init(void);
-int hio_lte_config_cmd_show(const struct shell *shell, size_t argc, char **argv);
-int hio_lte_config_cmd(const struct shell *shell, size_t argc, char **argv);
 
 #ifdef __cplusplus
 }

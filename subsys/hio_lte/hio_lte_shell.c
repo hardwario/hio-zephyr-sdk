@@ -4,6 +4,7 @@
 
 /* HIO includes */
 #include <hio/hio_lte.h>
+#include <hio/hio_config.h>
 
 /* Zephyr includes */
 #include <zephyr/kernel.h>
@@ -372,9 +373,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	sub_lte,
 
-	SHELL_CMD_ARG(config, NULL,
-	              "Configuration commands.",
-	              hio_lte_config_cmd, 1, 3),
+	HIO_CONFIG_SHELL_CMD_ARG,
 
 	SHELL_CMD_ARG(imei, NULL,
 	              "Get modem IMEI.",
