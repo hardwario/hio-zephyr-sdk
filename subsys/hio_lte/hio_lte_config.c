@@ -14,8 +14,6 @@
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/settings/settings.h>
-#include <zephyr/shell/shell.h>
 
 /* Standard includes */
 #include <ctype.h>
@@ -40,22 +38,139 @@ LOG_MODULE_REGISTER(hio_lte_config, CONFIG_HIO_LTE_LOG_LEVEL);
 
 struct hio_lte_config g_hio_lte_config;
 static struct hio_lte_config m_config_interim;
-static struct {
-	bool nb_iot_mode;
-	bool lte_m_mode;
-	bool autoconn;
-	char plmnid[6 + 1];
-} m_config_obsolete;
-
-static uint32_t m_config_loaded = 0;
 
 static const char *m_enum_auth_items[] = {"none", "pap", "chap"};
 
-static int mode_parse_cb(const struct shell *shell, char *argv, const struct hio_config_item *item);
-static int bands_parse_cb(const struct shell *shell, char *argv,
-			  const struct hio_config_item *item);
-static int network_parse_cb(const struct shell *shell, char *argv,
-			    const struct hio_config_item *item);
+static int mode_parse_cb(const struct hio_config_item *item, char *argv, const char **err_msg)
+{
+	size_t len = strlen(argv);
+	if (len >= item->size) {
+		*err_msg = "Value too long";
+		return -ENOMEM;
+	}
+
+	const char *p = argv;
+	bool ok = false;
+	while (p) {
+
+		if (!strncmp(p, "lte-m", 5)) {
+			ok = true;
+			p += 5;
+		} else if (!strncmp(p, "nb-iot", 6)) {
+			ok = true;
+			p += 6;
+		} else {
+			*err_msg = "Invalid mode";
+			return -EINVAL;
+		}
+
+		if (hio_lte_tok_end(p)) {
+			break;
+		}
+
+		if (!(p = hio_lte_tok_sep(p))) {
+			*err_msg = "Expected comma";
+			return -EINVAL;
+		}
+	}
+
+	if (!ok) {
+		*err_msg = "Need at least one of modes lte-m or nb-iot";
+		return -EINVAL;
+	}
+
+	strncpy(item->variable, argv, item->size - 1);
+	((char *)item->variable)[item->size - 1] = '\0';
+
+	return 0;
+}
+
+static bool is_supported_band(uint8_t band)
+{
+	static const uint8_t support_bands[] = {1,  2,  3,  4,  5,  8,  12, 13,
+						17, 18, 19, 20, 25, 26, 28, 66};
+	for (size_t i = 0; i < ARRAY_SIZE(support_bands); i++) {
+		if (band == support_bands[i]) {
+			return true;
+		}
+	}
+	return false;
+}
+
+int bands_parse_cb(const struct hio_config_item *item, char *argv, const char **err_msg)
+{
+	size_t len = strlen(argv);
+	if (len >= item->size) {
+		*err_msg = "Value too long";
+		return -ENOMEM;
+	}
+
+	if (!len) {
+		memset(item->variable, 0, item->size);
+		return 0;
+	}
+
+	const char *p = argv;
+
+	bool def;
+	long band;
+
+	while (p) {
+		if (!(p = hio_lte_tok_num(p, &def, &band)) || !def || band < 0 || band > 255) {
+			*err_msg = "Invalid number format";
+			return -EINVAL;
+		}
+
+		if (!is_supported_band((uint8_t)band)) {
+			*err_msg = "Band is not supported";
+			return -EINVAL;
+		}
+
+		if (hio_lte_tok_end(p)) {
+			break;
+		}
+
+		if (!(p = hio_lte_tok_sep(p))) {
+			*err_msg = "Expected comma or end of string";
+			return -EINVAL;
+		}
+	}
+
+	strncpy(item->variable, argv, item->size - 1);
+	((char *)item->variable)[item->size - 1] = '\0';
+
+	return 0;
+}
+
+static int network_parse_cb(const struct hio_config_item *item, char *argv, const char **err_msg)
+{
+	size_t len = strlen(argv);
+
+	if (len >= item->size) {
+		return -ENOMEM;
+	}
+
+	if (!len) {
+		memset(item->variable, 0, item->size);
+		return 0;
+	}
+	if (len < 5 || len > 6) {
+		*err_msg = "PLMN ID must be 5-6 digits";
+		return -EINVAL;
+	}
+
+	for (size_t i = 0; i < len; i++) {
+		if (!isdigit(argv[i])) {
+			*err_msg = "PLMN ID must be digits";
+			return -EINVAL;
+		}
+	}
+
+	strncpy(item->variable, argv, item->size - 1);
+	((char *)item->variable)[item->size - 1] = '\0';
+
+	return 0;
+}
 
 static struct hio_config_item m_config_items[] = {
 	HIO_CONFIG_ITEM_BOOL("test", m_config_interim.test, "LTE test", false),
@@ -92,270 +207,21 @@ static struct hio_config_item m_config_items[] = {
 			     false),
 };
 
-int hio_lte_config_cmd_show(const struct shell *shell, size_t argc, char **argv)
-{
-	for (int i = 0; i < ARRAY_SIZE(m_config_items); i++) {
-		hio_config_show_item(shell, &m_config_items[i]);
-	}
-
-	return 0;
-}
-
-int hio_lte_config_cmd(const struct shell *shell, size_t argc, char **argv)
-{
-	return hio_config_cmd_config(m_config_items, ARRAY_SIZE(m_config_items), shell, argc, argv);
-}
-
-static int h_set(const char *key, size_t len, settings_read_cb read_cb, void *cb_arg)
-{
-	if (!strncmp(key, "nb-iot-mode", 11)) {
-		m_config_loaded |= LOAD_NB_IOT_MODE;
-		read_cb(cb_arg, &m_config_obsolete.nb_iot_mode,
-			sizeof(m_config_obsolete.nb_iot_mode));
-		return 0;
-	}
-	if (!strncmp(key, "lte-m-mode", 10)) {
-		m_config_loaded |= LOAD_LTE_M_MODE;
-		read_cb(cb_arg, &m_config_obsolete.lte_m_mode,
-			sizeof(m_config_obsolete.lte_m_mode));
-		return 0;
-	}
-	if (!strncmp(key, "autoconn", 8)) {
-		m_config_loaded |= LOAD_AUTOCONN;
-		read_cb(cb_arg, &m_config_obsolete.autoconn, sizeof(m_config_obsolete.autoconn));
-		return 0;
-	}
-	if (!strncmp(key, "plmnid", 6)) {
-		m_config_loaded |= LOAD_PLMNID;
-		read_cb(cb_arg, m_config_obsolete.plmnid, sizeof(m_config_obsolete.plmnid));
-		return 0;
-	}
-	if (!strncmp(key, "addr", 4)) {
-		m_config_loaded |= LOAD_ADDR;
-	}
-	if (!strncmp(key, "port", 4)) {
-		m_config_loaded |= LOAD_PORT;
-		return 0;
-	}
-	if (!strncmp(key, "network", 7)) {
-		m_config_loaded |= LOAD_NETWORK;
-	}
-	if (!strncmp(key, "mode", 4) && strlen(key) == 4) {
-		m_config_loaded |= LOAD_MODE;
-	}
-	return hio_config_h_set(m_config_items, ARRAY_SIZE(m_config_items), key, len, read_cb,
-				cb_arg);
-}
-
-static int h_commit(void)
-{
-	LOG_DBG("Loaded settings in full");
-
-	/* Load obsolete settings */
-	if (!(m_config_loaded & LOAD_MODE) &&
-	    (m_config_loaded & (LOAD_NB_IOT_MODE | LOAD_LTE_M_MODE))) {
-		LOG_INF("Loading mode config from obsolete nb-iot-mode and lte-m-mode");
-		if (m_config_obsolete.nb_iot_mode && m_config_obsolete.lte_m_mode) {
-			strcpy(m_config_interim.mode, "lte-m,nb-iot");
-		} else if (m_config_obsolete.nb_iot_mode) {
-			strcpy(m_config_interim.mode, "nb-iot");
-		} else {
-			strcpy(m_config_interim.mode, "lte-m");
-		}
-	}
-
-	if (!(m_config_loaded & LOAD_NETWORK) &&
-	    (m_config_loaded & (LOAD_AUTOCONN | LOAD_PLMNID))) {
-		LOG_INF("Loading network config from obsolete autoconn and plmnid");
-		if (m_config_obsolete.autoconn) {
-			memset(m_config_interim.network, 0, sizeof(m_config_interim.network));
-		} else {
-			strncpy(m_config_interim.network, m_config_obsolete.plmnid,
-				sizeof(m_config_interim.network));
-		}
-	}
-
-	if (strncmp(m_config_interim.bands, "auto", 4) == 0) {
-		memset(m_config_interim.bands, 0, sizeof(m_config_interim.bands));
-	}
-
-	memcpy(&g_hio_lte_config, &m_config_interim, sizeof(struct hio_lte_config));
-
-	return 0;
-}
-
-static int h_export(int (*export_func)(const char *name, const void *val, size_t val_len))
-{
-	return hio_config_h_export(m_config_items, ARRAY_SIZE(m_config_items), export_func);
-}
-
 int hio_lte_config_init(void)
 {
-	int ret;
-
 	LOG_INF("System initialization");
 
-	m_config_loaded = 0;
-
-	for (int i = 0; i < ARRAY_SIZE(m_config_items); i++) {
-		hio_config_init_item(&m_config_items[i]);
-	}
-
-	static struct settings_handler sh = {
+	static struct hio_config config = {
 		.name = SETTINGS_PFX,
-		.h_set = h_set,
-		.h_commit = h_commit,
-		.h_export = h_export,
+		.items = m_config_items,
+		.nitems = ARRAY_SIZE(m_config_items),
+
+		.interim = &m_config_interim,
+		.final = &g_hio_lte_config,
+		.size = sizeof(g_hio_lte_config),
 	};
 
-	ret = settings_register(&sh);
-	if (ret) {
-		LOG_ERR("Call `settings_register` failed: %d", ret);
-		return ret;
-	}
-
-	ret = settings_load_subtree(SETTINGS_PFX);
-	if (ret) {
-		LOG_ERR("Call `settings_load_subtree` failed: %d", ret);
-		return ret;
-	}
-
-	hio_config_append_show(SETTINGS_PFX, hio_lte_config_cmd_show);
-
-	return 0;
-}
-
-static int mode_parse_cb(const struct shell *shell, char *argv, const struct hio_config_item *item)
-{
-	size_t len = strlen(argv);
-	if (len >= item->size) {
-		shell_error(shell, "value too long");
-		hio_config_help_item(shell, item);
-		return -ENOMEM;
-	}
-
-	const char *p = argv;
-	bool ok = false;
-	while (p) {
-
-		if (!strncmp(p, "lte-m", 5)) {
-			ok = true;
-			p += 5;
-		} else if (!strncmp(p, "nb-iot", 6)) {
-			ok = true;
-			p += 6;
-		} else {
-			shell_error(shell, "invalid mode");
-			return -EINVAL;
-		}
-
-		if (hio_lte_tok_end(p)) {
-			break;
-		}
-
-		if (!(p = hio_lte_tok_sep(p))) {
-			shell_error(shell, "expected comma");
-			return -EINVAL;
-		}
-	}
-
-	if (!ok) {
-		shell_error(shell, "need at least one of modes lte-m or nb-iot");
-		return -EINVAL;
-	}
-
-	strncpy(item->variable, argv, item->size - 1);
-	((char *)item->variable)[item->size - 1] = '\0';
-
-	return 0;
-}
-
-static bool is_supported_band(uint8_t band)
-{
-	static const uint8_t support_bands[] = {1,  2,  3,  4,  5,  8,  12, 13,
-						17, 18, 19, 20, 25, 26, 28, 66};
-	for (size_t i = 0; i < ARRAY_SIZE(support_bands); i++) {
-		if (band == support_bands[i]) {
-			return true;
-		}
-	}
-	return false;
-}
-
-int bands_parse_cb(const struct shell *shell, char *argv, const struct hio_config_item *item)
-{
-	size_t len = strlen(argv);
-	if (len >= item->size) {
-		shell_error(shell, "value too long");
-		hio_config_help_item(shell, item);
-		return -ENOMEM;
-	}
-
-	if (!len) {
-		memset(item->variable, 0, item->size);
-		return 0;
-	}
-
-	const char *p = argv;
-
-	bool def;
-	long band;
-
-	while (p) {
-		if (!(p = hio_lte_tok_num(p, &def, &band)) || !def || band < 0 || band > 255) {
-			shell_error(shell, "invalid number format");
-			return -EINVAL;
-		}
-
-		if (!is_supported_band((uint8_t)band)) {
-			shell_error(shell, "band %d is not supported", (uint8_t)band);
-			return -EINVAL;
-		}
-
-		if (hio_lte_tok_end(p)) {
-			break;
-		}
-
-		if (!(p = hio_lte_tok_sep(p))) {
-			shell_error(shell, "expected comma after %d", (uint8_t)band);
-			return -EINVAL;
-		}
-	}
-
-	strncpy(item->variable, argv, item->size - 1);
-	((char *)item->variable)[item->size - 1] = '\0';
-
-	return 0;
-}
-
-static int network_parse_cb(const struct shell *shell, char *argv,
-			    const struct hio_config_item *item)
-{
-	size_t len = strlen(argv);
-
-	if (len >= item->size) {
-		hio_config_help_item(shell, item);
-		return -ENOMEM;
-	}
-
-	if (!len) {
-		memset(item->variable, 0, item->size);
-		return 0;
-	}
-	if (len < 5 || len > 6) {
-		shell_error(shell, "must be \"\" or PLMN ID (format: 5-6 digits)");
-		return -EINVAL;
-	}
-
-	for (size_t i = 0; i < len; i++) {
-		if (!isdigit(argv[i])) {
-			shell_error(shell, "PLMN ID must be digits");
-			return -EINVAL;
-		}
-	}
-
-	strncpy(item->variable, argv, item->size - 1);
-	((char *)item->variable)[item->size - 1] = '\0';
+	hio_config_register(&config);
 
 	return 0;
 }
