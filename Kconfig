@@ -3,4 +3,6 @@ rsource "Kconfig.log"
 rsource "Kconfig.shell"
 
 rsource "drivers/Kconfig"
+rsource "lib/Kconfig"
 rsource "subsys/Kconfig"
+
