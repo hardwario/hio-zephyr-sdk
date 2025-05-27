@@ -42,9 +42,15 @@ config HIO_ATCI_PRINTF_BUFF_SIZE
 	  It is working like stdio buffering in Linux systems
 	  to limit number of peripheral access calls.
 
+config HIO_ATCI_CRC_ENABLED
+	bool "HIO_ATCI_CRC_ENABLED"
+	default y
+	help
+	  Enable CRC calculation for ATCI commands.
+	  It is used to verify command integrity.
+
 module = HIO_ATCI
 module-str = HIO ATCI Subsystem
 source "subsys/logging/Kconfig.template.log_config"
 
 endif # HIO_ATCI
-

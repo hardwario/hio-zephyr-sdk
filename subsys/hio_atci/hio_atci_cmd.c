@@ -86,7 +86,7 @@ static int help_action(const struct hio_atci *atci, bool hint)
 		}
 
 		if (hint && item->hint) {
-			hio_atci_printfln(atci, "AT%s %s", item->cmd, item->hint);
+			hio_atci_printfln(atci, "AT%s \"%s\"", item->cmd, item->hint);
 		} else {
 			hio_atci_printfln(atci, "AT%s", item->cmd);
 		}
@@ -102,6 +102,34 @@ static int at_clac_action(const struct hio_atci *atci)
 HIO_ATCI_CMD_REGISTER(clac, "+CLAC", 0, at_clac_action, NULL, NULL, NULL,
 		      "Command list and action");
 
+static int at_crc_set(const struct hio_atci *atci, char *argv)
+{
+	if (!argv || strlen(argv) != 1) {
+		return -EINVAL;
+	}
+
+	if (strcmp(argv, "1") == 0) {
+		atci->ctx->crc_enabled = true;
+		return 0;
+	}
+
+	if (strcmp(argv, "0") == 0) {
+		atci->ctx->crc_enabled = false;
+		return 0;
+	}
+
+	return -EINVAL;
+}
+
+static int at_crc_read(const struct hio_atci *atci)
+{
+	hio_atci_printfln(atci, "$CRC: %d", atci->ctx->crc_enabled ? 1 : 0);
+
+	return 0;
+}
+
+HIO_ATCI_CMD_REGISTER(crc, "$CRC", 0, NULL, at_crc_set, at_crc_read, NULL, "CRC check");
+
 static int at_help_action(const struct hio_atci *atci)
 {
 	return help_action(atci, true);
@@ -109,7 +137,7 @@ static int at_help_action(const struct hio_atci *atci)
 HIO_ATCI_CMD_REGISTER(help, "$HELP", 0, at_help_action, NULL, NULL, NULL, "This help");
 
 #if defined(CONFIG_HIO_ATCI_CMD_SHELL)
-static int at_shell_set(const struct hio_atci *atci, const char *argv)
+static int at_shell_set(const struct hio_atci *atci, char *argv)
 {
 	if (!argv) {
 		return -EINVAL;
