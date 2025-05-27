@@ -146,9 +146,12 @@ struct hio_atci_ctx {
 	struct k_mutex wr_mtx;
 	uint16_t cmd_buff_len;
 	char cmd_buff[CONFIG_HIO_ATCI_CMD_BUFF_SIZE];
+	char tmp_buff[CONFIG_HIO_ATCI_CMD_BUFF_SIZE];
 	char fprintf_buff[CONFIG_HIO_ATCI_PRINTF_BUFF_SIZE];
 	size_t fprintf_buff_cnt;
-	bool error_printed;
+	bool ret_printed;
+	uint32_t crc;
+	bool crc_enabled;
 };
 
 /** @brief ATCI instance definition. */
@@ -168,10 +171,10 @@ struct hio_atci {
 struct hio_atci_cmd {
 	const char *cmd;     /**< Command identifier. */
 	uint32_t auth_flags; /**< Authorization flags passed to the auth_check callback.. */
-	int (*action)(const struct hio_atci *atci);                /**< AT+CMD */
-	int (*set)(const struct hio_atci *atci, const char *argv); /**< AT+CMD=<val> */
-	int (*read)(const struct hio_atci *atci);                  /**< AT+CMD? */
-	int (*help)(const struct hio_atci *atci);                  /**< Help function. */
+	int (*action)(const struct hio_atci *atci);          /**< AT+CMD */
+	int (*set)(const struct hio_atci *atci, char *argv); /**< AT+CMD=<val> */
+	int (*read)(const struct hio_atci *atci);            /**< AT+CMD? */
+	int (*test)(const struct hio_atci *atci);            /**< AT+CMD=? Test/Help function. */
 	const char *hint; /**< Help hint shown in command list. */
 };
 
@@ -184,17 +187,17 @@ struct hio_atci_cmd {
  * @param[in] _action     Function called on AT+CMD.
  * @param[in] _set        Function called on AT+CMD=<val>.
  * @param[in] _read       Function called on AT+CMD?.
- * @param[in] _help       Help function.
+ * @param[in] _test       Function called on AT+CMD=?.
  * @param[in] _hint       Hint for command help listing.
  */
-#define HIO_ATCI_CMD_REGISTER(_name, _cmd, _auth_flags, _action, _set, _read, _help, _hint)        \
+#define HIO_ATCI_CMD_REGISTER(_name, _cmd, _auth_flags, _action, _set, _read, _test, _hint)        \
 	static const STRUCT_SECTION_ITERABLE(hio_atci_cmd, _name) = {                              \
 		.cmd = _cmd,                                                                       \
 		.auth_flags = _auth_flags,                                                         \
 		.action = _action,                                                                 \
 		.set = _set,                                                                       \
 		.read = _read,                                                                     \
-		.help = _help,                                                                     \
+		.test = _test,                                                                     \
 		.hint = _hint,                                                                     \
 	}
 
@@ -321,6 +324,15 @@ void hio_atci_broadcast(const char *str);
  * @param[in] ... Additional arguments for formatting.
  */
 void hio_atci_broadcastf(const char *fmt, ...);
+
+/**
+ * @brief Get a temporary buffer for ATCI operations.
+ *
+ * @param atci Pointer to the ATCI instance.
+ * @param buff Pointer to a pointer where the temporary buffer will be stored.
+ * @param len Pointer to a size_t variable where the length of the buffer will be stored.
+ */
+void hio_atci_get_tmp_buff(const struct hio_atci *atci, char **buff, size_t *len);
 
 enum hio_atci_cmd_type {
 	HIO_ATCI_CMD_TYPE_ACTION = 0,

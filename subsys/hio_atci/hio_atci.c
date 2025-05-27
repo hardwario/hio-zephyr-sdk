@@ -13,16 +13,21 @@
 #include <zephyr/sys/util.h>
 #include <zephyr/sys/atomic.h>
 #include <zephyr/sys/iterable_sections.h>
+#include <zephyr/sys/crc.h>
 
 /* Standard includes */
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <ctype.h>
+#include <stdlib.h>
 
 LOG_MODULE_REGISTER(hio_atci, CONFIG_HIO_ATCI_LOG_LEVEL);
 
 #define HIO_ATCI_THREAD_PRIORITY (K_LOWEST_APPLICATION_THREAD_PRIO)
+#define ECRC_FORMAT              1001
+#define ECRC_MISMATCH            1002
 
 #define EVENT_RX     BIT(0)
 #define EVENT_TXDONE BIT(1)
@@ -77,6 +82,10 @@ static void write(const struct hio_atci *atci, const void *data, size_t length)
 	size_t tmp_cnt;
 	int ret;
 
+	if (atci->ctx->crc_enabled) {
+		atci->ctx->crc = crc32_ieee_update(atci->ctx->crc, data, length);
+	}
+
 	while (length) {
 		ret = atci->backend->api->write(atci->backend, &((const uint8_t *)data)[offset],
 						length, &tmp_cnt);
@@ -128,11 +137,8 @@ static void writef(const struct hio_atci *atci, const char *fmt, ...)
 	va_end(args);
 }
 
-static void execute(const struct hio_atci *atci)
+static int execute(const struct hio_atci *atci)
 {
-	if (atci->ctx->cmd_buff_len < 2) {
-		return;
-	}
 
 	char *buff = atci->ctx->cmd_buff;
 
@@ -140,17 +146,41 @@ static void execute(const struct hio_atci *atci)
 
 	if (buff[0] != 'A' || buff[1] != 'T') {
 		LOG_ERR("Invalid command: %s", buff);
-		write(atci, "ERROR: \"Invalid command\"\r\n", 26);
-		return;
+		return -ENOMSG;
+	}
+
+	if (atci->ctx->crc_enabled) {
+		/* Test format: AT<TAB><CRC32> */
+		if (atci->ctx->cmd_buff_len < 11) {
+			LOG_ERR("Command too short for CRC: %s", buff);
+			return -ECRC_FORMAT;
+		}
+
+		if (atci->ctx->cmd_buff[atci->ctx->cmd_buff_len - 9] != '\t') {
+			LOG_ERR("Invalid command format, expected tab before CRC: %s", buff);
+			return -ECRC_FORMAT;
+		}
+
+		uint32_t crc =
+			crc32_ieee_update(0, atci->ctx->cmd_buff, atci->ctx->cmd_buff_len - 9);
+
+		uint32_t cmd_crc = strtoul(&buff[atci->ctx->cmd_buff_len - 8], NULL, 16);
+		if (crc != cmd_crc) {
+			LOG_ERR("CRC mismatch: expected %08X, got %08X", crc, cmd_crc);
+			return -ECRC_MISMATCH;
+		}
+
+		atci->ctx->cmd_buff_len -= 9; /* Remove tab and CRC */
+		atci->ctx->cmd_buff[atci->ctx->cmd_buff_len] = '\0';
 	}
 
 	if (atci->ctx->cmd_buff_len == 2) {
-		write(atci, "OK\r\n", 4);
-		return;
+		return 0;
 	}
 
-	uint16_t cmd_len = 0;
+	const struct hio_atci_cmd *cmd = NULL;
 	enum hio_atci_cmd_type type = HIO_ATCI_CMD_TYPE_ACTION;
+	uint16_t cmd_len = 0;
 
 	for (uint16_t i = 2; i < atci->ctx->cmd_buff_len; i++) {
 		if (buff[i] == '=') {
@@ -161,7 +191,7 @@ static void execute(const struct hio_atci *atci)
 				type = HIO_ATCI_CMD_TYPE_SET;
 			}
 			break;
-		} else if (buff[cmd_len] == '?') {
+		} else if (buff[i] == '?' && i == atci->ctx->cmd_buff_len - 1) {
 			cmd_len = i - 2;
 			type = HIO_ATCI_CMD_TYPE_READ;
 			break;
@@ -172,10 +202,8 @@ static void execute(const struct hio_atci *atci)
 		cmd_len = atci->ctx->cmd_buff_len - 2;
 	}
 
-	const struct hio_atci_cmd *cmd = NULL;
-
 	STRUCT_SECTION_FOREACH(hio_atci_cmd, item) {
-		if (strncmp(item->cmd, buff + 2, cmd_len) == 0) {
+		if (strncmp(item->cmd, buff + 2, cmd_len) == 0 && strlen(item->cmd) == cmd_len) {
 			cmd = item;
 			break;
 		}
@@ -183,65 +211,97 @@ static void execute(const struct hio_atci *atci)
 
 	if (!cmd) {
 		LOG_ERR("Command not found: %s", buff);
+		return -ENOEXEC;
 	}
 
 	int ret = -ENOTSUP;
-	atci->ctx->error_printed = false;
+
+	atci->ctx->ret_printed = false;
 
 	LOG_DBG("cmd: %s, type: %d", cmd ? cmd->cmd : "NULL", type);
 
-	if (cmd && m_auth_check_cb) {
+	k_mutex_unlock(&atci->ctx->wr_mtx);
+
+	if (m_auth_check_cb) {
 		ret = m_auth_check_cb(atci, cmd, type, m_auth_user_data);
 		if (ret) {
-			cmd = NULL;
+			k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
+			return ret;
 		}
 	}
 
-	if (cmd) {
-		k_mutex_unlock(&atci->ctx->wr_mtx);
+	ret = -ENOTSUP;
 
-		switch (type) {
-		case HIO_ATCI_CMD_TYPE_ACTION:
-			if (cmd->action) {
-				ret = cmd->action(atci);
-			}
-			break;
-		case HIO_ATCI_CMD_TYPE_SET:
-			if (cmd->set) {
-				ret = cmd->set(atci, buff + cmd_len + 3);
-			}
-			break;
-		case HIO_ATCI_CMD_TYPE_READ:
-			if (cmd->read) {
-				ret = cmd->read(atci);
-			}
-			break;
-		case HIO_ATCI_CMD_TYPE_TEST:
-			if (cmd->read) {
-				ret = cmd->read(atci);
-			}
-			break;
-		default:
-			break;
+	switch (type) {
+	case HIO_ATCI_CMD_TYPE_ACTION:
+		if (cmd->action) {
+			ret = cmd->action(atci);
 		}
-
-		k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
+		break;
+	case HIO_ATCI_CMD_TYPE_SET:
+		if (cmd->set) {
+			ret = cmd->set(atci, buff + cmd_len + 3);
+		}
+		break;
+	case HIO_ATCI_CMD_TYPE_READ:
+		if (cmd->read) {
+			ret = cmd->read(atci);
+		}
+		break;
+	case HIO_ATCI_CMD_TYPE_TEST:
+		if (cmd->test) {
+			ret = cmd->test(atci);
+		}
+		break;
+	default:
+		break;
 	}
 
-	if (atci->ctx->error_printed) {
+	k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
+
+	return ret;
+}
+
+static void process(const struct hio_atci *atci)
+{
+	if (atci->ctx->cmd_buff_len < 2) {
 		return;
 	}
 
-	if (ret == 0) {
-		return write(atci, "OK\r\n", 4);
-	} else if (ret == -ENOTSUP) {
-		write(atci, "ERROR: \"Command not supported\"\r\n", 32);
-	} else if (ret == -EINVAL) {
-		write(atci, "ERROR: \"Invalid argument\"\r\n", 27);
-	} else if (ret == -EACCES) {
-		write(atci, "ERROR: \"Permission denied\"\r\n", 28);
-	} else if (ret < 0) {
-		writef(atci, "ERROR: \"%d\"\r\n", ret);
+	atci->ctx->crc = 0;
+
+	int ret = execute(atci);
+
+	if (!atci->ctx->ret_printed) {
+		if (ret == 0) {
+			write(atci, "OK", 2);
+		} else if (ret == -ENOMSG) {
+			write(atci, "ERROR: \"Invalid command\"", 24);
+		} else if (ret == -ENOEXEC) {
+			write(atci, "ERROR: \"Command not found\"", 26);
+		} else if (ret == -EIO) {
+			write(atci, "ERROR: \"I/O error\"", 21);
+		} else if (ret == -ENOMEM) {
+			write(atci, "ERROR: \"Out of memory\"", 18);
+		} else if (ret == -ENOTSUP) {
+			write(atci, "ERROR: \"Command not supported\"", 30);
+		} else if (ret == -EINVAL) {
+			write(atci, "ERROR: \"Invalid argument\"", 25);
+		} else if (ret == -EACCES) {
+			write(atci, "ERROR: \"Permission denied\"", 26);
+		} else if (ret == -ECRC_FORMAT) {
+			write(atci, "ERROR: \"Invalid CRC format\"", 27);
+		} else if (ret == -ECRC_MISMATCH) {
+			write(atci, "ERROR: \"CRC mismatch\"", 21);
+		} else if (ret < 0) {
+			writef(atci, "ERROR: \"%d\"", ret);
+		}
+	}
+
+	if (atci->ctx->crc_enabled) {
+		writef(atci, "\t%08X\r\n", atci->ctx->crc);
+	} else {
+		write(atci, "\r\n", 2);
 	}
 }
 
@@ -259,7 +319,7 @@ static void process_ch(const struct hio_atci *atci, char ch)
 	if (ch == '\n') {
 		if (atci->ctx->cmd_buff_len > 0) {
 			atci->ctx->cmd_buff[atci->ctx->cmd_buff_len] = '\0';
-			execute(atci);
+			process(atci);
 			cmd_buffer_clear(atci);
 		}
 		return;
@@ -351,6 +411,10 @@ int hio_atci_init(const struct hio_atci *atci, const void *backend_config, bool 
 	}
 
 	memset(atci->ctx, 0, sizeof(*atci->ctx));
+
+#if defined(CONFIG_HIO_ATCI_CRC_ENABLED)
+	atci->ctx->crc_enabled = true;
+#endif
 
 	k_event_init(&atci->ctx->event);
 	k_mutex_init(&atci->ctx->wr_mtx);
@@ -468,7 +532,7 @@ void hio_atci_error(const struct hio_atci *atci, const char *err)
 	write(atci, err, strlen(err));
 	write(atci, "\r\n", 2);
 
-	atci->ctx->error_printed = true;
+	atci->ctx->ret_printed = true;
 
 	k_mutex_unlock(&atci->ctx->wr_mtx);
 }
@@ -481,6 +545,7 @@ void hio_atci_errorf(const struct hio_atci *atci, const char *fmt, ...)
 	}
 
 	k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
+	write(atci, "ERROR: ", 7);
 
 	va_list args;
 	va_start(args, fmt);
@@ -489,7 +554,7 @@ void hio_atci_errorf(const struct hio_atci *atci, const char *fmt, ...)
 
 	write(atci, "\r\n", 2);
 
-	atci->ctx->error_printed = true;
+	atci->ctx->ret_printed = true;
 
 	k_mutex_unlock(&atci->ctx->wr_mtx);
 }
@@ -522,6 +587,17 @@ void hio_atci_broadcastf(const char *fmt, ...)
 
 			k_mutex_unlock(&atci->ctx->wr_mtx);
 		}
+	}
+}
+
+void hio_atci_get_tmp_buff(const struct hio_atci *atci, char **buff, size_t *len)
+{
+	if (atci && buff) {
+		*buff = atci->ctx->tmp_buff;
+	}
+
+	if (atci && len) {
+		*len = sizeof(atci->ctx->tmp_buff);
 	}
 }
 
