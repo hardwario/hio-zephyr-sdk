@@ -84,6 +84,23 @@ static int load_direct_cb(const char *key, size_t len, settings_read_cb read_cb,
 	return -ENOENT;
 }
 
+static int commit(const struct hio_config *module)
+{
+	if (module->commit) {
+		int ret = module->commit(module);
+		if (ret) {
+			return ret;
+		}
+		LOG_DBG("Committed config for '%s'", module->name);
+	} else if (module->interim && module->final && module->size > 0) {
+		memcpy(module->final, module->interim, module->size);
+		LOG_DBG("Default commit for '%s'", module->name);
+	} else {
+		LOG_WRN("No commit logic defined for '%s'", module->name);
+	}
+	return 0;
+}
+
 int hio_config_register(struct hio_config *module)
 {
 	int ret;
@@ -129,6 +146,12 @@ int hio_config_register(struct hio_config *module)
 			LOG_ERR("Could not load module config '%s' (error %d)", module->name, ret);
 			return ret;
 		}
+	}
+
+	ret = commit(module);
+	if (ret) {
+		LOG_ERR("Commit failed for module '%s': %d", module->name, ret);
+		return ret;
 	}
 
 	LOG_INF("Loaded stored settings for '%s'", module->name);
@@ -472,20 +495,11 @@ int hio_config_item_parse(const struct hio_config_item *item, char *argv, const 
 	return -EINVAL;
 }
 
-static int h_commit_cb(const struct hio_config *module, void *user_data)
+static int iter_commit_cb(const struct hio_config *module, void *user_data)
 {
-	if (module->commit) {
-		int ret = module->commit(module);
-		if (ret) {
-			LOG_ERR("Commit failed for '%s': %d", module->name, ret);
-			return 0; /* continue iteration */
-		}
-		LOG_DBG("Committed config for '%s'", module->name);
-	} else if (module->interim && module->final && module->size > 0) {
-		memcpy(module->final, module->interim, module->size);
-		LOG_DBG("Default commit for '%s'", module->name);
-	} else {
-		LOG_WRN("No commit logic defined for '%s'", module->name);
+	int ret = commit(module);
+	if (ret) {
+		LOG_ERR("Commit failed for '%s': %d", module->name, ret);
 	}
 	return 0;
 }
@@ -494,7 +508,7 @@ static int h_commit(void)
 {
 	LOG_DBG("Committing settings");
 
-	return hio_config_iter_modules(h_commit_cb, NULL);
+	return hio_config_iter_modules(iter_commit_cb, NULL);
 }
 
 static int h_export_cb(const struct hio_config *module, const struct hio_config_item *item,
