@@ -53,4 +53,14 @@ config HIO_ATCI_BACKEND_UART_ASYNC_RX_BUFFER_SIZE
 	  slow and may need to be increased if long messages are pasted directly
 	  to the atci prompt.
 
+config HIO_ATCI_BACKEND_UART_LOG_QUEUE_SIZE
+	int "Log message queue size"
+	default 512
+
+config HIO_ATCI_BACKEND_UART_LOG_TIMEOUT
+	int "Log message drop timeout (in milliseconds)"
+	default 100
+
+
+
 endif # HIO_ATCI_BACKEND_UART

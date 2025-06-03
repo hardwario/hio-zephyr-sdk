@@ -231,7 +231,7 @@ static int enable(const struct hio_atci_backend *backend)
 
 	ret = pm_device_action_run(uart->dev, PM_DEVICE_ACTION_RESUME);
 	if (ret < 0) {
-		LOG_WRN("Failed to resume UART device: %d", ret);
+		LOG_DBG("Failed to resume UART device: %d", ret);
 		// return ret;
 	}
 
@@ -377,7 +377,9 @@ static const struct hio_atci_backend_api hio_atci_uart_backend_api = {
 	const struct device *const dev_uart_##inst =                                               \
 		DEVICE_DT_GET(DT_PROP(DT_DRV_INST(inst), uart));                                   \
                                                                                                    \
-	HIO_ATCI_DEFINE(hio_atci_uart_##inst, &hio_atci_uart_backend_##inst, 0, 0);                \
+	HIO_ATCI_DEFINE(hio_atci_uart_##inst, &hio_atci_uart_backend_##inst,                       \
+			CONFIG_HIO_ATCI_BACKEND_UART_LOG_QUEUE_SIZE,                               \
+			CONFIG_HIO_ATCI_BACKEND_UART_LOG_TIMEOUT);                                 \
                                                                                                    \
 	static int uart_init_##inst(const struct device *dev)                                      \
 	{                                                                                          \

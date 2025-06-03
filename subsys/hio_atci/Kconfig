@@ -19,12 +19,12 @@ config HIO_ATCI_STACK_SIZE
 	  Stack size for thread created for each instance.
 
 config HIO_ATCI_CMD_SHELL
-	bool "HIO_ATCI_CMD_SHELL"
+	bool "ATCI command shell"
 	default y if SHELL
 	select SHELL_BACKEND_DUMMY
 
-config HIO_ATCI_CMD_SHELL_ACL
-	int "HIO_ATCI_CMD_SHELL_ACL"
+config HIO_ATCI_CMD_SHELL_AUTH_FLAGS
+	int "ATCI command shell authentication flags"
 	default 0
 
 config HIO_ATCI_CMD_BUFF_SIZE
@@ -43,11 +43,23 @@ config HIO_ATCI_PRINTF_BUFF_SIZE
 	  to limit number of peripheral access calls.
 
 config HIO_ATCI_CRC_ENABLED
-	bool "HIO_ATCI_CRC_ENABLED"
+	bool "ATCI CRC enabled"
 	default y
 	help
 	  Enable CRC calculation for ATCI commands.
 	  It is used to verify command integrity.
+
+config HIO_ATCI_LOG_BACKEND
+	bool "ATCI log backend"
+	select LOG_OUTPUT
+	default y if LOG
+
+config HIO_ATCI_LOG_FORMAT_TIMESTAMP
+	bool "Format timestamp"
+	default y
+	help
+	  Enable timestamp formatting.
+
 
 module = HIO_ATCI
 module-str = HIO ATCI Subsystem

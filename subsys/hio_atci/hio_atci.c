@@ -4,6 +4,8 @@
  * SPDX-License-Identifier: LicenseRef-HARDWARIO-5-Clause
  */
 
+#include "hio_atci_io.h"
+
 /* HIO includes */
 #include <hio/hio_atci.h>
 
@@ -29,9 +31,10 @@ LOG_MODULE_REGISTER(hio_atci, CONFIG_HIO_ATCI_LOG_LEVEL);
 #define ECRC_FORMAT              1001
 #define ECRC_MISMATCH            1002
 
-#define EVENT_RX     BIT(0)
-#define EVENT_TXDONE BIT(1)
-#define EVENT_KILL   BIT(2)
+#define EVENT_RX      BIT(0)
+#define EVENT_TXDONE  BIT(1)
+#define EVENT_KILL    BIT(2)
+#define EVENT_LOG_MSG BIT(3)
 
 static int default_acl_check_cb(const struct hio_atci *atci, const struct hio_atci_cmd *cmd,
 				enum hio_atci_cmd_type type, void *user_data)
@@ -76,7 +79,7 @@ static void pending_on_txdone(const struct hio_atci *atci)
 	k_event_wait(&atci->ctx->event, EVENT_TXDONE, true, K_FOREVER);
 }
 
-static void write(const struct hio_atci *atci, const void *data, size_t length)
+void hio_atci_io_write(const struct hio_atci *atci, const void *data, size_t length)
 {
 	size_t offset = 0;
 	size_t tmp_cnt;
@@ -101,9 +104,22 @@ static void write(const struct hio_atci *atci, const void *data, size_t length)
 	}
 }
 
+void hio_atci_io_endline(const struct hio_atci *atci)
+{
+	if (atci->ctx->crc_enabled) {
+		snprintf(atci->ctx->fprintf_buff, CONFIG_HIO_ATCI_PRINTF_BUFF_SIZE, "\t%08X\r\n",
+			 atci->ctx->crc);
+		hio_atci_io_write(atci, atci->ctx->fprintf_buff,
+				  1 + 8 + 2); /* 1 for tab, 8 for CRC, 2 for CRLF */
+		atci->ctx->crc = 0;           /* Reset CRC for next command */
+	} else {
+		hio_atci_io_write(atci, "\r\n", 2);
+	}
+}
+
 static void fprintf_buffer_flush(const struct hio_atci *atci)
 {
-	write(atci, atci->ctx->fprintf_buff, atci->ctx->fprintf_buff_cnt);
+	hio_atci_io_write(atci, atci->ctx->fprintf_buff, atci->ctx->fprintf_buff_cnt);
 	atci->ctx->fprintf_buff_cnt = 0;
 }
 
@@ -274,35 +290,31 @@ static void process(const struct hio_atci *atci)
 
 	if (!atci->ctx->ret_printed) {
 		if (ret == 0) {
-			write(atci, "OK", 2);
+			hio_atci_io_write(atci, "OK", 2);
 		} else if (ret == -ENOMSG) {
-			write(atci, "ERROR: \"Invalid command\"", 24);
+			hio_atci_io_write(atci, "ERROR: \"Invalid command\"", 24);
 		} else if (ret == -ENOEXEC) {
-			write(atci, "ERROR: \"Command not found\"", 26);
+			hio_atci_io_write(atci, "ERROR: \"Command not found\"", 26);
 		} else if (ret == -EIO) {
-			write(atci, "ERROR: \"I/O error\"", 21);
+			hio_atci_io_write(atci, "ERROR: \"I/O error\"", 21);
 		} else if (ret == -ENOMEM) {
-			write(atci, "ERROR: \"Out of memory\"", 18);
+			hio_atci_io_write(atci, "ERROR: \"Out of memory\"", 18);
 		} else if (ret == -ENOTSUP) {
-			write(atci, "ERROR: \"Command not supported\"", 30);
+			hio_atci_io_write(atci, "ERROR: \"Command not supported\"", 30);
 		} else if (ret == -EINVAL) {
-			write(atci, "ERROR: \"Invalid argument\"", 25);
+			hio_atci_io_write(atci, "ERROR: \"Invalid argument\"", 25);
 		} else if (ret == -EACCES) {
-			write(atci, "ERROR: \"Permission denied\"", 26);
+			hio_atci_io_write(atci, "ERROR: \"Permission denied\"", 26);
 		} else if (ret == -ECRC_FORMAT) {
-			write(atci, "ERROR: \"Invalid CRC format\"", 27);
+			hio_atci_io_write(atci, "ERROR: \"Invalid CRC format\"", 27);
 		} else if (ret == -ECRC_MISMATCH) {
-			write(atci, "ERROR: \"CRC mismatch\"", 21);
+			hio_atci_io_write(atci, "ERROR: \"CRC mismatch\"", 21);
 		} else if (ret < 0) {
 			writef(atci, "ERROR: \"%d\"", ret);
 		}
 	}
 
-	if (atci->ctx->crc_enabled) {
-		writef(atci, "\t%08X\r\n", atci->ctx->crc);
-	} else {
-		write(atci, "\r\n", 2);
-	}
+	hio_atci_io_endline(atci);
 }
 
 static void process_ch(const struct hio_atci *atci, char ch)
@@ -376,11 +388,16 @@ static void atci_thread(void *atci_handle, void *arg_log_backend, void *arg_log_
 		return;
 	}
 
+	if (atci->log_backend) {
+		hio_atci_log_backend_enable(atci->log_backend, atci,
+					    (uint32_t)(uintptr_t)arg_log_level);
+	}
+
 	atci->ctx->state = HIO_ATCI_STATE_ACTIVE;
 
 	while (true) {
-		uint32_t events =
-			k_event_wait(&atci->ctx->event, EVENT_RX | EVENT_KILL, true, K_FOREVER);
+		uint32_t events = k_event_wait(
+			&atci->ctx->event, EVENT_RX | EVENT_KILL | EVENT_LOG_MSG, true, K_FOREVER);
 
 		if (events & EVENT_KILL) {
 			LOG_INF("ATCI thread killed");
@@ -391,6 +408,17 @@ static void atci_thread(void *atci_handle, void *arg_log_backend, void *arg_log_
 
 		if (events & EVENT_RX) {
 			process_rx(atci);
+		}
+
+		if (events & EVENT_LOG_MSG) {
+			int processed = 0;
+			do {
+				processed = hio_atci_log_backend_process(atci->log_backend);
+
+				if (atci->ctx->cmd_buff_len) { /* Process pending command */
+					k_sleep(K_MSEC(15));
+				}
+			} while (processed);
 		}
 
 		if (atci->backend->api->update) {
@@ -449,7 +477,7 @@ void hio_atci_write(const struct hio_atci *atci, const void *data, size_t length
 
 	k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
 
-	write(atci, data, length);
+	hio_atci_io_write(atci, data, length);
 
 	k_mutex_unlock(&atci->ctx->wr_mtx);
 }
@@ -463,7 +491,7 @@ void hio_atci_print(const struct hio_atci *atci, const char *str)
 
 	k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
 
-	write(atci, str, strlen(str));
+	hio_atci_io_write(atci, str, strlen(str));
 
 	k_mutex_unlock(&atci->ctx->wr_mtx);
 }
@@ -494,8 +522,8 @@ void hio_atci_println(const struct hio_atci *atci, const char *str)
 
 	k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
 
-	write(atci, str, strlen(str));
-	write(atci, "\r\n", 2);
+	hio_atci_io_write(atci, str, strlen(str));
+	hio_atci_io_write(atci, "\r\n", 2);
 
 	k_mutex_unlock(&atci->ctx->wr_mtx);
 }
@@ -514,7 +542,7 @@ void hio_atci_printfln(const struct hio_atci *atci, const char *fmt, ...)
 	fprintf_fmt(atci, fmt, args);
 	va_end(args);
 
-	write(atci, "\r\n", 2);
+	hio_atci_io_write(atci, "\r\n", 2);
 
 	k_mutex_unlock(&atci->ctx->wr_mtx);
 }
@@ -528,9 +556,9 @@ void hio_atci_error(const struct hio_atci *atci, const char *err)
 
 	k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
 
-	write(atci, "ERROR: ", 7);
-	write(atci, err, strlen(err));
-	write(atci, "\r\n", 2);
+	hio_atci_io_write(atci, "ERROR: ", 7);
+	hio_atci_io_write(atci, err, strlen(err));
+	hio_atci_io_write(atci, "\r\n", 2);
 
 	atci->ctx->ret_printed = true;
 
@@ -545,14 +573,14 @@ void hio_atci_errorf(const struct hio_atci *atci, const char *fmt, ...)
 	}
 
 	k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
-	write(atci, "ERROR: ", 7);
+	hio_atci_io_write(atci, "ERROR: ", 7);
 
 	va_list args;
 	va_start(args, fmt);
 	fprintf_fmt(atci, fmt, args);
 	va_end(args);
 
-	write(atci, "\r\n", 2);
+	hio_atci_io_write(atci, "\r\n", 2);
 
 	atci->ctx->ret_printed = true;
 
@@ -565,8 +593,8 @@ void hio_atci_broadcast(const char *str)
 		if (atci->ctx->state == HIO_ATCI_STATE_ACTIVE) {
 			k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
 
-			write(atci, str, strlen(str));
-			write(atci, "\r\n", 2);
+			hio_atci_io_write(atci, str, strlen(str));
+			hio_atci_io_write(atci, "\r\n", 2);
 
 			k_mutex_unlock(&atci->ctx->wr_mtx);
 		}
@@ -582,7 +610,7 @@ void hio_atci_broadcastf(const char *fmt, ...)
 			va_list args;
 			va_start(args, fmt);
 			fprintf_fmt(atci, fmt, args);
-			write(atci, "\r\n", 2);
+			hio_atci_io_write(atci, "\r\n", 2);
 			va_end(args);
 
 			k_mutex_unlock(&atci->ctx->wr_mtx);

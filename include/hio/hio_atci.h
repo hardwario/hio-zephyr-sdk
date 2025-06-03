@@ -8,10 +8,14 @@
 #define INCLUDE_HIO_ATCI_H_
 
 #include <zephyr/kernel.h>
+#include <zephyr/logging/log_backend.h>
 #include <zephyr/logging/log_instance.h>
+#include <zephyr/logging/log_output.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/iterable_sections.h>
 #include <zephyr/sys/util.h>
+#include <zephyr/sys/mpsc_pbuf.h>
+#include <zephyr/sys/atomic.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -47,6 +51,7 @@ enum hio_atci_backend_evt {
 typedef void (*hio_atci_backend_handler_t)(enum hio_atci_backend_evt evt, void *ctx);
 
 struct hio_atci_backend;
+struct hio_atci_log_backend;
 
 /**
  * @brief Backend interface API.
@@ -139,7 +144,6 @@ struct hio_atci_backend {
 /** @brief Internal context of an ATCI instance. */
 struct hio_atci_ctx {
 	enum hio_atci_state state;
-	atomic_t log_lost_cnt;
 	k_tid_t tid;
 	struct k_event event;
 	atomic_t processing;
@@ -149,6 +153,7 @@ struct hio_atci_ctx {
 	char tmp_buff[CONFIG_HIO_ATCI_CMD_BUFF_SIZE];
 	char fprintf_buff[CONFIG_HIO_ATCI_PRINTF_BUFF_SIZE];
 	size_t fprintf_buff_cnt;
+	uint8_t fprintf_flag; /**< Flag for fprintf output. */
 	bool ret_printed;
 	uint32_t crc;
 	bool crc_enabled;
@@ -202,8 +207,35 @@ struct hio_atci_cmd {
 	}
 
 /* Placeholder macros for future logging backend integration. */
-#define HIO_ATCI_LOG_BACKEND_DEFINE(_name, _buffer_size, _log_queue_size, _log_timeout)
-#define HIO_ATCI_LOG_BACKEND_PTR(_name) NULL
+extern const struct log_backend_api hio_atci_log_backend_api;
+
+int hio_atci_log_backend_output_func(uint8_t *data, size_t length, void *ctx);
+
+#define HIO_ATCI_LOG_BACKEND_DEFINE(_name, _queue_size, _timeout)                                  \
+	LOG_BACKEND_DEFINE(_name##_backend, hio_atci_log_backend_api, false);                      \
+	static uint8_t _name##_out_buffer[CONFIG_HIO_ATCI_PRINTF_BUFF_SIZE];                       \
+	LOG_OUTPUT_DEFINE(_name##_log_output, hio_atci_log_backend_output_func,                    \
+			  _name##_out_buffer, ARRAY_SIZE(_name##_out_buffer));                     \
+	static struct hio_atci_log_backend_ctx _name##_log_backend_ctx;                            \
+	static uint32_t                                                                            \
+		__aligned(Z_LOG_MSG_ALIGNMENT) _name##_mpsc_buf[_queue_size / sizeof(uint32_t)];   \
+	const struct mpsc_pbuf_buffer_config _name##_mpsc_buffer_config = {                        \
+		.buf = _name##_mpsc_buf,                                                           \
+		.size = ARRAY_SIZE(_name##_mpsc_buf),                                              \
+		.notify_drop = NULL,                                                               \
+		.get_wlen = log_msg_generic_get_wlen,                                              \
+		.flags = MPSC_PBUF_MODE_OVERWRITE,                                                 \
+	};                                                                                         \
+	struct mpsc_pbuf_buffer _name##_mpsc_buffer;                                               \
+	static const struct hio_atci_log_backend _name##_log_backend = {                           \
+		.backend = &_name##_backend,                                                       \
+		.log_output = &_name##_log_output,                                                 \
+		.ctx = &_name##_log_backend_ctx,                                                   \
+		.timeout = _timeout,                                                               \
+		.mpsc_buffer_config = &_name##_mpsc_buffer_config,                                 \
+		.mpsc_buffer = &_name##_mpsc_buffer,                                               \
+	}
+#define HIO_ATCI_LOG_BACKEND_PTR(_name) (&_name##_log_backend)
 
 /**
  * @brief Define an ATCI instance.
@@ -221,8 +253,7 @@ struct hio_atci_cmd {
 	static K_KERNEL_STACK_DEFINE(_name##_stack, CONFIG_HIO_ATCI_STACK_SIZE);                   \
 	static struct k_thread _name##_thread;                                                     \
 	LOG_INSTANCE_REGISTER(hio_atci, _name, CONFIG_HIO_ATCI_LOG_LEVEL);                         \
-	HIO_ATCI_LOG_BACKEND_DEFINE(_name, CONFIG_HIO_ATCI_PRINTF_BUFF_SIZE, _log_queue_size,      \
-				    _log_timeout);                                                 \
+	HIO_ATCI_LOG_BACKEND_DEFINE(_name, _log_queue_size, _log_timeout);                         \
 	static const STRUCT_SECTION_ITERABLE(hio_atci, _name) = {                                  \
 		.name = STRINGIFY(_name), .ctx = &UTIL_CAT(_name, _ctx), .backend = _backend,      \
 				  .thread = &_name##_thread, .stack = _name##_stack,               \
@@ -352,6 +383,27 @@ typedef int (*hio_atci_auth_check_cb)(const struct hio_atci *atci, const struct 
  * @param user_data
  */
 void hio_atci_set_auth_check_cb(hio_atci_auth_check_cb cb, void *user_data);
+
+/** @brief Internal context of an ATCI log backend instance. */
+struct hio_atci_log_backend_ctx {
+	atomic_t dropped_cnt;
+	uint8_t state;
+};
+
+/** @brief ATCI log backend instance structure (RO data). */
+struct hio_atci_log_backend {
+	const struct log_backend *backend;
+	const struct log_output *log_output;
+	struct hio_atci_log_backend_ctx *ctx; /**< Pointer to the log backend context. */
+	uint32_t timeout;
+	const struct mpsc_pbuf_buffer_config *mpsc_buffer_config;
+	struct mpsc_pbuf_buffer *mpsc_buffer;
+};
+
+int hio_atci_log_backend_enable(const struct hio_atci_log_backend *backend,
+				const struct hio_atci *atci, uint32_t init_log_level);
+int hio_atci_log_backend_disable(const struct hio_atci_log_backend *backend);
+int hio_atci_log_backend_process(const struct hio_atci_log_backend *backend);
 
 /** @} */
 

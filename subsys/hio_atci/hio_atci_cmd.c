@@ -178,20 +178,20 @@ static int at_shell_set(const struct hio_atci *atci, char *argv)
 		const char *newline = strstr(start, "\r\n");
 
 		if (!newline) {
-			hio_atci_printfln(atci, "$shell: \"%.*s\"", (int)(end - start), start);
+			hio_atci_printfln(atci, "$SHELL: \"%.*s\"", (int)(end - start), start);
 			break;
 		}
 
 		size_t line_len = newline - start;
 
 		if (line_len > 0) {
-			hio_atci_printfln(atci, "$shell: \"%.*s\"", (int)line_len, start);
+			hio_atci_printfln(atci, "$SHELL: \"%.*s\"", (int)line_len, start);
 		}
 
 		start = newline + 2; // skip \r\n
 	}
 	return 0;
 }
-HIO_ATCI_CMD_REGISTER(shell, "$SHELL", CONFIG_HIO_ATCI_CMD_SHELL_ACL, NULL, at_shell_set, NULL,
-		      NULL, "Shell command");
+HIO_ATCI_CMD_REGISTER(shell, "$SHELL", CONFIG_HIO_ATCI_CMD_SHELL_AUTH_FLAGS, NULL, at_shell_set,
+		      NULL, NULL, "Shell command");
 #endif /* CONFIG_HIO_ATCI_CMD_SHELL */
