@@ -200,6 +200,14 @@ static int cmd_state(const struct shell *shell, size_t argc, char **argv)
 
 	shell_print(shell, "state: %s", hio_lte_get_state());
 
+	if (strcmp(hio_lte_get_state(), "attach") == 0) {
+		struct hio_lte_attach_timeout at_timeout = hio_lte_get_curr_attach_timeout();
+		shell_print(shell, "retry/attach timeouts: %lld %lld (mins)",
+			    k_ticks_to_ms_floor64(at_timeout.retry_delay.ticks) / MSEC_PER_SEC / 60,
+			    k_ticks_to_ms_floor64(at_timeout.attach_timeout.ticks) / MSEC_PER_SEC /
+				    60);
+	}
+
 	shell_print(shell, "command succeeded");
 
 	return 0;

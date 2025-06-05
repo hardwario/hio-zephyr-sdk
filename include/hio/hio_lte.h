@@ -111,6 +111,7 @@ int hio_lte_get_modem_fw_version(char **version);
 int hio_lte_get_conn_param(struct hio_lte_conn_param *param);
 int hio_lte_get_cereg_param(struct hio_lte_cereg_param *param);
 int hio_lte_get_metrics(struct hio_lte_metrics *metrics);
+int hio_lte_get_fsm_state(const char **state);
 
 const char *hio_lte_coneval_result_str(int result);
 

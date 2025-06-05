@@ -13,8 +13,8 @@
 
 static K_MUTEX_DEFINE(m_lock);
 
-static uint64_t m_imei;
-static uint64_t m_imsi;
+static uint64_t m_imei = 0;
+static uint64_t m_imsi = 0;
 static char m_iccid[22 + 1] = {0};
 static char m_fw_version[64] = {0};
 static struct hio_lte_conn_param m_conn_param = {0};

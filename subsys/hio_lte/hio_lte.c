@@ -423,6 +423,15 @@ int hio_lte_get_metrics(struct hio_lte_metrics *metrics)
 	return 0;
 }
 
+int hio_lte_get_fsm_state(const char **state)
+{
+	if (!state) {
+		return -EINVAL;
+	}
+	*state = fsm_state_str(m_state);
+	return 0;
+}
+
 static int on_enter_disabled(void)
 {
 	int ret;
