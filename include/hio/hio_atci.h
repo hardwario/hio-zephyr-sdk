@@ -281,7 +281,7 @@ int hio_atci_init(const struct hio_atci *atci, const void *backend_config, bool 
  * @param[in] data   Pointer to the data buffer.
  * @param[in] length Length of the data to be written.
  */
-void hio_atci_write(const struct hio_atci *atci, const void *data, size_t length);
+int hio_atci_write(const struct hio_atci *atci, const void *data, size_t length);
 
 /**
  * @brief Print a string to the ATCI output.
@@ -289,7 +289,7 @@ void hio_atci_write(const struct hio_atci *atci, const void *data, size_t length
  * @param[in] atci Pointer to the ATCI instance.
  * @param[in] str  Pointer to the string to be printed.
  */
-void hio_atci_print(const struct hio_atci *atci, const char *str);
+int hio_atci_print(const struct hio_atci *atci, const char *str);
 
 /**
  * @brief Print a formatted string to the ATCI output.
@@ -298,7 +298,7 @@ void hio_atci_print(const struct hio_atci *atci, const char *str);
  * @param[in] fmt  Pointer to the format string.
  * @param[in] ...  Additional arguments for formatting.
  */
-void hio_atci_printf(const struct hio_atci *atci, const char *fmt, ...);
+int hio_atci_printf(const struct hio_atci *atci, const char *fmt, ...);
 
 /**
  * @brief Print a string followed by a newline to the ATCI output.
@@ -306,7 +306,7 @@ void hio_atci_printf(const struct hio_atci *atci, const char *fmt, ...);
  * @param[in] atci Pointer to the ATCI instance.
  * @param[in] str  Pointer to the string to be printed.
  */
-void hio_atci_println(const struct hio_atci *atci, const char *str);
+int hio_atci_println(const struct hio_atci *atci, const char *str);
 
 /**
  * @brief Print a formatted string followed by a newline to the ATCI output.
@@ -315,7 +315,7 @@ void hio_atci_println(const struct hio_atci *atci, const char *str);
  * @param[in] fmt  Pointer to the format string.
  * @param[in] ...  Additional arguments for formatting.
  */
-void hio_atci_printfln(const struct hio_atci *atci, const char *fmt, ...);
+int hio_atci_printfln(const struct hio_atci *atci, const char *fmt, ...);
 
 /**
  * @brief Print a standard ERROR response to the ATCI output.
@@ -323,7 +323,7 @@ void hio_atci_printfln(const struct hio_atci *atci, const char *fmt, ...);
  * @param[in] atci Pointer to the ATCI instance.
  * @param[in] err  Pointer to the string to be printed.
  */
-void hio_atci_error(const struct hio_atci *atci, const char *err);
+int hio_atci_error(const struct hio_atci *atci, const char *err);
 
 /**
  * @brief Print a standard ERROR response with a formatted message to the ATCI output.
@@ -334,7 +334,7 @@ void hio_atci_error(const struct hio_atci *atci, const char *err);
  * @param[in] fmt  Pointer to the format string.
  * @param[in] ...  Additional arguments for formatting.
  */
-void hio_atci_errorf(const struct hio_atci *atci, const char *fmt, ...);
+int hio_atci_errorf(const struct hio_atci *atci, const char *fmt, ...);
 
 /**
  * @brief Print a message to all ATCI outputs.
@@ -344,7 +344,7 @@ void hio_atci_errorf(const struct hio_atci *atci, const char *fmt, ...);
  *
  * @param[in] str Pointer to the string to be printed.
  */
-void hio_atci_broadcast(const char *str);
+int hio_atci_broadcast(const char *str);
 
 /**
  * @brief Print a formatted message to all ATCI outputs.
@@ -354,7 +354,7 @@ void hio_atci_broadcast(const char *str);
  * @param[in] fmt Pointer to the format string.
  * @param[in] ... Additional arguments for formatting.
  */
-void hio_atci_broadcastf(const char *fmt, ...);
+int hio_atci_broadcastf(const char *fmt, ...);
 
 /**
  * @brief Get a temporary buffer for ATCI operations.
