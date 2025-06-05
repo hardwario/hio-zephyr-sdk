@@ -144,7 +144,7 @@ static void fprintf_fmt(const struct hio_atci *atci, const char *fmt, va_list ar
 	fprintf_buffer_flush(atci);
 }
 
-static void writef(const struct hio_atci *atci, const char *fmt, ...)
+void hio_atci_io_writef(const struct hio_atci *atci, const char *fmt, ...)
 {
 	va_list args;
 
@@ -236,12 +236,9 @@ static int execute(const struct hio_atci *atci)
 
 	LOG_DBG("cmd: %s, type: %d", cmd ? cmd->cmd : "NULL", type);
 
-	k_mutex_unlock(&atci->ctx->wr_mtx);
-
 	if (m_auth_check_cb) {
 		ret = m_auth_check_cb(atci, cmd, type, m_auth_user_data);
 		if (ret) {
-			k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
 			return ret;
 		}
 	}
@@ -272,8 +269,6 @@ static int execute(const struct hio_atci *atci)
 	default:
 		break;
 	}
-
-	k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
 
 	return ret;
 }
@@ -310,7 +305,7 @@ static void process(const struct hio_atci *atci)
 		} else if (ret == -ECRC_MISMATCH) {
 			hio_atci_io_write(atci, "ERROR: \"CRC mismatch\"", 21);
 		} else if (ret < 0) {
-			writef(atci, "ERROR: \"%d\"", ret);
+			hio_atci_io_writef(atci, "ERROR: \"%d\"", ret);
 		}
 	}
 
@@ -332,8 +327,8 @@ static void process_ch(const struct hio_atci *atci, char ch)
 		if (atci->ctx->cmd_buff_len > 0) {
 			atci->ctx->cmd_buff[atci->ctx->cmd_buff_len] = '\0';
 			process(atci);
-			cmd_buffer_clear(atci);
 		}
+		cmd_buffer_clear(atci);
 		return;
 	}
 
@@ -468,74 +463,68 @@ int hio_atci_init(const struct hio_atci *atci, const void *backend_config, bool 
 	return 0;
 }
 
-void hio_atci_write(const struct hio_atci *atci, const void *data, size_t length)
-{
-	if (atci->ctx->state != HIO_ATCI_STATE_ACTIVE) {
-		LOG_ERR("ATCI thread in invalid state %d", atci->ctx->state);
-		return;
+#define OUTPUT_LOCK_BEGIN()                                                                        \
+	if (!atci)                                                                                 \
+		return -EINVAL;                                                                    \
+	if (atci->ctx->state != HIO_ATCI_STATE_ACTIVE) {                                           \
+		LOG_ERR("ATCI thread in invalid state %d", atci->ctx->state);                      \
+		return -EINVAL;                                                                    \
+	}                                                                                          \
+	bool need_lock = !atomic_get(&atci->ctx->processing);                                      \
+	if (need_lock) {                                                                           \
+		k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);                                       \
 	}
 
-	k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
+#define OUTPUT_LOCK_END()                                                                          \
+	if (need_lock) {                                                                           \
+		k_mutex_unlock(&atci->ctx->wr_mtx);                                                \
+	}                                                                                          \
+	return 0;
+
+int hio_atci_write(const struct hio_atci *atci, const void *data, size_t length)
+{
+
+	OUTPUT_LOCK_BEGIN()
 
 	hio_atci_io_write(atci, data, length);
 
-	k_mutex_unlock(&atci->ctx->wr_mtx);
+	OUTPUT_LOCK_END()
 }
 
-void hio_atci_print(const struct hio_atci *atci, const char *str)
+int hio_atci_print(const struct hio_atci *atci, const char *str)
 {
-	if (atci->ctx->state != HIO_ATCI_STATE_ACTIVE) {
-		LOG_ERR("ATCI thread in invalid state %d", atci->ctx->state);
-		return;
-	}
-
-	k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
+	OUTPUT_LOCK_BEGIN()
 
 	hio_atci_io_write(atci, str, strlen(str));
 
-	k_mutex_unlock(&atci->ctx->wr_mtx);
+	OUTPUT_LOCK_END()
 }
 
-void hio_atci_printf(const struct hio_atci *atci, const char *fmt, ...)
+int hio_atci_printf(const struct hio_atci *atci, const char *fmt, ...)
 {
-	if (atci->ctx->state != HIO_ATCI_STATE_ACTIVE) {
-		LOG_ERR("ATCI thread in invalid state %d", atci->ctx->state);
-		return;
-	}
-
-	k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
+	OUTPUT_LOCK_BEGIN()
 
 	va_list args;
 	va_start(args, fmt);
 	fprintf_fmt(atci, fmt, args);
 	va_end(args);
 
-	k_mutex_unlock(&atci->ctx->wr_mtx);
+	OUTPUT_LOCK_END()
 }
 
-void hio_atci_println(const struct hio_atci *atci, const char *str)
+int hio_atci_println(const struct hio_atci *atci, const char *str)
 {
-	if (atci->ctx->state != HIO_ATCI_STATE_ACTIVE) {
-		LOG_ERR("ATCI thread in invalid state %d", atci->ctx->state);
-		return;
-	}
-
-	k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
+	OUTPUT_LOCK_BEGIN()
 
 	hio_atci_io_write(atci, str, strlen(str));
 	hio_atci_io_write(atci, "\r\n", 2);
 
-	k_mutex_unlock(&atci->ctx->wr_mtx);
+	OUTPUT_LOCK_END()
 }
 
-void hio_atci_printfln(const struct hio_atci *atci, const char *fmt, ...)
+int hio_atci_printfln(const struct hio_atci *atci, const char *fmt, ...)
 {
-	if (atci->ctx->state != HIO_ATCI_STATE_ACTIVE) {
-		LOG_ERR("ATCI thread in invalid state %d", atci->ctx->state);
-		return;
-	}
-
-	k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
+	OUTPUT_LOCK_BEGIN()
 
 	va_list args;
 	va_start(args, fmt);
@@ -544,17 +533,12 @@ void hio_atci_printfln(const struct hio_atci *atci, const char *fmt, ...)
 
 	hio_atci_io_write(atci, "\r\n", 2);
 
-	k_mutex_unlock(&atci->ctx->wr_mtx);
+	OUTPUT_LOCK_END()
 }
 
-void hio_atci_error(const struct hio_atci *atci, const char *err)
+int hio_atci_error(const struct hio_atci *atci, const char *err)
 {
-	if (atci->ctx->state != HIO_ATCI_STATE_ACTIVE) {
-		LOG_ERR("ATCI thread in invalid state %d", atci->ctx->state);
-		return;
-	}
-
-	k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
+	OUTPUT_LOCK_BEGIN()
 
 	hio_atci_io_write(atci, "ERROR: ", 7);
 	hio_atci_io_write(atci, err, strlen(err));
@@ -562,17 +546,13 @@ void hio_atci_error(const struct hio_atci *atci, const char *err)
 
 	atci->ctx->ret_printed = true;
 
-	k_mutex_unlock(&atci->ctx->wr_mtx);
+	OUTPUT_LOCK_END()
 }
 
-void hio_atci_errorf(const struct hio_atci *atci, const char *fmt, ...)
+int hio_atci_errorf(const struct hio_atci *atci, const char *fmt, ...)
 {
-	if (atci->ctx->state != HIO_ATCI_STATE_ACTIVE) {
-		LOG_ERR("ATCI thread in invalid state %d", atci->ctx->state);
-		return;
-	}
+	OUTPUT_LOCK_BEGIN()
 
-	k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
 	hio_atci_io_write(atci, "ERROR: ", 7);
 
 	va_list args;
@@ -584,38 +564,72 @@ void hio_atci_errorf(const struct hio_atci *atci, const char *fmt, ...)
 
 	atci->ctx->ret_printed = true;
 
-	k_mutex_unlock(&atci->ctx->wr_mtx);
+	OUTPUT_LOCK_END()
 }
 
-void hio_atci_broadcast(const char *str)
+#define BROADCAST_WAIT_MS 100
+
+int hio_atci_broadcast(const char *str)
 {
 	STRUCT_SECTION_FOREACH(hio_atci, atci) {
-		if (atci->ctx->state == HIO_ATCI_STATE_ACTIVE) {
-			k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
-
-			hio_atci_io_write(atci, str, strlen(str));
-			hio_atci_io_write(atci, "\r\n", 2);
-
-			k_mutex_unlock(&atci->ctx->wr_mtx);
+		if (atci->ctx->state != HIO_ATCI_STATE_ACTIVE) {
+			continue;
 		}
+
+		int timeout = BROADCAST_WAIT_MS;
+		while (atomic_get(&atci->ctx->processing)) {
+			if (--timeout == 0) {
+				break;
+			}
+			k_sleep(K_MSEC(1));
+		}
+
+		if (timeout == 0) {
+			LOG_ERR("Timeout for ATCI processing in %s", atci->name);
+			continue;
+		}
+
+		k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
+
+		hio_atci_io_write(atci, str, strlen(str));
+		hio_atci_io_endline(atci);
+
+		k_mutex_unlock(&atci->ctx->wr_mtx);
 	}
+	return 0;
 }
 
-void hio_atci_broadcastf(const char *fmt, ...)
+int hio_atci_broadcastf(const char *fmt, ...)
 {
 	STRUCT_SECTION_FOREACH(hio_atci, atci) {
-		if (atci->ctx->state == HIO_ATCI_STATE_ACTIVE) {
-			k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
-
-			va_list args;
-			va_start(args, fmt);
-			fprintf_fmt(atci, fmt, args);
-			hio_atci_io_write(atci, "\r\n", 2);
-			va_end(args);
-
-			k_mutex_unlock(&atci->ctx->wr_mtx);
+		if (atci->ctx->state != HIO_ATCI_STATE_ACTIVE) {
+			continue;
 		}
+
+		int timeout = BROADCAST_WAIT_MS;
+		while (atomic_get(&atci->ctx->processing)) {
+			if (--timeout == 0) {
+				break;
+			}
+			k_sleep(K_MSEC(1));
+		}
+
+		if (timeout == 0) {
+			LOG_ERR("Timeout for ATCI processing in %s", atci->name);
+			continue;
+		}
+
+		k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
+
+		va_list args;
+		va_start(args, fmt);
+		fprintf_fmt(atci, fmt, args);
+		hio_atci_io_endline(atci);
+		va_end(args);
+
+		k_mutex_unlock(&atci->ctx->wr_mtx);
 	}
+	return 0;
 }
 
 void hio_atci_get_tmp_buff(const struct hio_atci *atci, char **buff, size_t *len)

@@ -16,6 +16,7 @@ extern "C" {
 #endif
 
 void hio_atci_io_write(const struct hio_atci *atci, const void *data, size_t length);
+void hio_atci_io_writef(const struct hio_atci *atci, const char *fmt, ...);
 void hio_atci_io_endline(const struct hio_atci *atci);
 
 #ifdef __cplusplus

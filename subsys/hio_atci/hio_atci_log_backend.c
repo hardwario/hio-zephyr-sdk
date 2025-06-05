@@ -129,6 +129,7 @@ static void process_log_msg(const struct hio_atci *atci, const struct log_output
 		}
 	}
 
+	atci->ctx->crc = 0;
 	log_output_msg_process(log_output, &msg->log, flags);
 	if (atci->ctx->fprintf_flag) {
 		atci->ctx->fprintf_flag = 0;
@@ -177,8 +178,9 @@ int hio_atci_log_backend_process(const struct hio_atci_log_backend *backend)
 
 	dropped = atomic_set(&backend->ctx->dropped_cnt, 0);
 	if (dropped) {
-
-		log_output_dropped_process(backend->log_output, dropped);
+		atci->ctx->crc = 0;
+		hio_atci_io_writef(atci, "@LOG: \"--- %u messages dropped ---\"", dropped);
+		hio_atci_io_endline(atci);
 	}
 
 	return process_msg_from_buffer(atci);
@@ -191,11 +193,39 @@ static void dropped(const struct log_backend *const backend, uint32_t cnt)
 	atomic_add(&log_backend->ctx->dropped_cnt, cnt);
 }
 
+static int store_msg(const struct hio_atci *atci, union log_msg_generic *msg)
+{
+	const struct hio_atci_log_backend *log_backend = atci->log_backend;
+	struct mpsc_pbuf_buffer *mpsc_buffer = log_backend->mpsc_buffer;
+
+	size_t wlen = log_msg_generic_get_wlen((union mpsc_pbuf_generic *)msg);
+	union mpsc_pbuf_generic *dst =
+		mpsc_pbuf_alloc(mpsc_buffer, wlen, K_MSEC(log_backend->timeout));
+
+	/* No space to store the log */
+	if (!dst) {
+		return -ENOMEM;
+	}
+
+	uint8_t *dst_data = (uint8_t *)dst + sizeof(struct mpsc_pbuf_hdr);
+	uint8_t *src_data = (uint8_t *)msg + sizeof(struct mpsc_pbuf_hdr);
+	size_t hdr_wlen = DIV_ROUND_UP(sizeof(struct mpsc_pbuf_hdr), sizeof(uint32_t));
+	if (wlen <= hdr_wlen) {
+		return -EFBIG; /* Invalid message length */
+	}
+
+	dst->hdr.data = msg->buf.hdr.data;
+	memcpy(dst_data, src_data, (wlen - hdr_wlen) * sizeof(uint32_t));
+
+	mpsc_pbuf_commit(mpsc_buffer, dst);
+
+	return 0;
+}
+
 static void process(const struct log_backend *const backend, union log_msg_generic *msg)
 {
 	const struct hio_atci *atci = (const struct hio_atci *)backend->cb->ctx;
 	const struct hio_atci_log_backend *log_backend = atci->log_backend;
-	struct mpsc_pbuf_buffer *mpsc_buffer = log_backend->mpsc_buffer;
 	const struct log_output *log_output = log_backend->log_output;
 
 	if (atci->log_backend->ctx->state == STATE_ENABLED) {
@@ -205,35 +235,17 @@ static void process(const struct log_backend *const backend, union log_msg_gener
 			return;
 		}
 
-		size_t wlen = log_msg_generic_get_wlen((union mpsc_pbuf_generic *)msg);
-		union mpsc_pbuf_generic *dst =
-			mpsc_pbuf_alloc(mpsc_buffer, wlen, K_MSEC(log_backend->timeout));
-
-		/* No space to store the log */
-		if (!dst) {
+		if (store_msg(atci, msg)) {
+			/* If the message cannot be stored, it is dropped */
 			dropped(backend, 1);
-			return;
 		}
-
-		uint8_t *dst_data = (uint8_t *)dst + sizeof(struct mpsc_pbuf_hdr);
-		uint8_t *src_data = (uint8_t *)msg + sizeof(struct mpsc_pbuf_hdr);
-		size_t hdr_wlen = DIV_ROUND_UP(sizeof(struct mpsc_pbuf_hdr), sizeof(uint32_t));
-		if (wlen <= hdr_wlen) {
-			dropped(backend, 1);
-			return;
-		}
-
-		dst->hdr.data = msg->buf.hdr.data;
-		memcpy(dst_data, src_data, (wlen - hdr_wlen) * sizeof(uint32_t));
-
-		mpsc_pbuf_commit(mpsc_buffer, dst);
 
 		if (IS_ENABLED(CONFIG_MULTITHREADING)) {
 			k_event_post(&atci->ctx->event, EVENT_LOG_MSG);
 		}
 
 	} else if (atci->log_backend->ctx->state == STATE_PANIC) {
-		process_log_msg(atci, log_output, msg, true);
+		process_log_msg(atci, log_output, msg, false);
 	}
 }
 
