@@ -51,10 +51,13 @@ config HIO_LTE_THREAD_PRIORITY
 	int "HIO_LTE_THREAD_PRIORITY"
 	default 10
 
+config HIO_LTE_NCELLMEAS_MAX
+	int "HIO_LTE_NCELLMEAS_MAX"
+	default 5
+
 config HEAP_MEM_POOL_SIZE
 	int "HEAP_MEM_POOL_SIZE"
 	default 8192
-
 
 module = HIO_LTE
 module-str = HIO LTE Subsystem
