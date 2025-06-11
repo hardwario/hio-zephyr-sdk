@@ -67,6 +67,11 @@ struct hio_atci_uart_async {
 
 static void async_callback(const struct device *dev, struct uart_event *evt, void *user_data)
 {
+	if (!user_data) {
+		LOG_ERR("User data is NULL");
+		return;
+	}
+
 	struct hio_atci_uart_async *uart = (struct hio_atci_uart_async *)user_data;
 
 	switch (evt->type) {
@@ -74,7 +79,11 @@ static void async_callback(const struct device *dev, struct uart_event *evt, voi
 		k_sem_give(&uart->tx_sem);
 		break;
 	case UART_RX_RDY:
-		uart_async_rx_on_rdy(&uart->async_rx, evt->data.rx.buf, evt->data.rx.len);
+		if (evt->data.rx.buf == NULL || evt->data.rx.len == 0) {
+			LOG_ERR("RX_RDY with NULL buffer or zero length");
+		} else {
+			uart_async_rx_on_rdy(&uart->async_rx, evt->data.rx.buf, evt->data.rx.len);
+		}
 		uart->handler(HIO_ATCI_BACKEND_EVT_RX_RDY, uart->handler_ctx);
 		break;
 	case UART_RX_BUF_REQUEST: {
@@ -92,6 +101,10 @@ static void async_callback(const struct device *dev, struct uart_event *evt, voi
 		break;
 	}
 	case UART_RX_BUF_RELEASED:
+		if (evt->data.rx_buf.buf == NULL) {
+			LOG_ERR("BUF_RELEASED with NULL buffer");
+			return;
+		}
 		uart_async_rx_on_buf_rel(&uart->async_rx, evt->data.rx_buf.buf);
 		break;
 	case UART_RX_DISABLED:
@@ -229,6 +242,8 @@ static int enable(const struct hio_atci_backend *backend)
 
 	int ret;
 
+	uart_async_rx_reset(async_rx);
+
 	ret = pm_device_action_run(uart->dev, PM_DEVICE_ACTION_RESUME);
 	if (ret < 0) {
 		LOG_DBG("Failed to resume UART device: %d", ret);
@@ -277,15 +292,11 @@ static int disable(const struct hio_atci_backend *backend)
 	ret = k_sem_take(&uart->disable_sem, K_MSEC(1000));
 	if (ret < 0) {
 		LOG_ERR("Failed to disable RX: %d", ret);
-		k_mutex_unlock(&uart->mtx);
-		return ret;
 	}
 
 	ret = pm_device_action_run(uart->dev, PM_DEVICE_ACTION_SUSPEND);
 	if (ret < 0) {
 		LOG_ERR("Failed to suspend UART device: %d", ret);
-		k_mutex_unlock(&uart->mtx);
-		return ret;
 	}
 
 	uart->enabled = false;
@@ -301,18 +312,21 @@ static int write(const struct hio_atci_backend *backend, const void *data, size_
 
 	int ret = 0;
 
+	k_mutex_lock(&uart->mtx, K_FOREVER);
+
 	if (uart->enabled) {
 		ret = uart_tx(uart->dev, data, length, SYS_FOREVER_US);
 		if (ret < 0) {
 			*cnt = 0;
-			return ret;
+		} else {
+			*cnt = length;
+			k_sem_take(&uart->tx_sem, K_FOREVER);
 		}
-
-		ret = k_sem_take(&uart->tx_sem, K_FOREVER);
-		*cnt = length;
 	}
 
 	uart->handler(HIO_ATCI_BACKEND_EVT_TX_RDY, uart->handler_ctx);
+
+	k_mutex_unlock(&uart->mtx);
 
 	return ret;
 }
