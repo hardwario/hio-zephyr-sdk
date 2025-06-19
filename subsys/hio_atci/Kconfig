@@ -27,6 +27,20 @@ config HIO_ATCI_CMD_SHELL_AUTH_FLAGS
 	int "ATCI command shell authentication flags"
 	default 0
 
+config HIO_ATCI_CMD_REBOOT
+	bool "ATCI command reboot"
+	default y
+	help
+	  Enable ATCI command for rebooting the device.
+	  It is used to reset the device from the ATCI shell.
+
+config HIO_ATCI_CMD_REBOOT_AUTH_FLAGS
+	int "ATCI command reboot authentication flags"
+	default 0
+	help
+	  Authentication flags for ATCI command reboot.
+	  It is used to restrict access to the reboot command.
+
 config HIO_ATCI_CMD_BUFF_SIZE
 	int "ATCI command buffer size"
 	default 256

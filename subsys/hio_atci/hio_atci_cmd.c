@@ -12,7 +12,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/iterable_sections.h>
-
+#include <zephyr/sys/reboot.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/shell/shell_dummy.h>
 
@@ -153,6 +153,10 @@ static int at_shell_set(const struct hio_atci *atci, char *argv)
 	}
 
 	const struct shell *sh = shell_backend_dummy_get_ptr();
+	if (!sh || !sh->ctx) {
+		LOG_ERR("Shell backend is not initialized or not available");
+		return -ENODEV;
+	}
 	shell_backend_dummy_clear_output(sh);
 
 	char *cmd = sh->ctx->temp_buff;
@@ -195,3 +199,23 @@ static int at_shell_set(const struct hio_atci *atci, char *argv)
 HIO_ATCI_CMD_REGISTER(shell, "$SHELL", CONFIG_HIO_ATCI_CMD_SHELL_AUTH_FLAGS, NULL, at_shell_set,
 		      NULL, NULL, "Shell command");
 #endif /* CONFIG_HIO_ATCI_CMD_SHELL */
+
+#if defined(CONFIG_HIO_ATCI_CMD_REBOOT)
+
+static int at_reboot_action(const struct hio_atci *atci)
+{
+	LOG_INF("Rebooting system...");
+
+	hio_atci_io_write(atci, "OK", 2);
+	hio_atci_io_endline(atci);
+
+	k_sleep(K_MSEC(100)); // Wait for output to be sent
+
+	sys_reboot(SYS_REBOOT_COLD);
+
+	return 0;
+}
+
+HIO_ATCI_CMD_REGISTER(reboot, "$REBOOT", CONFIG_HIO_ATCI_CMD_REBOOT_AUTH_FLAGS, at_reboot_action,
+		      NULL, NULL, NULL, "Reboot the system");
+#endif /* CONFIG_HIO_ATCI_CMD_REBOOT */
