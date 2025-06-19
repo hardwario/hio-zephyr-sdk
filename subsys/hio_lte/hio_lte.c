@@ -528,10 +528,12 @@ static int prepare_event_handler(enum hio_lte_event event)
 		if (ret) {
 			if (ret == -EAGAIN) {
 				break;
+			} else if (ret == -EOPNOTSUPP) {
+				LOG_WRN("FPLMN Erase not supported, continuing");
+			} else {
+				return ret;
+				LOG_ERR("Call `hio_lte_flow_sim_fplmn` failed: %d", ret);
 			}
-
-			LOG_ERR("Call `hio_lte_flow_sim_fplmn` failed: %d", ret);
-			return ret;
 		}
 		enter_state(FSM_STATE_ATTACH);
 		break;
@@ -750,6 +752,8 @@ static int on_enter_ready(void)
 		delegate_event(HIO_LTE_EVENT_SEND);
 	}
 
+	start_timer(K_MSEC(500));
+
 	return 0;
 }
 
@@ -770,6 +774,9 @@ static int ready_event_handler(enum hio_lte_event event)
 		enter_state(FSM_STATE_SEND);
 		break;
 	case HIO_LTE_EVENT_DEREGISTERED:
+		if (m_cereg_param.active_time == -1) {
+			return 0;
+		}
 		enter_state(FSM_STATE_ATTACH);
 		break;
 	case HIO_LTE_EVENT_CSCON_0:
@@ -784,6 +791,18 @@ static int ready_event_handler(enum hio_lte_event event)
 	case HIO_LTE_EVENT_ERROR:
 		enter_state(FSM_STATE_ERROR);
 		break;
+	case HIO_LTE_EVENT_TIMEOUT:
+		hio_lte_state_get_cereg_param(&m_cereg_param);
+		if (m_cereg_param.active_time == -1) {
+			LOG_WRN("Active time is not set, skipping cfun 4");
+			int ret = hio_lte_flow_cfun(4);
+			if (ret < 0) {
+				LOG_ERR("Call `hio_lte_flow_cfun` failed: %d", ret);
+				return ret;
+			}
+			return 0;
+		}
+
 	default:
 		break;
 	}
@@ -809,6 +828,15 @@ static int sleep_event_handler(enum hio_lte_event event)
 {
 	switch (event) {
 	case HIO_LTE_EVENT_SEND:
+		if (m_cereg_param.active_time == -1) {
+			int ret = hio_lte_flow_cfun(1);
+			if (ret < 0) {
+				LOG_ERR("Call `hio_lte_flow_cfun` failed: %d", ret);
+				return ret;
+			}
+			enter_state(FSM_STATE_ATTACH);
+			return 0;
+		};
 		enter_state(FSM_STATE_SEND);
 		break;
 	case HIO_LTE_EVENT_ERROR:
@@ -955,6 +983,10 @@ static int receive_event_handler(enum hio_lte_event event)
 {
 	switch (event) {
 	case HIO_LTE_EVENT_RECV:
+		if (!m_send_recv_param) {
+			enter_state(FSM_STATE_CONEVAL);
+			return 0;
+		}
 		__fallthrough;
 	case HIO_LTE_EVENT_READY:
 		__fallthrough;
@@ -963,7 +995,7 @@ static int receive_event_handler(enum hio_lte_event event)
 		break;
 	case HIO_LTE_EVENT_CSCON_0:
 		m_cscon = false;
-		enter_state(FSM_STATE_CONEVAL);
+		// enter_state(FSM_STATE_CONEVAL);
 		break;
 	case HIO_LTE_EVENT_DEREGISTERED:
 		enter_state(FSM_STATE_ATTACH);
@@ -979,11 +1011,10 @@ static int receive_event_handler(enum hio_lte_event event)
 
 static int on_enter_coneval(void)
 {
-	// int ret = hio_lte_flow_coneval();
-	// if (ret < 0) {
-	// 	LOG_ERR("Call `hio_lte_flow_coneval` failed: %d", ret);
-	// 	return ret;
-	// }
+	int ret = hio_lte_flow_coneval();
+	if (ret < 0) {
+		LOG_WRN("Call `hio_lte_flow_coneval` failed: %d", ret);
+	}
 
 	delegate_event(HIO_LTE_EVENT_READY);
 

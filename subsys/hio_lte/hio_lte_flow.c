@@ -7,6 +7,7 @@
 /* HIO includes */
 #include <hio/hio_rtc.h>
 #include <hio/hio_lte.h>
+#include <hio/hio_tok.h>
 
 /* nRF includes */
 #include <modem/nrf_modem_lib.h>
@@ -56,9 +57,94 @@ static struct nrf_sockaddr_in m_addr_info;
 static int m_socket_fd;
 K_MUTEX_DEFINE(m_socket_fd_lock);
 
+int cellid_hex2int(char *ci, size_t size, int *cid)
+{
+	if (!ci || size != 9 || !cid) {
+		return -EINVAL;
+	}
+
+	uint8_t cell_id_buf[4];
+
+	size_t n = hex2bin(ci, 8, cell_id_buf, sizeof(cell_id_buf));
+
+	if (n != sizeof(cell_id_buf)) {
+		return -EINVAL;
+	}
+
+	*cid = sys_get_be32(cell_id_buf);
+
+	return 0;
+}
+
+int parse_gprs_timer(const char *binary_string, int flag)
+{
+	if (strlen(binary_string) != 8) {
+		return GRPS_TIMER_INVALID;
+	}
+
+	int byte_value = (int)strtol(binary_string, NULL, 2);
+	int time_unit = (byte_value >> 5) & 0x07;
+	int timer_value = byte_value & 0x1F;
+
+	if (time_unit == 0b111) {
+		return GRPS_TIMER_DEACTIVATED;
+	}
+
+	int multiplier = 0;
+	if (flag == 2) {
+		/* GPRS Timer 2 (Active-Time) */
+		switch (time_unit) {
+		case 0b000:
+			multiplier = 2;
+			break; /* 2 seconds */
+		case 0b001:
+			multiplier = 60;
+			break; /* 1 minute */
+		case 0b010:
+			multiplier = 360;
+			break; /* 6 minutes */
+		default:
+			return GRPS_TIMER_INVALID;
+		}
+	} else if (flag == 3) {
+		/* GPRS Timer 3 (Periodic-TAU-ext) */
+		switch (time_unit) {
+		case 0b000:
+			multiplier = 600;
+			break; /* 10 minutes */
+		case 0b001:
+			multiplier = 3600;
+			break; /* 1 hour */
+		case 0b010:
+			multiplier = 36000;
+			break; /* 10 hours */
+		case 0b011:
+			multiplier = 2;
+			break; /* 2 seconds */
+		case 0b100:
+			multiplier = 30;
+			break; /* 30 seconds */
+		case 0b101:
+			multiplier = 60;
+			break; /* 1 minute */
+		case 0b110:
+			multiplier = 1152000;
+			break; /* 320 hours */
+		default:
+			return GRPS_TIMER_INVALID;
+		}
+	} else {
+		return GRPS_TIMER_INVALID;
+	}
+
+	return timer_value * multiplier;
+}
+
 static int parse_cereg(const char *line, struct hio_lte_cereg_param *param)
 {
-	int ret;
+	/* <stat>[,[<tac>],[<ci>],[<AcT>][,<cause_type>],[<reject_cause>][,[<Active-Time>],[<Periodic-TAU-ext>]]]]
+	5,"AF66","009DE067",9,,,"00000000","00111000"
+	2,"B4DC","000AE520",9 */
 
 	if (!line || !param) {
 		return -EINVAL;
@@ -66,32 +152,98 @@ static int parse_cereg(const char *line, struct hio_lte_cereg_param *param)
 
 	memset(param, 0, sizeof(*param));
 
-	int stat = 0;
-	char tac[5] = "";
-	char cid[9] = "";
-	int act = 0;
+	const char *p = line;
 
-	ret = sscanf(line, "%d,\"%4[0-9A-F]\",\"%8[0-9A-F]\",%d", &stat, tac, cid, &act);
-	if (ret != 1 && ret != 4) {
-		LOG_ERR("Failed to parse cereg urc: %d", ret);
+	LOG_INF("Parsing CEREG: %s", line);
+
+	bool def;
+	long num;
+	char str[8 + 1];
+
+	if (!(p = hio_tok_num(p, &def, &num)) || !def) {
+		LOG_ERR("Failed to parse stat");
 		return -EINVAL;
 	}
 
-	if (ret == 1) {
-		param->stat = (enum hio_lte_cereg_param_stat)stat;
+	param->stat = (enum hio_lte_cereg_param_stat)num;
+
+	if (!(p = hio_tok_sep(p))) {
+		param->valid = true;
 		return 0;
 	}
 
-	int cid_int = strtol(cid, NULL, 16);
-	cid_int = ((cid_int & 0xFF000000) >> 24) | ((cid_int & 0x00FF0000) >> 8) |
-		  ((cid_int & 0x0000FF00) << 8) | ((cid_int & 0x000000FF) << 24);
-
-	if (!strcpy(param->tac, tac)) {
-		LOG_ERR("Failed to copy tac parameter");
+	if (!(p = hio_tok_str(p, &def, param->tac, sizeof(param->tac))) || !def) {
 		return -EINVAL;
 	}
-	param->stat = (enum hio_lte_cereg_param_stat)stat;
-	param->act = (enum hio_lte_cereg_param_act)act;
+
+	if (!(p = hio_tok_sep(p))) {
+		return -EINVAL;
+	}
+
+	if (!(p = hio_tok_str(p, &def, str, sizeof(str))) || !def) {
+		return -EINVAL;
+	}
+
+	if (cellid_hex2int(str, sizeof(str), &param->cid) != 0) {
+		return -EINVAL;
+	}
+
+	if (!(p = hio_tok_sep(p))) {
+		return -EINVAL;
+	}
+
+	if (!(p = hio_tok_num(p, &def, &num)) || !def) {
+		return -EINVAL;
+	}
+
+	param->act = (enum hio_lte_cereg_param_act)num;
+
+	if (!(p = hio_tok_sep(p))) {
+		param->valid = true;
+		return 0;
+	}
+
+	if (!(p = hio_tok_num(p, &def, &num)) && !def) {
+		return -EINVAL;
+	}
+
+	param->cause_type = num;
+
+	if (!(p = hio_tok_sep(p))) {
+		return 0;
+	}
+
+	if (!(p = hio_tok_num(p, &def, &num)) && !def) {
+		return -EINVAL;
+	}
+
+	param->reject_cause = num;
+
+	if (!(p = hio_tok_sep(p))) {
+		param->valid = true;
+		return 0;
+	}
+
+	if (!(p = hio_tok_str(p, &def, str, sizeof(str))) || !def) {
+		return -EINVAL;
+	}
+
+	param->active_time = parse_gprs_timer(str, 2);
+
+	if (!(p = hio_tok_sep(p))) {
+		return -EINVAL;
+	}
+
+	if (!(p = hio_tok_str(p, &def, str, sizeof(str))) || !def) {
+		return -EINVAL;
+	}
+
+	param->periodic_tau_ext = parse_gprs_timer(str, 3);
+
+	if (!hio_tok_end(p)) {
+		return -EINVAL;
+	}
+
 	param->valid = true;
 
 	return 0;
@@ -174,6 +326,12 @@ static void monitor_handler(const char *line)
 {
 	int ret;
 
+	for (size_t i = 0; i < strlen(line); i++) {
+		if (line[i] == '\r' || line[i] == '\n') {
+			((char *)line)[i] = '\0';
+		}
+	}
+
 	LOG_INF("URC: %s", line);
 
 	if (!strcmp(line, "Ready")) {
@@ -221,7 +379,7 @@ static void monitor_handler(const char *line)
 			LOG_WRN("Call `parse_xmodemsleep` failed: %d", ret);
 			return;
 		}
-		if (p2 > 0) {
+		if (p2 > 0 || p1 == 4) {
 			m_event_delegate_cb(HIO_LTE_EVENT_XMODEMSLEEP);
 		}
 	} else if (!strncmp(line, "%RAI: ", 6)) {
@@ -626,7 +784,7 @@ int hio_lte_flow_sim_fplmn(void)
 		ret = hio_lte_talk_crsm_214();
 		if (ret) {
 			LOG_ERR("Call `hio_lte_talk_crsm_214` failed: %d", ret);
-			return ret;
+			return -EOPNOTSUPP;
 		}
 
 		ret = hio_lte_talk_at_cfun(4);
@@ -958,20 +1116,20 @@ int parse_coneval(const char *str, struct hio_lte_conn_param *params)
 		return -EINVAL;
 	}
 
-	int cid_int = strtol(cid, NULL, 16);
-	cid_int = ((cid_int & 0xFF000000) >> 24) | ((cid_int & 0x00FF0000) >> 8) |
-		  ((cid_int & 0x0000FF00) << 8) | ((cid_int & 0x000000FF) << 24);
-
 	params->result = result;
+
 	if (params->result != 0) {
 		return 0;
+	}
+
+	if (cellid_hex2int(cid, sizeof(cid), &params->cid) != 0) {
+		return -EINVAL;
 	}
 
 	params->eest = energy_estimate;
 	params->rsrp = rsrp - 140;
 	params->rsrq = (rsrq - 39) / 2;
 	params->snr = snr - 24;
-	params->cid = cid_int;
 	params->plmn = plmn;
 	params->earfcn = earfcn;
 	params->band = band;

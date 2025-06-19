@@ -37,6 +37,9 @@ enum hio_lte_event {
 	HIO_LTE_EVENT_XGPS,
 };
 
+#define GRPS_TIMER_DEACTIVATED -1
+#define GRPS_TIMER_INVALID     -2
+
 typedef void (*hio_lte_flow_event_delegate_cb)(enum hio_lte_event event);
 int hio_lte_flow_init(hio_lte_flow_event_delegate_cb cb);
 int hio_lte_flow_start(void);
