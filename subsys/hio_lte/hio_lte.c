@@ -64,8 +64,9 @@ struct ring_buf m_event_rb;
 K_MUTEX_DEFINE(m_event_rb_lock);
 
 static K_EVENT_DEFINE(m_states_event);
-#define CONNECTED_BIT BIT(0)
-#define SEND_RECV_BIT BIT(1)
+#define SEND_RECV_BIT BIT(0)
+#define ATTACHED_BIT  BIT(1)
+#define CONNECTED_BIT BIT(2)
 
 K_MUTEX_DEFINE(m_send_recv_lock);
 struct hio_lte_send_recv_param *m_send_recv_param = NULL;
@@ -337,7 +338,7 @@ int hio_lte_enable(void)
 
 int hio_lte_is_attached(bool *attached)
 {
-	*attached = k_event_test(&m_states_event, CONNECTED_BIT) ? true : false;
+	*attached = k_event_test(&m_states_event, ATTACHED_BIT) ? true : false;
 	return 0;
 }
 
@@ -462,7 +463,7 @@ static int on_enter_error(void)
 {
 	int ret;
 
-	k_event_clear(&m_states_event, CONNECTED_BIT);
+	k_event_clear(&m_states_event, ATTACHED_BIT | CONNECTED_BIT);
 
 	ret = hio_lte_flow_stop();
 	if (ret < 0) {
@@ -531,8 +532,8 @@ static int prepare_event_handler(enum hio_lte_event event)
 			} else if (ret == -EOPNOTSUPP) {
 				LOG_WRN("FPLMN Erase not supported, continuing");
 			} else {
-				return ret;
 				LOG_ERR("Call `hio_lte_flow_sim_fplmn` failed: %d", ret);
+				return ret;
 			}
 		}
 		enter_state(FSM_STATE_ATTACH);
@@ -652,7 +653,7 @@ static int on_enter_attach(void)
 
 	m_start = k_uptime_get_32();
 
-	k_event_clear(&m_states_event, CONNECTED_BIT);
+	k_event_clear(&m_states_event, ATTACHED_BIT | CONNECTED_BIT);
 
 	struct hio_lte_attach_timeout timeout = get_attach_timeout(m_attach_retry_count);
 
@@ -673,6 +674,7 @@ static int attach_event_handler(enum hio_lte_event event)
 		m_metrics.attach_last_duration_ms = k_uptime_get_32() - m_start;
 		m_metrics.attach_duration_ms += m_metrics.attach_last_duration_ms;
 		k_mutex_unlock(&m_metrics_lock);
+		k_event_post(&m_states_event, ATTACHED_BIT);
 		enter_state(FSM_STATE_OPEN_SOCKET);
 		break;
 	case HIO_LTE_EVENT_CSCON_1:
@@ -710,6 +712,17 @@ static int on_leave_attach(void)
 
 static int on_enter_open_socket(void)
 {
+	if (strcmp(g_hio_lte_config.addr, "127.0.0.1") == 0) {
+		LOG_WRN("Using loopback address, skipping socket open");
+
+		int ret = hio_lte_flow_coneval();
+		if (ret < 0) {
+			LOG_WRN("Call `hio_lte_flow_coneval` failed: %d", ret);
+		}
+
+		return 0;
+	}
+
 	int ret = hio_lte_flow_open_socket();
 	if (ret < 0) {
 		LOG_ERR("Call `hio_lte_flow_open_socket` failed: %d", ret);
