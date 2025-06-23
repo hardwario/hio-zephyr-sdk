@@ -56,12 +56,31 @@ config HIO_ATCI_PRINTF_BUFF_SIZE
 	  It is working like stdio buffering in Linux systems
 	  to limit number of peripheral access calls.
 
-config HIO_ATCI_CRC_ENABLED
-	bool "ATCI CRC enabled"
-	default y
+choice
+	prompt "ATCI CRC mode"
+	default HIO_ATCI_CRC_MODE_OPTIONAL
+
+config HIO_ATCI_CRC_MODE_DISABLED
+	bool "Disabled"
 	help
-	  Enable CRC calculation for ATCI commands.
-	  It is used to verify command integrity.
+	  CRC is not used at all.
+
+config HIO_ATCI_CRC_MODE_STRICT
+	bool "Strict"
+	help
+	  CRC must be present and valid. Otherwise, the command is rejected.
+
+config HIO_ATCI_CRC_MODE_OPTIONAL
+	bool "Optional"
+	help
+	  CRC is verified if present. If not present, the command is accepted.
+endchoice
+
+config HIO_ATCI_CRC_MODE
+	int "ATCI CRC mode"
+	default 0 if HIO_ATCI_CRC_MODE_DISABLED
+	default 1 if HIO_ATCI_CRC_MODE_STRICT
+	default 2 if HIO_ATCI_CRC_MODE_OPTIONAL
 
 config HIO_ATCI_LOG_BACKEND
 	bool "ATCI log backend"

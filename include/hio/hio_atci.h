@@ -156,7 +156,7 @@ struct hio_atci_ctx {
 	uint8_t fprintf_flag; /**< Flag for fprintf output. */
 	bool ret_printed;
 	uint32_t crc;
-	bool crc_enabled;
+	uint8_t crc_mode; /**< CRC mode: 0 - disabled, 1 - enabled. 2 - optional */
 };
 
 /** @brief ATCI instance definition. */

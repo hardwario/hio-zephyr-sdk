@@ -36,6 +36,10 @@ LOG_MODULE_REGISTER(hio_atci, CONFIG_HIO_ATCI_LOG_LEVEL);
 #define EVENT_KILL    BIT(2)
 #define EVENT_LOG_MSG BIT(3)
 
+#define CRC_MODE_DISABLED 0
+#define CRC_MODE_ENABLED  1
+#define CRC_MODE_OPTIONAL 2
+
 static int default_acl_check_cb(const struct hio_atci *atci, const struct hio_atci_cmd *cmd,
 				enum hio_atci_cmd_type type, void *user_data)
 {
@@ -85,7 +89,7 @@ void hio_atci_io_write(const struct hio_atci *atci, const void *data, size_t len
 	size_t tmp_cnt;
 	int ret;
 
-	if (atci->ctx->crc_enabled) {
+	if (atci->ctx->crc_mode) {
 		atci->ctx->crc = crc32_ieee_update(atci->ctx->crc, data, length);
 	}
 
@@ -106,7 +110,7 @@ void hio_atci_io_write(const struct hio_atci *atci, const void *data, size_t len
 
 void hio_atci_io_endline(const struct hio_atci *atci)
 {
-	if (atci->ctx->crc_enabled) {
+	if (atci->ctx->crc_mode) {
 		snprintf(atci->ctx->fprintf_buff, CONFIG_HIO_ATCI_PRINTF_BUFF_SIZE, "\t%08X\r\n",
 			 atci->ctx->crc);
 		hio_atci_io_write(atci, atci->ctx->fprintf_buff,
@@ -153,6 +157,41 @@ void hio_atci_io_writef(const struct hio_atci *atci, const char *fmt, ...)
 	va_end(args);
 }
 
+static int check_crc(const struct hio_atci *atci)
+{
+	if (atci->ctx->crc_mode == CRC_MODE_DISABLED) {
+		return 0;
+	}
+
+	/* Test format: AT<TAB><CRC32> */
+	if (atci->ctx->cmd_buff_len < 11) {
+		if (atci->ctx->crc_mode == CRC_MODE_OPTIONAL) {
+			return 0;
+		}
+		return -ECRC_FORMAT;
+	}
+
+	if (atci->ctx->cmd_buff[atci->ctx->cmd_buff_len - 9] != '\t') {
+		if (atci->ctx->crc_mode == CRC_MODE_OPTIONAL) {
+			return 0;
+		}
+		return -ECRC_FORMAT;
+	}
+
+	uint32_t crc = crc32_ieee_update(0, atci->ctx->cmd_buff, atci->ctx->cmd_buff_len - 9);
+
+	uint32_t cmd_crc = strtoul(&atci->ctx->cmd_buff[atci->ctx->cmd_buff_len - 8], NULL, 16);
+	if (crc != cmd_crc) {
+		LOG_ERR("CRC mismatch: expected %08X, got %08X", crc, cmd_crc);
+		return -ECRC_MISMATCH;
+	}
+
+	atci->ctx->cmd_buff_len -= 9; /* Remove tab and CRC */
+	atci->ctx->cmd_buff[atci->ctx->cmd_buff_len] = '\0';
+
+	return 0;
+}
+
 static int execute(const struct hio_atci *atci)
 {
 
@@ -165,29 +204,9 @@ static int execute(const struct hio_atci *atci)
 		return -ENOMSG;
 	}
 
-	if (atci->ctx->crc_enabled) {
-		/* Test format: AT<TAB><CRC32> */
-		if (atci->ctx->cmd_buff_len < 11) {
-			LOG_ERR("Command too short for CRC: %s", buff);
-			return -ECRC_FORMAT;
-		}
-
-		if (atci->ctx->cmd_buff[atci->ctx->cmd_buff_len - 9] != '\t') {
-			LOG_ERR("Invalid command format, expected tab before CRC: %s", buff);
-			return -ECRC_FORMAT;
-		}
-
-		uint32_t crc =
-			crc32_ieee_update(0, atci->ctx->cmd_buff, atci->ctx->cmd_buff_len - 9);
-
-		uint32_t cmd_crc = strtoul(&buff[atci->ctx->cmd_buff_len - 8], NULL, 16);
-		if (crc != cmd_crc) {
-			LOG_ERR("CRC mismatch: expected %08X, got %08X", crc, cmd_crc);
-			return -ECRC_MISMATCH;
-		}
-
-		atci->ctx->cmd_buff_len -= 9; /* Remove tab and CRC */
-		atci->ctx->cmd_buff[atci->ctx->cmd_buff_len] = '\0';
+	int ret = check_crc(atci);
+	if (ret) {
+		return ret;
 	}
 
 	if (atci->ctx->cmd_buff_len == 2) {
@@ -230,7 +249,7 @@ static int execute(const struct hio_atci *atci)
 		return -ENOEXEC;
 	}
 
-	int ret = -ENOTSUP;
+	ret = -ENOTSUP;
 
 	atci->ctx->ret_printed = false;
 
@@ -435,9 +454,7 @@ int hio_atci_init(const struct hio_atci *atci, const void *backend_config, bool 
 
 	memset(atci->ctx, 0, sizeof(*atci->ctx));
 
-#if defined(CONFIG_HIO_ATCI_CRC_ENABLED)
-	atci->ctx->crc_enabled = true;
-#endif
+	atci->ctx->crc_mode = CONFIG_HIO_ATCI_CRC_MODE;
 
 	k_event_init(&atci->ctx->event);
 	k_mutex_init(&atci->ctx->wr_mtx);

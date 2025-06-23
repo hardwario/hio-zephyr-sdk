@@ -5,6 +5,8 @@
  * SPDX-License-Identifier: LicenseRef-HARDWARIO-5-Clause
  */
 
+#include "hio_atci_io.h"
+
 /* HIO includes */
 #include <hio/hio_atci.h>
 
@@ -109,12 +111,17 @@ static int at_crc_set(const struct hio_atci *atci, char *argv)
 	}
 
 	if (strcmp(argv, "1") == 0) {
-		atci->ctx->crc_enabled = true;
+		atci->ctx->crc_mode = 0;
 		return 0;
 	}
 
 	if (strcmp(argv, "0") == 0) {
-		atci->ctx->crc_enabled = false;
+		atci->ctx->crc_mode = 1;
+		return 0;
+	}
+
+	if (strcmp(argv, "2") == 0) {
+		atci->ctx->crc_mode = 2;
 		return 0;
 	}
 
@@ -123,7 +130,7 @@ static int at_crc_set(const struct hio_atci *atci, char *argv)
 
 static int at_crc_read(const struct hio_atci *atci)
 {
-	hio_atci_printfln(atci, "$CRC: %d", atci->ctx->crc_enabled ? 1 : 0);
+	hio_atci_printfln(atci, "$CRC: %d", atci->ctx->crc_mode);
 
 	return 0;
 }
