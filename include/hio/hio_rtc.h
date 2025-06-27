@@ -40,8 +40,11 @@ struct hio_rtc_tm {
 	int seconds;
 };
 
+int hio_rtc_get_tm(struct hio_rtc_tm *tm);
+int hio_rtc_set_tm(const struct hio_rtc_tm *tm);
 int hio_rtc_get_ts(int64_t *ts);
 int hio_rtc_set_ts(int64_t ts);
+int hio_rtc_get_utc_string(char *out_str, size_t out_str_size);
 
 /** @} */
 

@@ -67,7 +67,24 @@ static int get_day_of_week(int year, int month, int day)
 	return w ? w : 7;
 }
 
-static int set_tm(const struct hio_rtc_tm *tm)
+int hio_rtc_get_tm(struct hio_rtc_tm *tm)
+{
+	irq_disable(RTC0_IRQn);
+
+	tm->year = m_year;
+	tm->month = m_month;
+	tm->day = m_day;
+	tm->wday = m_wday;
+	tm->hours = m_hours;
+	tm->minutes = m_minutes;
+	tm->seconds = m_seconds;
+
+	irq_enable(RTC0_IRQn);
+
+	return 0;
+}
+
+int hio_rtc_set_tm(const struct hio_rtc_tm *tm)
 {
 	if (tm->year < 1970 || tm->year > 2099) {
 		return -EINVAL;
@@ -149,10 +166,28 @@ int hio_rtc_set_ts(int64_t ts)
 		.seconds = result.tm_sec,
 	};
 
-	ret = set_tm(&tm);
+	ret = hio_rtc_set_tm(&tm);
 	if (ret) {
 		LOG_ERR("Call `set_tm` failed: %d", ret);
 		return ret;
+	}
+
+	return 0;
+}
+
+int hio_rtc_get_utc_string(char *out_str, size_t out_str_size)
+{
+	struct hio_rtc_tm tm;
+	int ret = hio_rtc_get_tm(&tm);
+	if (ret) {
+		LOG_ERR("Call `hio_rtc_get_tm` failed: %d", ret);
+		return ret;
+	}
+
+	if (snprintf(out_str, out_str_size, "%04d-%02d-%02dT%02d:%02d:%02dZ", tm.year, tm.month,
+		     tm.day, tm.hours, tm.minutes, tm.seconds) < 0) {
+		LOG_ERR("Call `snprintf` failed");
+		return -ENOMEM;
 	}
 
 	return 0;
@@ -238,6 +273,122 @@ static int request_lfclk(void)
 
 	return 0;
 }
+
+static int cmd_rtc_get(const struct shell *shell, size_t argc, char **argv)
+{
+	int ret;
+
+	struct hio_rtc_tm tm;
+	ret = hio_rtc_get_tm(&tm);
+	if (ret) {
+		LOG_ERR("Call `hio_rtc_get_tm` failed: %d", ret);
+		return ret;
+	}
+
+	static const char *wday[] = {
+		"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun",
+	};
+
+	shell_print(shell, "%04d/%02d/%02d %02d:%02d:%02d %s", tm.year, tm.month, tm.day, tm.hours,
+		    tm.minutes, tm.seconds, wday[tm.wday - 1]);
+
+	return 0;
+}
+
+static int cmd_rtc_set(const struct shell *shell, size_t argc, char **argv)
+{
+	int ret;
+
+	char *date = argv[1];
+	char *time = argv[2];
+
+	/* clang-format off */
+
+	if (strlen(date) != 10 ||
+	    !isdigit((unsigned char)date[0]) ||
+	    !isdigit((unsigned char)date[1]) ||
+	    !isdigit((unsigned char)date[2]) ||
+	    !isdigit((unsigned char)date[3]) ||
+	    date[4] != '/' ||
+	    !isdigit((unsigned char)date[5]) ||
+	    !isdigit((unsigned char)date[6]) ||
+	    date[7] != '/' ||
+	    !isdigit((unsigned char)date[8]) ||
+	    !isdigit((unsigned char)date[9])) {
+		shell_help(shell);
+		return -EINVAL;
+	}
+
+	if (strlen(time) != 8 ||
+	    !isdigit((unsigned char)time[0]) ||
+	    !isdigit((unsigned char)time[1]) ||
+	    time[2] != ':' ||
+	    !isdigit((unsigned char)time[3]) ||
+	    !isdigit((unsigned char)time[4]) ||
+	    time[5] != ':' ||
+	    !isdigit((unsigned char)time[6]) ||
+	    !isdigit((unsigned char)time[7])) {
+		shell_help(shell);
+		return -EINVAL;
+	}
+
+	/* clang-format on */
+
+	date[4] = '\0';
+	date[7] = '\0';
+	time[2] = '\0';
+	time[5] = '\0';
+
+	struct hio_rtc_tm tm;
+
+	tm.year = strtoll(&date[0], NULL, 10);
+	tm.month = strtoll(&date[5], NULL, 10);
+	tm.day = strtoll(&date[8], NULL, 10);
+	tm.hours = strtoll(&time[0], NULL, 10);
+	tm.minutes = strtoll(&time[3], NULL, 10);
+	tm.seconds = strtoll(&time[6], NULL, 10);
+
+	ret = hio_rtc_set_tm(&tm);
+	if (ret) {
+		LOG_ERR("Call `hio_rtc_set_tm` failed: %d", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+static int print_help(const struct shell *shell, size_t argc, char **argv)
+{
+	if (argc > 1) {
+		shell_error(shell, "command not found: %s", argv[1]);
+		shell_help(shell);
+		return -EINVAL;
+	}
+
+	shell_help(shell);
+
+	return 0;
+}
+
+/* clang-format off */
+
+SHELL_STATIC_SUBCMD_SET_CREATE(
+	sub_rtc,
+
+	SHELL_CMD_ARG(get, NULL,
+	              "Get current date/time (format YYYY/MM/DD hh:mm:ss).",
+	              cmd_rtc_get, 1, 0),
+
+	SHELL_CMD_ARG(set, NULL,
+	              "Set current date/time (format YYYY/MM/DD hh:mm:ss).",
+	              cmd_rtc_set, 3, 0),
+
+	SHELL_SUBCMD_SET_END
+);
+
+SHELL_CMD_REGISTER(rtc, &sub_rtc, "RTC commands for date/time operations.", print_help);
+
+/* clang-format on */
 
 static int init(void)
 {
