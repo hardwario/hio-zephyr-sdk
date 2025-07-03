@@ -10,3 +10,8 @@ west-commands:
       - name: gen-codec
         class: GenerateCodec
         help: generate codec
+  - file: scripts/west_commands/serial-console.py
+    commands:
+      - name: serial-console
+        class: SerialConsole
+        help: connect to serial console
