@@ -157,6 +157,7 @@ struct hio_atci_ctx {
 	bool ret_printed;
 	uint32_t crc;
 	uint8_t crc_mode; /**< CRC mode: 0 - disabled, 1 - enabled. 2 - optional */
+	bool modem_trace; /**< Flag for modem trace output. */
 };
 
 /** @brief ATCI instance definition. */
@@ -273,6 +274,16 @@ int hio_atci_log_backend_output_func(uint8_t *data, size_t length, void *ctx);
  */
 int hio_atci_init(const struct hio_atci *atci, const void *backend_config, bool log_backend,
 		  uint32_t init_log_level);
+
+/** * @brief Get an ATCI instance by its name.
+ *
+ * @param[in] name Pointer to the name of the ATCI instance.
+ * @param[out] atci Pointer to a pointer where the ATCI instance will be stored.
+ *
+ * @retval 0 on success.
+ * @retval -ENOENT if the ATCI instance with the specified name does not exist.
+ */
+int hio_atci_get_by_name(const char *name, const struct hio_atci **atci);
 
 /**
  * @brief Write raw data to the ATCI output.

@@ -36,7 +36,7 @@ config HIO_ATCI_BACKEND_UART_ASYNC_RX_TIMEOUT
 
 config HIO_ATCI_BACKEND_UART_ASYNC_RX_BUFFER_COUNT
 	int "Number of RX buffers"
-	default 4
+	default 32
 	range 2 64
 	help
 	  Number of RX buffers. Some UART driver implementations changes buffers
@@ -46,7 +46,7 @@ config HIO_ATCI_BACKEND_UART_ASYNC_RX_BUFFER_COUNT
 
 config HIO_ATCI_BACKEND_UART_ASYNC_RX_BUFFER_SIZE
 	int "Size of the RX buffer"
-	default 16
+	default 8
 	help
 	  Size of a single RX buffer. Together with buffer count it defines the
 	  space that can hold RX data. It may be decreased if atci input is
@@ -61,6 +61,5 @@ config HIO_ATCI_BACKEND_UART_LOG_TIMEOUT
 	int "Log message drop timeout (in milliseconds)"
 	default 100
 
-
-
 endif # HIO_ATCI_BACKEND_UART
+

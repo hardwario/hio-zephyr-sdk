@@ -5,6 +5,7 @@
  */
 
 #include "hio_atci_io.h"
+#include "hio_atci_modem_trace.h"
 
 /* HIO includes */
 #include <hio/hio_atci.h>
@@ -409,9 +410,13 @@ static void atci_thread(void *atci_handle, void *arg_log_backend, void *arg_log_
 
 	atci->ctx->state = HIO_ATCI_STATE_ACTIVE;
 
+	k_timeout_t timeout = K_MSEC(1);
+
 	while (true) {
 		uint32_t events = k_event_wait(
-			&atci->ctx->event, EVENT_RX | EVENT_KILL | EVENT_LOG_MSG, true, K_FOREVER);
+			&atci->ctx->event, EVENT_RX | EVENT_KILL | EVENT_LOG_MSG, true, timeout);
+
+		timeout = K_MSEC(100); /* Reset timeout for next wait */
 
 		if (events & EVENT_KILL) {
 			LOG_INF("ATCI thread killed");
@@ -438,6 +443,15 @@ static void atci_thread(void *atci_handle, void *arg_log_backend, void *arg_log_
 		if (atci->backend->api->update) {
 			atci->backend->api->update(atci->backend);
 		}
+
+#if defined(CONFIG_HIO_ATCI_MODEM_TRACE)
+		if (atci->ctx->modem_trace) {
+			int ret = hio_atci_modem_trace_process(atci);
+			if (ret > 0) {
+				timeout = K_MSEC(15);
+			}
+		}
+#endif
 
 		k_mutex_unlock(&atci->ctx->wr_mtx);
 	}
@@ -469,6 +483,12 @@ int hio_atci_init(const struct hio_atci *atci, const void *backend_config, bool 
 
 	atci->ctx->state = HIO_ATCI_STATE_INITIALIZED;
 
+#if defined(CONFIG_HIO_ATCI_MODEM_TRACE)
+	if (strcmp(atci->name, "hio_atci_uart_0") == 0) {
+		atci->ctx->modem_trace = true;
+	}
+#endif
+
 	k_tid_t tid;
 	tid = k_thread_create(atci->thread, atci->stack, CONFIG_HIO_ATCI_STACK_SIZE, atci_thread,
 			      (void *)atci, (void *)log_backend, UINT_TO_POINTER(init_log_level),
@@ -478,6 +498,24 @@ int hio_atci_init(const struct hio_atci *atci, const void *backend_config, bool 
 	atci->ctx->tid = tid;
 
 	return 0;
+}
+
+int hio_atci_get_by_name(const char *name, const struct hio_atci **atci)
+{
+	if (!name || !atci) {
+		return -EINVAL;
+	}
+
+	STRUCT_SECTION_FOREACH(hio_atci, item) {
+		if (strncmp(item->name, name, strlen(name)) == 0) {
+			if (atci) {
+				*atci = item;
+			}
+			return 0;
+		}
+	}
+
+	return -ENOENT;
 }
 
 #define OUTPUT_LOCK_BEGIN()                                                                        \

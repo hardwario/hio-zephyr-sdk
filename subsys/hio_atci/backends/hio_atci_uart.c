@@ -96,6 +96,7 @@ static void async_callback(const struct device *dev, struct uart_event *evt, voi
 				uart_async_rx_on_buf_rel(&uart->async_rx, buf);
 			}
 		} else {
+			LOG_ERR("RX_BUF_REQUEST failed to get buffer");
 			atomic_inc(&uart->pending_rx_req);
 		}
 		break;
@@ -284,6 +285,8 @@ static int disable(const struct hio_atci_backend *backend)
 		return 0;
 	}
 
+	uart->enabled = false;
+
 	int ret = uart_rx_disable(uart->dev);
 	if (ret < 0) {
 		LOG_WRN("RX disable failed (may already be off): %d", ret);
@@ -299,7 +302,6 @@ static int disable(const struct hio_atci_backend *backend)
 		LOG_ERR("Failed to suspend UART device: %d", ret);
 	}
 
-	uart->enabled = false;
 	LOG_INF("UART backend disabled");
 	k_mutex_unlock(&uart->mtx);
 	return 0;

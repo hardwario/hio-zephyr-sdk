@@ -93,6 +93,16 @@ config HIO_ATCI_LOG_FORMAT_TIMESTAMP
 	help
 	  Enable timestamp formatting.
 
+config HIO_ATCI_MODEM_TRACE
+	bool "Modem trace output"
+	default n
+	select NRF_MODEM_LIB_TRACE
+	select BASE64
+
+choice NRF_MODEM_LIB_TRACE_BACKEND
+    prompt "Modem trace backend"
+    default NRF_MODEM_LIB_TRACE_BACKEND_RAM if HIO_ATCI_MODEM_TRACE
+endchoice
 
 module = HIO_ATCI
 module-str = HIO ATCI Subsystem
