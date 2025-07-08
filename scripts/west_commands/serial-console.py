@@ -117,7 +117,7 @@ class SerialConnector(Connector):
                             data = base64.b64decode(b64text)
                             self.modem_trace_fd.write(data)
                 elif line.startswith("@LOG: "):
-                    self._emit(Event(EventType.LOG, line[7:]))
+                    self._emit(Event(EventType.LOG, line[7:-1].encode('utf-8').decode('unicode_escape')))
                 else:
                     self._emit(Event(EventType.OUT, line))
             except queue.Empty:
