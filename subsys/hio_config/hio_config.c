@@ -196,9 +196,34 @@ int hio_config_save_without_reboot(void)
 	return save();
 }
 
+static int delete_item_cb(const struct hio_config *module, const struct hio_config_item *item,
+			  void *user_data)
+{
+	if (module == NULL || item == NULL) {
+		return -EINVAL;
+	}
+
+	if (item->name == NULL) {
+		LOG_ERR("Item '%s' has no name", item->name);
+		return -EINVAL;
+	}
+
+	char settings_key[50];
+	snprintf(settings_key, sizeof(settings_key), "%s/%s",
+		 module->storage_name ? module->storage_name : module->name, item->name);
+
+	int ret = settings_delete(settings_key);
+	if (ret) {
+		LOG_ERR("Call `settings_delete` failed: %d", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
 static int reset(void)
 {
-	int ret;
+	__unused int ret;
 
 #if defined(CONFIG_SETTINGS_FILE)
 	/* Settings in external FLASH as a LittleFS file */
@@ -221,21 +246,7 @@ static int reset(void)
 		return ret;
 	}
 #else
-	/* Settings in the internal FLASH partition */
-	const struct flash_area *fa;
-	ret = flash_area_open(FIXED_PARTITION_ID(storage_partition), &fa);
-	if (ret) {
-		LOG_ERR("Call `flash_area_open` failed: %d", ret);
-		return ret;
-	}
-
-	ret = flash_area_erase(fa, 0, FIXED_PARTITION_SIZE(storage_partition));
-	if (ret < 0) {
-		LOG_ERR("Call `flash_area_erase` failed: %d", ret);
-		return ret;
-	}
-
-	flash_area_close(fa);
+	hio_config_iter_items(NULL, delete_item_cb, NULL);
 #endif /* defined(CONFIG_SETTINGS_FILE) */
 
 	LOG_INF("Settings was reset");
