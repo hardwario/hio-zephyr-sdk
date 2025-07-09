@@ -40,11 +40,18 @@ LOG_MODULE_REGISTER(hio_lte_flow, CONFIG_HIO_LTE_LOG_LEVEL);
 
 AT_MONITOR(hio_lte_flow, ANY, monitor_handler);
 
+struct cgdcont_param {
+	int cid;          /* CID (context ID) */
+	char pdn_type[9]; /* "IP" or "IPV6" */
+	char apn[64];     /* Access Point Name */
+	char addr[16];    /* IPv4 address */
+};
+
 #define XSLEEP_PAUSE K_MSEC(100)
 
 #define XRECVFROM_TIMEOUT_SEC 5
 
-#define SEND_TIMEOUT_SEC     1
+#define SOCKET_SEND_TMO_SEC  30
 #define RESPONSE_TIMEOUT_SEC 5
 
 static K_EVENT_DEFINE(m_flow_events);
@@ -53,9 +60,9 @@ static hio_lte_flow_event_delegate_cb m_event_delegate_cb;
 
 static K_MUTEX_DEFINE(m_addr_info_lock);
 static struct nrf_sockaddr_in m_addr_info;
+static struct cgdcont_param m_cgdcont;
 
 static int m_socket_fd;
-K_MUTEX_DEFINE(m_socket_fd_lock);
 
 int cellid_hex2int(char *ci, size_t size, int *cid)
 {
@@ -153,8 +160,6 @@ static int parse_cereg(const char *line, struct hio_lte_cereg_param *param)
 	memset(param, 0, sizeof(*param));
 
 	const char *p = line;
-
-	LOG_INF("Parsing CEREG: %s", line);
 
 	bool def;
 	long num;
@@ -322,6 +327,61 @@ static int parse_rai(const char *line, struct hio_lte_rai_param *param)
 	return 0;
 }
 
+static int parse_cgcont(const char *line, struct cgdcont_param *param)
+{
+	/* 0,"IP","iot.1nce.net","10.52.2.149",0,0 */
+	if (!line || !param) {
+		return -EINVAL;
+	}
+
+	memset(param, 0, sizeof(*param));
+	param->cid = -1; /* Default CID is -1 (not set) */
+
+	const char *p = line;
+
+	bool def;
+	long num;
+
+	if (!(p = hio_tok_num(p, &def, &num)) || !def) {
+		LOG_ERR("Failed to parse CID");
+		return -EINVAL;
+	}
+
+	param->cid = (int)num;
+
+	if (!(p = hio_tok_sep(p))) {
+		LOG_ERR("Failed to parse PDN type");
+		return -EINVAL;
+	}
+
+	if (!(p = hio_tok_str(p, &def, param->pdn_type, sizeof(param->pdn_type))) || !def) {
+		LOG_ERR("Failed to parse PDN type");
+		return -EINVAL;
+	}
+
+	if (!(p = hio_tok_sep(p))) {
+		LOG_ERR("Failed to parse APN");
+		return -EINVAL;
+	}
+
+	if (!(p = hio_tok_str(p, &def, param->apn, sizeof(param->apn))) || !def) {
+		LOG_ERR("Failed to parse APN");
+		return -EINVAL;
+	}
+
+	if (!(p = hio_tok_sep(p))) {
+		LOG_ERR("Failed to parse address");
+		return -EINVAL;
+	}
+
+	if (!(p = hio_tok_str(p, &def, param->addr, sizeof(param->addr))) || !def) {
+		LOG_ERR("Failed to parse address");
+		return -EINVAL;
+	}
+
+	return 0;
+}
+
 static void monitor_handler(const char *line)
 {
 	int ret;
@@ -482,18 +542,10 @@ int hio_lte_flow_prepare(void)
 {
 	int ret;
 
-	ret = hio_lte_talk_at();
+	ret = hio_lte_talk_at_cfun(0);
 	if (ret) {
-		LOG_ERR("Call `hio_lte_talk_at` failed: %d", ret);
+		LOG_ERR("Call `hio_lte_talk_at_cfun: 0` failed: %d", ret);
 		return ret;
-	}
-
-	if (g_hio_lte_config.modemtrace) {
-		ret = hio_lte_talk_at_xmodemtrace();
-		if (ret) {
-			LOG_ERR("Call `hio_lte_talk_at_xmodemtrace` failed: %d", ret);
-			return ret;
-		}
 	}
 
 	char cgsn[64] = {0};
@@ -526,12 +578,6 @@ int hio_lte_flow_prepare(void)
 	}
 
 	LOG_INF("SW version: %s", sw_version);
-
-	ret = hio_lte_talk_at_cfun(0);
-	if (ret) {
-		LOG_ERR("Call `hio_lte_talk_at_cfun: 0` failed: %d", ret);
-		return ret;
-	}
 
 	ret = hio_lte_talk_at_xpofwarn(1, 30);
 	if (ret) {
@@ -671,6 +717,13 @@ int hio_lte_flow_prepare(void)
 		return ret;
 	}
 
+	/* subscribes modem sleep notifications */
+	ret = hio_lte_talk_at_xmodemsleep(1, (int[]){500}, (int[]){10240});
+	if (ret) {
+		LOG_ERR("Call `hio_lte_talk_at_xmodemsleep` failed: %d", ret);
+		return ret;
+	}
+
 	if (!strlen(g_hio_lte_config.apn)) {
 		ret = hio_lte_talk_at_cgdcont(0, "IP", NULL);
 	} else {
@@ -696,12 +749,6 @@ int hio_lte_flow_prepare(void)
 			LOG_ERR("Call `hio_lte_talk_at_cgauth` failed: %d", ret);
 			return ret;
 		}
-	}
-
-	ret = hio_lte_talk_at_xmodemsleep(1, (int[]){500}, (int[]){10240});
-	if (ret) {
-		LOG_ERR("Call `hio_lte_talk_at_xmodemsleep` failed: %d", ret);
-		return ret;
 	}
 
 	return 0;
@@ -807,22 +854,59 @@ int hio_lte_flow_sim_fplmn(void)
 	return 0;
 }
 
+static int update_cgdcont(void)
+{
+	int ret;
+	char tmp[200] = {0};
+	int lines = hio_lte_talk_at_cgdcont_q(tmp, sizeof(tmp));
+	char *line = tmp;
+	for (int i = 0; i < lines; i++) {
+		ret = parse_cgcont(line, &m_cgdcont);
+		if (ret) {
+			LOG_ERR("Call `parse_cgcont` failed: %d", ret);
+			return ret;
+		}
+
+		LOG_INF("CID: %d, PDN type: %s, APN: %s, Address: %s", m_cgdcont.cid,
+			m_cgdcont.pdn_type, m_cgdcont.apn, m_cgdcont.addr);
+
+		if (m_cgdcont.cid != -1 && strlen(m_cgdcont.pdn_type) == 2 &&
+		    strcmp(m_cgdcont.pdn_type, "IP") == 0 && strlen(m_cgdcont.apn) > 0 &&
+		    strlen(m_cgdcont.addr) > 0) {
+			return 0;
+		}
+
+		line = &tmp[strlen(line) + 1]; /* Move to next line */
+	}
+	return -EINVAL; /* No CGDCONT found */
+}
+
 int hio_lte_flow_open_socket(void)
 {
 	int ret;
-
-	char cops[64] = {0};
+	char cops[32] = {0};
 	ret = hio_lte_talk_at_cops_q(cops, sizeof(cops));
 	if (ret) {
 		LOG_ERR("Call `hio_lte_talk_at_cops_q` failed: %d", ret);
 		return ret;
 	}
-
 	LOG_INF("COPS: %s", cops);
 
+	/* Debugging AT commands */
+	hio_lte_talk_at_cmd("AT+CEREG?");
 	hio_lte_talk_at_cmd("AT%XCBAND");
 	hio_lte_talk_at_cmd("AT+CEINFO?");
-	hio_lte_talk_at_cmd("AT+CGDCONT?");
+	hio_lte_talk_at_cmd("AT+CGPADDR=0");
+	hio_lte_talk_at_cmd("AT+CGATT?");
+	hio_lte_talk_at_cmd("AT+CGACT?");
+
+	ret = update_cgdcont();
+	if (ret) {
+		LOG_ERR("Call `update_cgdcont_param` failed: %d", ret);
+		return ret;
+	}
+
+	LOG_INF("addr: %s, port: %d", m_cgdcont.addr, CONFIG_HIO_LTE_PORT);
 
 	k_mutex_lock(&m_addr_info_lock, K_FOREVER);
 	m_addr_info.sin_family = NRF_AF_INET;
@@ -835,7 +919,7 @@ int hio_lte_flow_open_socket(void)
 	}
 	k_mutex_unlock(&m_addr_info_lock);
 
-	ret = nrf_socket(m_addr_info.sin_family, NRF_SOCK_DGRAM, 0);
+	ret = nrf_socket(m_addr_info.sin_family, NRF_SOCK_DGRAM, NRF_IPPROTO_UDP);
 	if (ret == -1) {
 		ret = -errno;
 		LOG_ERR("Call `nrf_socket` failed: %d", ret);
@@ -844,7 +928,7 @@ int hio_lte_flow_open_socket(void)
 	m_socket_fd = ret;
 
 	struct nrf_timeval tv = {
-		.tv_sec = SEND_TIMEOUT_SEC,
+		.tv_sec = SOCKET_SEND_TMO_SEC,
 		.tv_usec = 0,
 	};
 
@@ -867,6 +951,12 @@ int hio_lte_flow_open_socket(void)
 		nrf_close(m_socket_fd);
 		m_socket_fd = -1;
 		return ret;
+	}
+
+	if (m_cgdcont.cid > 0) {
+		/* Bind socket to the specified PDN context ID */
+		nrf_setsockopt(m_socket_fd, NRF_SOL_SOCKET, NRF_SO_BINDTOPDN, &m_cgdcont.cid,
+			       sizeof(m_cgdcont.cid));
 	}
 
 	LOG_INF("Socket opened: %d", m_socket_fd);
@@ -905,7 +995,7 @@ int hio_lte_flow_check(void)
 
 	if (strcmp(resp, "1") != 0) {
 		LOG_ERR("Unexpected CFUN response: %s", resp);
-		return -ENOTCONN;
+		return -HIO_LTE_ERR_MODEM_INACTIVE;
 	}
 
 	/* Check network registration status */
@@ -917,7 +1007,7 @@ int hio_lte_flow_check(void)
 
 	if (resp[0] == '0') {
 		LOG_ERR("CEREG unsubscribe unsolicited result codes");
-		return -ENOTCONN;
+		return -HIO_LTE_ERR_CEREG_NOT_SUBSCRIBED;
 	}
 
 	struct hio_lte_cereg_param cereg_param;
@@ -933,7 +1023,7 @@ int hio_lte_flow_check(void)
 	if (cereg_param.stat != HIO_LTE_CEREG_PARAM_STAT_REGISTERED_HOME &&
 	    cereg_param.stat != HIO_LTE_CEREG_PARAM_STAT_REGISTERED_ROAMING) {
 		LOG_ERR("Unexpected CEREG response: %s", resp);
-		return -ENOTCONN;
+		return -HIO_LTE_ERR_CEREG_NOT_REGISTERED;
 	}
 
 	/* Check if PDN is active */
@@ -945,7 +1035,7 @@ int hio_lte_flow_check(void)
 
 	if (strcmp(resp, "1") != 0) {
 		LOG_ERR("Unexpected CGATT response: %s", resp);
-		return -ENOTCONN;
+		return -HIO_LTE_ERR_PDN_NOT_ATTACHED;
 	}
 
 	/* Check PDN connections */
@@ -957,14 +1047,16 @@ int hio_lte_flow_check(void)
 
 	if (strcmp(resp, "0,1") != 0) {
 		LOG_ERR("Unexpected CGACT response: %s", resp);
-		return -ENOTCONN;
+		return -HIO_LTE_ERR_PDN_NOT_ACTIVE;
 	}
+
+	hio_lte_talk_at_cmd("AT+CGPADDR=0");
 
 	int error;
 	nrf_socklen_t len = sizeof(error);
 	ret = nrf_getsockopt(m_socket_fd, NRF_SOL_SOCKET, NRF_SO_ERROR, &error, &len);
 	if (ret != 0 || error != 0) {
-		return -ENOTCONN;
+		return -HIO_LTE_ERR_SOCKET_ERROR;
 	}
 
 	return 0;
@@ -1227,7 +1319,7 @@ int hio_lte_flow_cmd_trace(const struct shell *shell, size_t argc, char **argv)
 {
 	int ret;
 
-	ret = hio_lte_talk_at_xmodemtrace();
+	ret = hio_lte_talk_at_xmodemtrace(5);
 	if (ret) {
 		LOG_ERR("Call `hio_lte_talk_at_xmodemtrace` failed: %d", ret);
 		return ret;
@@ -1249,6 +1341,12 @@ int hio_lte_flow_init(hio_lte_flow_event_delegate_cb cb)
 	ret = hio_lte_talk_at_cfun(0);
 	if (ret) {
 		LOG_ERR("Call `hio_lte_talk_at_cfun: 0` failed: %d", ret);
+		return ret;
+	}
+
+	ret = hio_lte_talk_at_xmodemtrace(g_hio_lte_config.modemtrace ? 2 : 0);
+	if (ret) {
+		LOG_ERR("Call `hio_lte_talk_at_xmodemtrace` failed: %d", ret);
 		return ret;
 	}
 

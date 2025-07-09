@@ -293,7 +293,7 @@ static void enter_state(enum fsm_state state)
 	}
 
 	m_state = state;
-	LOG_DBG("entering to state: %s", fsm_state_str(state));
+	LOG_INF("entering to state: %s", fsm_state_str(state));
 	fsm_state = get_fsm_state(state);
 	if (fsm_state && fsm_state->on_enter) {
 		int ret = fsm_state->on_enter();
@@ -463,6 +463,22 @@ static int on_enter_error(void)
 {
 	int ret;
 
+	ret = hio_lte_flow_check();
+	if (ret == 0) {
+		delegate_event(HIO_LTE_EVENT_READY);
+		return 0;
+	}
+
+	if (ret < 0) {
+		LOG_ERR("Call `hio_lte_flow_check` failed: %d", ret);
+	}
+
+	if (ret == -HIO_LTE_ERR_SOCKET_ERROR) {
+		LOG_ERR("Socket error, retrying in 5 seconds");
+		delegate_event(HIO_LTE_EVENT_REGISTERED);
+		return 0;
+	}
+
 	k_event_clear(&m_states_event, ATTACHED_BIT | CONNECTED_BIT);
 
 	ret = hio_lte_flow_stop();
@@ -480,6 +496,12 @@ static int error_event_handler(enum hio_lte_event event)
 	switch (event) {
 	case HIO_LTE_EVENT_TIMEOUT:
 		enter_state(FSM_STATE_PREPARE);
+		break;
+	case HIO_LTE_EVENT_READY:
+		enter_state(FSM_STATE_READY);
+		break;
+	case HIO_LTE_EVENT_REGISTERED:
+		enter_state(FSM_STATE_OPEN_SOCKET);
 		break;
 	default:
 		break;
@@ -578,7 +600,7 @@ static int reset_loop_event_handler(enum hio_lte_event event)
 {
 	switch (event) {
 	case HIO_LTE_EVENT_TIMEOUT:
-		enter_state(FSM_STATE_ATTACH);
+		enter_state(FSM_STATE_PREPARE);
 		break;
 	case HIO_LTE_EVENT_ERROR:
 		enter_state(FSM_STATE_ERROR);
@@ -591,6 +613,7 @@ static int reset_loop_event_handler(enum hio_lte_event event)
 
 static int on_leave_reset_loop(void)
 {
+	/* for: nrf9160
 	int ret = hio_lte_flow_cfun(0);
 	if (ret < 0) {
 		LOG_ERR("Call `hio_lte_flow_cfun` failed: %d", ret);
@@ -604,6 +627,14 @@ static int on_leave_reset_loop(void)
 		LOG_ERR("Call `hio_lte_flow_cfun` failed: %d", ret);
 		return ret;
 	}
+	*/
+
+	int ret = hio_lte_flow_stop();
+	if (ret < 0) {
+		LOG_ERR("Call `hio_lte_flow_stop` failed: %d", ret);
+	}
+
+	start_timer(K_SECONDS(10));
 
 	return 0;
 }
@@ -774,7 +805,6 @@ static int ready_event_handler(enum hio_lte_event event)
 {
 	switch (event) {
 	case HIO_LTE_EVENT_SEND:
-		LOG_INF("hio_lte_flow_check!");
 		int ret = hio_lte_flow_check();
 		if (ret < 0) {
 			LOG_ERR("Call `hio_lte_flow_check` failed: %d", ret);
