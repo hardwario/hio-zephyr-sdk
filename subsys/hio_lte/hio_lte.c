@@ -78,6 +78,9 @@ static uint32_t m_start_cscon1 = 0;
 
 struct hio_lte_cereg_param m_cereg_param;
 
+#define ON_ERROR_MAX_FLOW_CHECK_RETRIES 3
+static int flow_check_failures = 0;
+
 static struct fsm_state_desc *get_fsm_state(enum fsm_state state);
 
 struct hio_lte_attach_timeout get_attach_timeout(int count)
@@ -186,6 +189,8 @@ const char *hio_lte_event_str(enum hio_lte_event event)
 		return "XGPS_DISABLE";
 	case HIO_LTE_EVENT_XGPS:
 		return "XGPS";
+	case HIO_LTE_EVENT_COUNT:
+		return "for internal use only";
 	}
 	return "UNKNOWN";
 }
@@ -336,6 +341,33 @@ int hio_lte_enable(void)
 	return 0;
 }
 
+int hio_lte_reconnect(void)
+{
+	if (g_hio_lte_config.test) {
+		LOG_WRN("LTE Test mode enabled");
+		return -ENOTSUP;
+	}
+
+	if (m_state == FSM_STATE_DISABLED) {
+		LOG_WRN("Cannot reconnect, LTE is disabled");
+		return -ENOTSUP;
+	}
+
+	stop_timer();
+
+	k_work_cancel(&m_event_dispatch_work);
+
+	k_mutex_lock(&m_event_rb_lock, K_FOREVER);
+	ring_buf_reset(&m_event_rb);
+	k_mutex_unlock(&m_event_rb_lock);
+
+	enter_state(FSM_STATE_DISABLED);
+
+	delegate_event(HIO_LTE_EVENT_ENABLE);
+
+	return 0;
+}
+
 int hio_lte_is_attached(bool *attached)
 {
 	*attached = k_event_test(&m_states_event, ATTACHED_BIT) ? true : false;
@@ -436,10 +468,16 @@ int hio_lte_get_fsm_state(const char **state)
 static int on_enter_disabled(void)
 {
 	int ret;
+
 	ret = hio_lte_flow_stop();
 	if (ret < 0) {
-		return ret;
+		LOG_ERR("Call `hio_lte_flow_stop` failed: %d", ret);
 	}
+
+	k_event_clear(&m_states_event, ATTACHED_BIT | CONNECTED_BIT);
+	flow_check_failures = 0;
+
+	start_timer(K_SECONDS(5));
 
 	return 0;
 }
@@ -453,40 +491,56 @@ static int disabled_event_handler(enum hio_lte_event event)
 	case HIO_LTE_EVENT_ERROR:
 		enter_state(FSM_STATE_ERROR);
 		break;
+	case HIO_LTE_EVENT_DEREGISTERED:
+		break;
 	default:
 		return -ENOTSUP;
 	}
 	return 0;
 }
 
-static int on_enter_error(void)
+static int error_check(void)
 {
-	int ret;
-
-	ret = hio_lte_flow_check();
+	int ret = hio_lte_flow_check();
 	if (ret == 0) {
+		flow_check_failures = 0;
 		delegate_event(HIO_LTE_EVENT_READY);
 		return 0;
 	}
 
-	if (ret < 0) {
-		LOG_ERR("Call `hio_lte_flow_check` failed: %d", ret);
+	flow_check_failures++;
+
+	LOG_INF("failed (attempt %d/%d): %d", flow_check_failures, ON_ERROR_MAX_FLOW_CHECK_RETRIES,
+		ret);
+
+	if (flow_check_failures >= ON_ERROR_MAX_FLOW_CHECK_RETRIES) {
+		LOG_ERR("Max retries reached, taking fallback action");
+		return -1;
 	}
 
-	if (ret == -HIO_LTE_ERR_SOCKET_ERROR) {
+	if (ret == -HIO_LTE_ERR_SOCKET_NOT_OPENED) {
 		LOG_ERR("Socket error, retrying in 5 seconds");
 		delegate_event(HIO_LTE_EVENT_REGISTERED);
 		return 0;
 	}
 
-	k_event_clear(&m_states_event, ATTACHED_BIT | CONNECTED_BIT);
+	return -1;
+}
 
-	ret = hio_lte_flow_stop();
-	if (ret < 0) {
-		LOG_ERR("Call `hio_lte_flow_stop` failed: %d", ret);
+static int on_enter_error(void)
+{
+	int ret = error_check();
+
+	if (ret) {
+		k_event_clear(&m_states_event, ATTACHED_BIT | CONNECTED_BIT);
+		flow_check_failures = 0;
+
+		ret = hio_lte_flow_stop();
+		if (ret < 0) {
+			LOG_ERR("Call `hio_lte_flow_stop` failed: %d", ret);
+		}
+		start_timer(K_SECONDS(10));
 	}
-
-	start_timer(K_SECONDS(10));
 
 	return 0;
 }

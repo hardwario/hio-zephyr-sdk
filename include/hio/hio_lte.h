@@ -100,6 +100,7 @@ struct hio_lte_attach_timeout {
 struct hio_lte_attach_timeout hio_lte_get_curr_attach_timeout(void);
 
 int hio_lte_enable(void);
+int hio_lte_reconnect(void);
 int hio_lte_wait_for_connected(k_timeout_t timeout);
 int hio_lte_send_recv(const struct hio_lte_send_recv_param *param);
 

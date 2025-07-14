@@ -112,19 +112,6 @@ static int cmd(const char *fmt, ...)
 	return ret;
 }
 
-int hio_lte_talk_(const char *s)
-{
-	int ret;
-
-	ret = cmd("%s", s);
-	if (ret < 0) {
-		LOG_ERR("Call `cmd` failed: %d", ret);
-		return ret;
-	}
-
-	return 0;
-}
-
 int hio_lte_talk_at_cclk_q(char *buf, size_t size)
 {
 	int ret;

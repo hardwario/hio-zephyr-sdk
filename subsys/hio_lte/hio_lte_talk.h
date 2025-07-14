@@ -13,7 +13,6 @@ extern "C" {
 
 typedef void (*hio_lte_talk_cb)(const char *line, void *user_data);
 
-int hio_lte_talk_(const char *s);
 int hio_lte_talk_at_cclk_q(char *buf, size_t size);
 int hio_lte_talk_at_ceppi(int p1);
 int hio_lte_talk_at_cereg(int p1);

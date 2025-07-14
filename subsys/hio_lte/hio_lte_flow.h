@@ -6,7 +6,6 @@
 
 /* Zephyr includes */
 #include <zephyr/kernel.h>
-#include <zephyr/shell/shell.h>
 
 /* Standard includes */
 #include <stdbool.h>
@@ -26,7 +25,8 @@ enum {
 	HIO_LTE_ERR_PDN_NOT_ATTACHED = 1003, /* CGATT != 1 */
 	HIO_LTE_ERR_PDN_NOT_ACTIVE = 1004,   /* CGACT != 0,1 */
 
-	HIO_LTE_ERR_SOCKET_ERROR = 1005, /* socket check failed */
+	HIO_LTE_ERR_SOCKET_NOT_OPENED = 1005, /* socket is not opened */
+	HIO_LTE_ERR_SOCKET_ERROR = 1006,      /* socket check failed */
 };
 
 enum hio_lte_event {
@@ -48,6 +48,7 @@ enum hio_lte_event {
 	HIO_LTE_EVENT_XGPS_ENABLE,
 	HIO_LTE_EVENT_XGPS_DISABLE,
 	HIO_LTE_EVENT_XGPS,
+	HIO_LTE_EVENT_COUNT /* Must be last */
 };
 
 #define GRPS_TIMER_DEACTIVATED -1
@@ -70,9 +71,7 @@ int hio_lte_flow_recv(const struct hio_lte_send_recv_param *param);
 
 int hio_lte_flow_coneval(void);
 int hio_lte_flow_cmd(const char *cmd);
-
-int hio_lte_flow_cmd_test_cmd(const struct shell *shell, size_t argc, char **argv);
-int hio_lte_flow_cmd_trace(const struct shell *shell, size_t argc, char **argv);
+int hio_lte_flow_xmodemtrace(int lvl);
 
 #ifdef __cplusplus
 }

@@ -17,6 +17,8 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
+#include <stdio.h>
 
 LOG_MODULE_REGISTER(hio_lte_shell, CONFIG_HIO_LTE_LOG_LEVEL);
 
@@ -337,10 +339,57 @@ static int cmd_test_cmd(const struct shell *shell, size_t argc, char **argv)
 			shell_warn(shell, "modem is not connected");
 			return 0;
 		}
-		LOG_ERR("Call `hio_lte_flow_cmd_without_response` failed: %d", ret);
+		LOG_ERR("Call `hio_lte_flow_cmd` failed: %d", ret);
 		shell_error(shell, "command failed");
 		return ret;
 	}
+
+	return 0;
+}
+
+int cmd_test_modemtrace(const struct shell *shell, size_t argc, char **argv)
+{
+	int ret;
+
+	int lvl = 0;
+	if (argc != 2) {
+		shell_error(shell, "only one argument is accepted (use quotes?)");
+		shell_help(shell);
+		return -EINVAL;
+	} else if (argc == 2) {
+		lvl = atoi(argv[1]);
+		if (lvl < 0 || lvl > 5) {
+			shell_error(shell, "invalid trace level: %d", lvl);
+			return -EINVAL;
+		}
+	}
+
+	ret = hio_lte_flow_xmodemtrace(lvl);
+	if (ret) {
+		LOG_ERR("Call `hio_lte_flow_xmodemtrace` failed: %d", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+static int cmd_reconnect(const struct shell *shell, size_t argc, char **argv)
+{
+	int ret;
+
+	if (g_hio_lte_config.test) {
+		shell_error(shell, "not supported in test mode");
+		return -ENOEXEC;
+	}
+
+	ret = hio_lte_reconnect();
+	if (ret) {
+		LOG_ERR("Call `hio_lte_reconnect` failed: %d", ret);
+		shell_error(shell, "command failed");
+		return ret;
+	}
+
+	shell_info(shell, "command succeeded");
 
 	return 0;
 }
@@ -374,6 +423,10 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(prepare, NULL,
 	              "Run prepare modem sequence.",
 		      cmd_test_prepare, 1, 0),
+
+	SHELL_CMD_ARG(modemtrace, NULL,
+	              "Set modem trace level (format: <0-5>).",
+	              cmd_test_modemtrace, 2, 0),
 
 	SHELL_SUBCMD_SET_END
 );
@@ -410,6 +463,11 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(test, &sub_lte_test,
 	              "Test commands.",
 	              print_help, 1, 0),
+
+	SHELL_CMD_ARG(reconnect, NULL,
+	              "Reconnect LTE modem.",
+	              cmd_reconnect, 1, 0),
+
 
 	SHELL_SUBCMD_SET_END
 );

@@ -11,9 +11,9 @@
 
 /* nRF includes */
 #include <modem/nrf_modem_lib.h>
-#include <nrf_modem_at.h>
 #include <modem/at_monitor.h>
 #include <modem/at_parser.h>
+#include <nrf_modem_at.h>
 #include <nrf_socket.h>
 #include <nrf_errno.h>
 
@@ -23,7 +23,6 @@
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/shell/shell.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/net/socket_ncs.h>
 #include <zephyr/sys/timeutil.h>
@@ -62,7 +61,7 @@ static K_MUTEX_DEFINE(m_addr_info_lock);
 static struct nrf_sockaddr_in m_addr_info;
 static struct cgdcont_param m_cgdcont;
 
-static int m_socket_fd;
+static int m_socket_fd = -1;
 
 int cellid_hex2int(char *ci, size_t size, int *cid)
 {
@@ -919,6 +918,12 @@ int hio_lte_flow_open_socket(void)
 	}
 	k_mutex_unlock(&m_addr_info_lock);
 
+	if (m_socket_fd >= 0) {
+		LOG_INF("Closing existing socket: %d", m_socket_fd);
+		nrf_close(m_socket_fd);
+		m_socket_fd = -1;
+	}
+
 	ret = nrf_socket(m_addr_info.sin_family, NRF_SOCK_DGRAM, NRF_IPPROTO_UDP);
 	if (ret == -1) {
 		ret = -errno;
@@ -1051,6 +1056,11 @@ int hio_lte_flow_check(void)
 	}
 
 	hio_lte_talk_at_cmd("AT+CGPADDR=0");
+
+	if (m_socket_fd < 0) {
+		LOG_ERR("Socket is not opened");
+		return -HIO_LTE_ERR_SOCKET_NOT_OPENED;
+	}
 
 	int error;
 	nrf_socklen_t len = sizeof(error);
@@ -1274,53 +1284,25 @@ int hio_lte_flow_cmd(const char *s)
 		return -ENOTCONN;
 	}
 
-	ret = hio_lte_talk_(s);
-	if (ret) {
-		LOG_ERR("Call `hio_lte_talk_` failed: %d", ret);
+	ret = hio_lte_talk_at_cmd(s);
+	if (ret < 0) {
+		LOG_ERR("Call `cmd` failed: %d", ret);
 		return ret;
 	}
 
 	return 0;
 }
 
-int hio_lte_flow_cmd_test_cmd(const struct shell *shell, size_t argc, char **argv)
+int hio_lte_flow_xmodemtrace(int lvl)
 {
 	int ret;
 
-	if (argc > 2) {
-		shell_error(shell, "only one argument is accepted (use quotes?)");
-		shell_help(shell);
-		return -EINVAL;
+	if (!nrf_modem_is_initialized()) {
+		return -ENOTCONN;
 	}
 
-	if (!g_hio_lte_config.test) {
-		shell_error(shell, "test mode is not activated");
-		return -ENOEXEC;
-	}
-
-	char buf[128] = {0};
-	ret = hio_lte_talk_at_cmd_with_resp(argv[1], buf, sizeof(buf));
-	if (!ret) {
-		LOG_ERR("Call `hio_lte_talk_at_cmd_with_resp` failed: %d", ret);
-		shell_error(shell, "command failed");
-		return ret;
-	}
-
-	if (buf[0]) {
-		shell_print(shell, "%s", buf);
-	}
-
-	shell_print(shell, "command succeeded");
-
-	return 0;
-}
-
-int hio_lte_flow_cmd_trace(const struct shell *shell, size_t argc, char **argv)
-{
-	int ret;
-
-	ret = hio_lte_talk_at_xmodemtrace(5);
-	if (ret) {
+	ret = hio_lte_talk_at_xmodemtrace(lvl);
+	if (ret < 0) {
 		LOG_ERR("Call `hio_lte_talk_at_xmodemtrace` failed: %d", ret);
 		return ret;
 	}
@@ -1330,6 +1312,8 @@ int hio_lte_flow_cmd_trace(const struct shell *shell, size_t argc, char **argv)
 
 int hio_lte_flow_init(hio_lte_flow_event_delegate_cb cb)
 {
+	m_socket_fd = -1;
+
 	m_event_delegate_cb = cb;
 
 	int ret = nrf_modem_lib_init();
