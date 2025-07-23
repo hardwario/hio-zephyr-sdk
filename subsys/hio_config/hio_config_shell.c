@@ -124,6 +124,7 @@ int hio_config_shell_cmd(const struct shell *shell, size_t argc, char **argv)
 
 	/* Print parameter(s) */
 	if (argc == 2) {
+		bool found_any = false;
 		bool has_wildcard = argv[1][strlen(argv[1]) - 1] == '*';
 
 		if (strcmp(argv[1], "show") == 0) {
@@ -141,13 +142,18 @@ int hio_config_shell_cmd(const struct shell *shell, size_t argc, char **argv)
 			    (has_wildcard &&
 			     strncmp(argv[1], item->name, strlen(argv[1]) - 1) == 0)) {
 				item_print_value(shell, module, item);
-				return 0;
+				found_any = true;
 			}
+		}
+
+		if (found_any) {
+			return 0;
 		}
 	}
 
 	/* Write parameter(s) */
 	if (argc == 3) {
+		bool found_any = false;
 		bool has_wildcard = argv[1][strlen(argv[1]) - 1] == '*';
 
 		struct hio_config_item *item;
@@ -168,8 +174,12 @@ int hio_config_shell_cmd(const struct shell *shell, size_t argc, char **argv)
 					item_print_help(shell, item);
 					return ret;
 				}
-				return 0;
+				found_any = true;
 			}
+		}
+
+		if (found_any) {
+			return 0;
 		}
 	}
 
