@@ -1,6 +1,7 @@
 #include "hio_lte_config.h"
 #include "hio_lte_flow.h"
 #include "hio_lte_state.h"
+#include "hio_lte_talk.h"
 
 /* HIO includes */
 #include <hio/hio_lte.h>
@@ -291,6 +292,35 @@ static int cmd_test_modem(const struct shell *shell, size_t argc, char **argv)
 	return -EINVAL;
 }
 
+static int cmd_test_cmd(const struct shell *shell, size_t argc, char **argv)
+{
+	int ret;
+
+	if (argc > 2) {
+		shell_error(shell, "only one argument is accepted (use quotes?)");
+		shell_help(shell);
+		return -EINVAL;
+	}
+
+	if (!g_hio_lte_config.test) {
+		shell_error(shell, "test mode is not activated");
+		return -ENOEXEC;
+	}
+
+	ret = hio_lte_flow_cmd(argv[1]);
+	if (ret) {
+		if (ret == -ENOTCONN) {
+			shell_warn(shell, "modem is not connected");
+			return 0;
+		}
+		LOG_ERR("Call `hio_lte_flow_cmd` failed: %d", ret);
+		shell_error(shell, "command failed");
+		return ret;
+	}
+
+	return 0;
+}
+
 static int cmd_test_prepare(const struct shell *shell, size_t argc, char **argv)
 {
 	int ret;
@@ -318,12 +348,52 @@ static int cmd_test_prepare(const struct shell *shell, size_t argc, char **argv)
 	return 0;
 }
 
-static int cmd_test_cmd(const struct shell *shell, size_t argc, char **argv)
+static void flow_bypass_cb(void *user_data, const uint8_t *data, size_t len)
 {
-	int ret;
+	// shell_print((const struct shell *)user_data, "%s", (const char *)data);
+	const struct shell_fprintf *fprintf_ctx = (struct shell_fprintf *)user_data;
+	fprintf_ctx->fwrite(fprintf_ctx->user_ctx, data, len);
+}
 
-	if (argc > 2) {
-		shell_error(shell, "only one argument is accepted (use quotes?)");
+static void shell_bypass_cb(const struct shell *shell, uint8_t *data, size_t len)
+{
+	static char line[256];
+	static size_t line_len = 0;
+
+	if (len == 0) {
+		return;
+	}
+
+	if (strncmp((const char *)data, "+++", 3) == 0) {
+		shell_print(shell, "exiting bypass mode");
+		hio_lte_talk_bypass_set_cb(NULL, NULL);
+		shell_set_bypass(shell, NULL);
+		return;
+	}
+
+	for (size_t i = 0; i < len; i++) {
+		if (data[i] == '\r' || data[i] == '\n') {
+			if (line_len == 0) {
+				continue; // skip empty lines
+			}
+			line[line_len] = '\0';
+			hio_lte_talk_at_cmd(line);
+			line_len = 0;
+			continue;
+		}
+
+		line[line_len++] = data[i];
+		if (line_len >= sizeof(line)) {
+			line_len = 0;
+		}
+	}
+}
+
+static int cmd_test_bypass(const struct shell *shell, size_t argc, char **argv)
+{
+
+	if (argc > 1) {
+		shell_error(shell, "command not found: %s", argv[1]);
 		shell_help(shell);
 		return -EINVAL;
 	}
@@ -333,16 +403,10 @@ static int cmd_test_cmd(const struct shell *shell, size_t argc, char **argv)
 		return -ENOEXEC;
 	}
 
-	ret = hio_lte_flow_cmd(argv[1]);
-	if (ret) {
-		if (ret == -ENOTCONN) {
-			shell_warn(shell, "modem is not connected");
-			return 0;
-		}
-		LOG_ERR("Call `hio_lte_flow_cmd` failed: %d", ret);
-		shell_error(shell, "command failed");
-		return ret;
-	}
+	hio_lte_talk_bypass_set_cb(flow_bypass_cb, (void *)shell->fprintf_ctx);
+	shell_set_bypass(shell, shell_bypass_cb);
+
+	shell_print(shell, "bypass mode enabled, for exit type +++");
 
 	return 0;
 }
@@ -423,6 +487,8 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(prepare, NULL,
 	              "Run prepare modem sequence.",
 		      cmd_test_prepare, 1, 0),
+
+	SHELL_CMD_ARG(bypass, NULL, "Switch to bypass mode.", cmd_test_bypass, 1, 1),
 
 	SHELL_CMD_ARG(modemtrace, NULL,
 	              "Set modem trace level (format: <0-5>).",

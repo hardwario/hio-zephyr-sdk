@@ -55,7 +55,7 @@ config HIO_ATCI_BACKEND_UART_ASYNC_RX_BUFFER_SIZE
 
 config HIO_ATCI_BACKEND_UART_LOG_QUEUE_SIZE
 	int "Log message queue size"
-	default 512
+	default 1024
 
 config HIO_ATCI_BACKEND_UART_LOG_TIMEOUT
 	int "Log message drop timeout (in milliseconds)"

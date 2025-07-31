@@ -6,6 +6,8 @@
 
 /* Standard includes */
 #include <stddef.h>
+#include <stdint.h>
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -13,6 +15,7 @@ extern "C" {
 
 typedef void (*hio_lte_talk_cb)(const char *line, void *user_data);
 
+int hio_lte_talk_init(hio_lte_talk_cb cb, void *user_data);
 int hio_lte_talk_at_cclk_q(char *buf, size_t size);
 int hio_lte_talk_at_ceppi(int p1);
 int hio_lte_talk_at_cereg(int p1);
@@ -56,6 +59,9 @@ int hio_lte_talk_crsm_214(void);
 int hio_lte_talk_at_cmd(const char *s);
 int hio_lte_talk_at_cmd_with_resp(const char *s, char *buf, size_t size);
 int hio_lte_talk_at_cmd_with_resp_prefix(const char *s, char *buf, size_t size, const char *pfx);
+
+typedef void (*hio_lte_talk_bypass_cb)(void *user_data, const uint8_t *data, size_t len);
+int hio_lte_talk_bypass_set_cb(hio_lte_talk_bypass_cb cb, void *user_data);
 
 #ifdef __cplusplus
 }

@@ -17,7 +17,32 @@
 
 LOG_MODULE_REGISTER(hio_lte_talk, CONFIG_HIO_LTE_LOG_LEVEL);
 
+AT_MONITOR(hio_lte_flow, ANY, urc);
+
 static char m_talk_buffer[512];
+static hio_lte_talk_cb m_cb = NULL;
+static void *m_cb_user_data = NULL;
+static hio_lte_talk_bypass_cb m_bypass_cb = NULL;
+static void *m_bypass_cb_user_data = NULL;
+
+static void urc(const char *line)
+{
+	if (m_bypass_cb) {
+		m_bypass_cb(m_bypass_cb_user_data, (const uint8_t *)line, strlen(line));
+	}
+
+	for (size_t i = 0; i < strlen(line); i++) {
+		if (line[i] == '\r' || line[i] == '\n') {
+			((char *)line)[i] = '\0';
+		}
+	}
+
+	LOG_INF("%s", line);
+
+	if (m_cb) {
+		m_cb((const char *)line, m_cb_user_data);
+	}
+}
 
 static int gather_prefix_values(const char *prefix, char *out_buf, size_t out_buf_size,
 				int max_lines)
@@ -107,9 +132,20 @@ static int cmd(const char *fmt, ...)
 
 	if (!ret) {
 		rx();
+		if (m_bypass_cb) {
+			m_bypass_cb(m_bypass_cb_user_data, (const uint8_t *)m_talk_buffer,
+				    strlen(m_talk_buffer));
+		}
 	}
 
 	return ret;
+}
+
+int hio_lte_talk_init(hio_lte_talk_cb cb, void *user_data)
+{
+	m_cb = cb;
+	m_cb_user_data = user_data;
+	return 0;
 }
 
 int hio_lte_talk_at_cclk_q(char *buf, size_t size)
@@ -745,4 +781,11 @@ int hio_lte_talk_at_cmd_with_resp_prefix(const char *s, char *buf, size_t size, 
 	}
 
 	return gather_prefix_values(pfx, buf, size, 1) == 1 ? 0 : -EILSEQ;
+}
+
+int hio_lte_talk_bypass_set_cb(hio_lte_talk_bypass_cb cb, void *user_data)
+{
+	m_bypass_cb = cb;
+	m_bypass_cb_user_data = user_data;
+	return 0;
 }

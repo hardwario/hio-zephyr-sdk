@@ -37,8 +37,6 @@
 
 LOG_MODULE_REGISTER(hio_lte_flow, CONFIG_HIO_LTE_LOG_LEVEL);
 
-AT_MONITOR(hio_lte_flow, ANY, monitor_handler);
-
 struct cgdcont_param {
 	int cid;          /* CID (context ID) */
 	char pdn_type[9]; /* "IP" or "IPV6" */
@@ -381,14 +379,18 @@ static int parse_cgcont(const char *line, struct cgdcont_param *param)
 	return 0;
 }
 
-static void monitor_handler(const char *line)
+static void process_urc(const char *line, void *user_data)
 {
 	int ret;
+	ARG_UNUSED(user_data);
 
-	for (size_t i = 0; i < strlen(line); i++) {
-		if (line[i] == '\r' || line[i] == '\n') {
-			((char *)line)[i] = '\0';
-		}
+	if (!line) {
+		LOG_ERR("URC line is NULL");
+		return;
+	}
+
+	if (g_hio_lte_config.test) {
+		return; /* Test mode active, ignoring URC */
 	}
 
 	LOG_INF("URC: %s", line);
@@ -611,6 +613,12 @@ int hio_lte_flow_prepare(void)
 	ret = hio_lte_talk_at_xsystemmode(lte_m_mode, nb_iot_mode, gnss_mode, preference);
 	if (ret) {
 		LOG_ERR("Call `hio_lte_talk_at_xsystemmode` failed: %d", ret);
+		return ret;
+	}
+
+	ret = hio_lte_talk_at_cmd("AT%XEPCO=0");
+	if (ret) {
+		LOG_ERR("Call `AT%%XEPCO=0` failed: %d", ret);
 		return ret;
 	}
 
@@ -1315,6 +1323,8 @@ int hio_lte_flow_init(hio_lte_flow_event_delegate_cb cb)
 	m_socket_fd = -1;
 
 	m_event_delegate_cb = cb;
+
+	hio_lte_talk_init(process_urc, NULL);
 
 	int ret = nrf_modem_lib_init();
 	if (ret) {
