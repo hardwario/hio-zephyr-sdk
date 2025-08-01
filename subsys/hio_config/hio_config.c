@@ -70,7 +70,9 @@ static int load_direct_cb(const char *key, size_t len, settings_read_cb read_cb,
 		struct hio_config_item *item = &module->items[i];
 		if (settings_name_steq(key, item->name, &next) && !next) {
 			if (len != item->size) {
-				return -EINVAL;
+				LOG_WRN("Item '%s' size mismatch: expected %zu, got %zu",
+					item->name, item->size, len);
+				return 0;
 			}
 			ret = read_cb(cb_arg, item->variable, len);
 			if (ret < 0) {
@@ -81,7 +83,7 @@ static int load_direct_cb(const char *key, size_t len, settings_read_cb read_cb,
 		}
 	}
 
-	return -ENOENT;
+	return 0;
 }
 
 static int commit(const struct hio_config *module)
