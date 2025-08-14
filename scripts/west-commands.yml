@@ -15,3 +15,8 @@ west-commands:
       - name: serial-console
         class: SerialConsole
         help: connect to serial console
+  - file: scripts/west_commands/bin-to-at.py
+    commands:
+      - name: bin-to-at
+        class: BinToAt
+        help: Convert binary file to AT commands for DFU
