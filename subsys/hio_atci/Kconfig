@@ -32,7 +32,6 @@ config HIO_ATCI_CMD_REBOOT
 	default y
 	help
 	  Enable ATCI command for rebooting the device.
-	  It is used to reset the device from the ATCI shell.
 
 config HIO_ATCI_CMD_REBOOT_AUTH_FLAGS
 	int "ATCI command reboot authentication flags"
@@ -103,6 +102,19 @@ choice NRF_MODEM_LIB_TRACE_BACKEND
     prompt "Modem trace backend"
     default NRF_MODEM_LIB_TRACE_BACKEND_RAM if HIO_ATCI_MODEM_TRACE
 endchoice
+
+config HIO_ATCI_CMD_FW
+	bool "HIO ATCI DFU"
+	default y if DFU_TARGET_MCUBOOT && MCUBOOT_IMG_MANAGER
+	help
+	  Enable HIO ATCI DFU support.
+
+config HIO_ATCI_CMD_FW_AUTH_FLAGS
+	int "HIO ATCI DFU authentication flags"
+	default 0
+	help
+	  Authentication flags for HIO ATCI DFU command.
+	  It is used to restrict access to the DFU command.
 
 module = HIO_ATCI
 module-str = HIO ATCI Subsystem

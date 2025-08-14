@@ -414,7 +414,7 @@ static void atci_thread(void *atci_handle, void *arg_log_backend, void *arg_log_
 
 	while (true) {
 		uint32_t events = k_event_wait(
-			&atci->ctx->event, EVENT_RX | EVENT_KILL | EVENT_LOG_MSG, true, timeout);
+			&atci->ctx->event, EVENT_RX | EVENT_KILL | EVENT_LOG_MSG, false, timeout);
 
 		timeout = K_MSEC(100); /* Reset timeout for next wait */
 
@@ -426,16 +426,17 @@ static void atci_thread(void *atci_handle, void *arg_log_backend, void *arg_log_
 		k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
 
 		if (events & EVENT_RX) {
+			k_event_clear(&atci->ctx->event, EVENT_RX);
 			process_rx(atci);
 		}
 
 		if (events & EVENT_LOG_MSG) {
+			k_event_clear(&atci->ctx->event, EVENT_LOG_MSG);
 			int processed = 0;
 			do {
 				processed = hio_atci_log_backend_process(atci->log_backend);
-
 				if (atci->ctx->cmd_buff_len) { /* Process pending command */
-					k_sleep(K_MSEC(15));
+					k_sleep(K_MSEC(5));
 				}
 			} while (processed);
 		}
@@ -622,7 +623,7 @@ int hio_atci_errorf(const struct hio_atci *atci, const char *fmt, ...)
 	OUTPUT_LOCK_END()
 }
 
-#define BROADCAST_WAIT_MS 100
+#define BROADCAST_WAIT_MS 500
 
 int hio_atci_broadcast(const char *str)
 {
