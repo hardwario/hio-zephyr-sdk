@@ -90,15 +90,29 @@ const char *hio_tok_uint(const char *s, bool *def, uint32_t *num);
 /**
  * @brief Parses a hexadecimal string into a binary buffer.
  *
- * The input must contain even number of valid hex digits. No quotes.
+ * The input must contain even number of valid hex digits inside quotes.
  *
  * @param s         Input string with hex characters (e.g., "AABBCC").
  * @param def       Output: true if value was present.
  * @param buffer    Output buffer for binary data.
  * @param buf_len   Size of the output buffer.
+ * @param out_len   Output: number of bytes written to the buffer.
  * @return          Pointer to next character, or NULL on error.
  */
-const char *hio_tok_hex(const char *s, bool *def, void *buffer, size_t buf_len);
+const char *hio_tok_hex(const char *s, bool *def, void *buffer, size_t buf_len, size_t *out_len);
+
+/**
+ * @brief Parses a Base64-encoded string into a binary buffer.
+ *
+ * The input must be valid Base64 inside quotes.
+ *
+ * @param s         Input string with Base64 characters.
+ * @param buffer    Output buffer for binary data.
+ * @param buf_len   Size of the output buffer.
+ * @param out_len   Output: number of bytes written to the buffer.
+ * @return          Pointer to next character, or NULL on error.
+ */
+const char *hio_tok_base64(const char *s, void *buffer, size_t buf_len, size_t *out_len);
 
 /**
  * @brief Checks if the input begins with a quotation mark.

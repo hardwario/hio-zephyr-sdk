@@ -6,11 +6,16 @@
 
 /* HIO includes */
 #include <hio/hio_tok.h>
+#include <hio/hio_util.h>
 
 /* Standard includes */
 #include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+
+// #include <zephyr/logging/log.h>
+// LOG_MODULE_REGISTER(hio_tok, LOG_LEVEL_DBG);
 
 const char *hio_tok_pfx(const char *s, const char *pfx)
 {
@@ -224,9 +229,9 @@ static int hex_char_to_value(char c, uint8_t *val)
 	return -1;
 }
 
-const char *hio_tok_hex(const char *s, bool *def, void *buffer, size_t buf_len)
+const char *hio_tok_hex(const char *s, bool *def, void *buffer, size_t buf_len, size_t *out_len)
 {
-	if (!s || !buffer) {
+	if (!s || !buffer || buf_len == 0 || !out_len) {
 		return NULL;
 	}
 
@@ -235,6 +240,15 @@ const char *hio_tok_hex(const char *s, bool *def, void *buffer, size_t buf_len)
 	}
 	uint8_t *buf = (uint8_t *)buffer;
 	size_t i = 0;
+	*out_len = 0;
+
+	if (*s == '\0' || *s == ',') {
+		return s;
+	}
+
+	if (*s++ != '"') {
+		return NULL;
+	}
 
 	while (isxdigit((unsigned char)s[0]) && isxdigit((unsigned char)s[1])) {
 		if (i >= buf_len) {
@@ -248,11 +262,19 @@ const char *hio_tok_hex(const char *s, bool *def, void *buffer, size_t buf_len)
 
 		buf[i++] = (hi << 4) | lo;
 		s += 2;
+
+		if (*s == '"') {
+			s++;
+			break;
+		}
 	}
 
 	if (def) {
 		*def = (i > 0);
 	}
+
+	*out_len = i;
+
 	return s;
 }
 
