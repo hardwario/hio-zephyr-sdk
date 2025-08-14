@@ -126,6 +126,45 @@ class SerialConnector(Connector):
                 logger.error(f"Error processing modem trace: {e}")
 
 
+def input_task(connector: Connector, arg: str):
+    logger.info(f"Initial input: {arg}")
+    signal = threading.Event()
+
+    is_file = os.path.exists(arg)
+
+    def task():
+        time.sleep(0.5)
+        if is_file:
+            logger.info(f'Starting input task for file: {arg}')
+            try:
+                with open(arg, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            logger.info(f'Sending line: {line}')
+                            signal.clear()
+                            connector.handle(Event(EventType.IN, line))
+                            if not signal.wait(timeout=1):
+                                logger.warning("Timeout waiting for OK")
+                            # time.sleep(0.01)  # optional
+                logger.info('Done input task from file')
+            except Exception as e:
+                logger.error(f"Failed to read file {arg}: {e}")
+        else:
+            logger.info('Starting input task')
+            time.sleep(0.5)
+            connector.handle(Event(EventType.IN, arg))
+            logger.info('Done input task')
+
+    def handler(event: Event):
+        if event.type == EventType.OPEN:
+            threading.Thread(target=task, daemon=True).start()
+        elif event.type == EventType.OUT and event.data == 'OK':
+            signal.set()
+
+    connector.on(handler)
+
+
 class SerialConsole(WestCommand):
     def __init__(self):
         super().__init__(
@@ -147,6 +186,8 @@ class SerialConsole(WestCommand):
                             help='File to store console output')
         parser.add_argument('--modem-trace-file', type=str, default=DEFAULT_MODEM_TRACE_FILE,
                             help='File to store modem trace output')
+        parser.add_argument('--input', type=str, default='',
+                            help='Initial input to send to the console. Can be a string or a path to a file whose contents will be sent.')
         return parser
 
     def do_run(self, args, unknown_args):
@@ -154,6 +195,9 @@ class SerialConsole(WestCommand):
 
         connector = SerialConnector(port=args.port, baudrate=args.baudrate)
         connector.set_modem_trace_file(args.modem_trace_file)
+
+        if args.input:
+            input_task(connector, args.input)
 
         if args.console_file:
             text = f'Device: {args.port}'
