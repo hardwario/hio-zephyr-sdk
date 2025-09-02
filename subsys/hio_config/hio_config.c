@@ -385,14 +385,13 @@ int hio_config_find_item(const char *module_name, const char *name,
 
 static int parse_int(const struct hio_config_item *item, char *argv, const char **err_msg)
 {
-	for (size_t i = 0; i < strlen(argv); i++) {
-		if (!isdigit((int)argv[i])) {
-			*err_msg = "Invalid format";
-			return -EINVAL;
-		}
+	char *endptr;
+	long value = strtol(argv, &endptr, 10);
+	if (*endptr != '\0') {
+		*err_msg = "Invalid format";
+		return -EINVAL;
 	}
 
-	long value = strtol(argv, NULL, 10);
 	if (value < item->min || value > item->max) {
 		*err_msg = "Invalid range";
 		return -EINVAL;
