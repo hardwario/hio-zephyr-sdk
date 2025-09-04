@@ -1,6 +1,7 @@
 /* HIO includes */
 #include <hio/hio_config.h>
 #include <hio/hio_util.h>
+#include <hio/hio_sys.h>
 
 /* Zephyr includes */
 #include <zephyr/fs/fs.h>
@@ -10,7 +11,6 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/storage/flash_map.h>
-#include <zephyr/sys/reboot.h>
 #include <zephyr/sys/slist.h>
 #include <zephyr/sys/crc.h>
 
@@ -184,11 +184,7 @@ int hio_config_save(void)
 		return ret;
 	}
 
-	LOG_INF("Rebooting system");
-
-	k_sleep(K_SECONDS(1));
-
-	sys_reboot(SYS_REBOOT_COLD);
+	hio_sys_reboot("Config save");
 
 	return 0;
 }
@@ -264,11 +260,9 @@ int hio_config_reset(void)
 		return ret;
 	}
 
-	LOG_INF("Rebooting system");
+	LOG_INF("Reset done");
 
-	k_sleep(K_SECONDS(1));
-
-	sys_reboot(SYS_REBOOT_COLD);
+	hio_sys_reboot("Config reset");
 
 	return 0;
 }

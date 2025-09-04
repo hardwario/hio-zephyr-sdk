@@ -9,6 +9,7 @@
 
 /* HIO includes */
 #include <hio/hio_atci.h>
+#include <hio/hio_sys.h>
 
 /* Zephyr includes */
 #include <zephyr/kernel.h>
@@ -218,7 +219,7 @@ static int at_reboot_action(const struct hio_atci *atci)
 
 	k_sleep(K_MSEC(100)); // Wait for output to be sent
 
-	sys_reboot(SYS_REBOOT_COLD);
+	hio_sys_reboot("Reboot command");
 
 	return 0;
 }

@@ -1,7 +1,7 @@
 config HIO_CONFIG
 	bool "HIO_CONFIG"
-	depends on SHELL
 	select HIO_UTIL
+	select HIO_SYS
 	select CBPRINTF_FP_SUPPORT
 	select FLASH
 	select FLASH_MAP

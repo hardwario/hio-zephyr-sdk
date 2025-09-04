@@ -27,7 +27,6 @@
 #include <zephyr/dfu/mcuboot.h>
 #include <zephyr/shell/shell_dummy.h>
 #include <zephyr/sys/byteorder.h>
-#include <zephyr/sys/reboot.h>
 
 /* NCS includes */
 #include <dfu/dfu_target.h>
@@ -35,6 +34,7 @@
 
 /* HIO includes */
 #include <hio/hio_config.h>
+#include <hio/hio_sys.h>
 
 /* Standard includes */
 #include <tinycrypt/constants.h>
@@ -343,7 +343,7 @@ int hio_cloud_process_dlfirmware(struct hio_cloud_msg_dlfirmware *dlfirmware, st
 #endif
 		k_sleep(K_MSEC(100));
 
-		sys_reboot(SYS_REBOOT_COLD);
+		hio_sys_reboot("Firmware update");
 
 	} else {
 		LOG_DBG("Firmware next offset: %d", offset);

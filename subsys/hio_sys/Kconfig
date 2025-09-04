@@ -1,0 +1,12 @@
+config HIO_SYS
+	bool "HIO_SYS"
+	select HWINFO
+	select REBOOT
+if HIO_SYS
+
+module = HIO_SYS
+module-str = HIO System Subsystem
+source "subsys/logging/Kconfig.template.log_config"
+
+
+endif # HIO_SYS

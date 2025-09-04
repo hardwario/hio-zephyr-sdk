@@ -8,6 +8,7 @@
 #include <hio/hio_config.h>
 #include <hio/hio_atci.h>
 #include <hio/hio_tok.h>
+#include <hio/hio_sys.h>
 
 /* Zephyr includes */
 #include <zephyr/kernel.h>
@@ -175,7 +176,7 @@ static int at_reset_action(const struct hio_atci *atci)
 
 	k_sleep(K_SECONDS(1));
 
-	sys_reboot(SYS_REBOOT_COLD);
+	hio_sys_reboot("Config reset");
 
 	return ret;
 }
@@ -194,7 +195,7 @@ static int at_write_action(const struct hio_atci *atci)
 
 	k_sleep(K_SECONDS(1));
 
-	sys_reboot(SYS_REBOOT_COLD);
+	hio_sys_reboot("Config save");
 
 	return ret;
 }

@@ -4,6 +4,7 @@ config HIO_CLOUD
 	select HIO_INFO
 	select HIO_LTE
 	select HIO_RTC
+	select HIO_SYS
 	select EVENTS
 	select TINYCRYPT_SHA256
 	select TINYCRYPT

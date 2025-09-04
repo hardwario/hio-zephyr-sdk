@@ -30,6 +30,7 @@ config HIO_ATCI_CMD_SHELL_AUTH_FLAGS
 config HIO_ATCI_CMD_REBOOT
 	bool "ATCI command reboot"
 	default y
+	select HIO_SYS
 	help
 	  Enable ATCI command for rebooting the device.
 
