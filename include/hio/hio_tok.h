@@ -10,6 +10,11 @@ extern "C" {
 #endif
 
 /**
+ * @addtogroup hio_tok hio_tok
+ * @{
+ */
+
+/**
  * @brief Checks if a string starts with a given prefix.
  *
  * This function returns a pointer to the string if the prefix matches, or NULL otherwise.
@@ -131,6 +136,8 @@ bool hio_tok_is_quoted(const char *s);
  * @return      true if the current character is '\0' or ',', false otherwise.
  */
 bool hio_tok_is_empty(const char *s);
+
+/** @} */
 
 #ifdef __cplusplus
 }
