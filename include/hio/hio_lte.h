@@ -30,7 +30,7 @@ extern "C" {
 struct hio_lte_conn_param {
 	bool valid; /**< True if values are valid. */
 	int result; /**< Connection evaluation result (convert to text with @ref
-		       hio_lte_coneval_result_str). */
+		       hio_lte_str_coneval_result). */
 	int eest;   /**< Energy estimate (vendor-specific). */
 	int ecl;    /**< Coverage enhancement level (e.g. 0..2 for NB-IoT). */
 	int rsrp;   /**< Reference Signal Received Power (dBm). */
@@ -264,6 +264,46 @@ int hio_lte_get_fsm_state(const char **state);
  */
 int hio_lte_is_attached(bool *attached);
 
+/* -------- Callbacks for LTE events -------- */
+
+/**
+ * @brief LTE event types.
+ */
+enum hio_lte_event {
+	HIO_LTE_EVENT_CSCON_0 = 0, /**< Connection Status (Idle). */
+	HIO_LTE_EVENT_CSCON_1,     /**< Connection Status (Connected). */
+};
+
+/**
+ * @brief LTE event callback structure.
+ *
+ * @note Handler is executed from a worker thread depending on driver
+ *       implementation; it must be non-blocking and return quickly.
+ */
+struct hio_lte_cb {
+	sys_snode_t node; /**< Zephyr singly-linked list support. */
+	void (*handler)(struct hio_lte_cb *cb, enum hio_lte_event event);
+	void *user_data; /**< User data owned by the registrant. */
+};
+
+/**
+ * @brief Add LTE event callback.
+ *
+ * @retval 0       Success.
+ * @retval -EALREADY Callback already registered.
+ * @retval -EINVAL  Invalid argument.
+ */
+int hio_lte_add_callback(struct hio_lte_cb *cb);
+
+/**
+ * @brief Remove LTE event callback.
+ *
+ * @retval 0       Success.
+ * @retval -ENOENT Callback not found.
+ * @retval -EINVAL Invalid argument.
+ */
+int hio_lte_remove_callback(struct hio_lte_cb *cb);
+
 /**
  * @brief Get current attach/retry timeouts.
  *
@@ -271,13 +311,16 @@ int hio_lte_is_attached(bool *attached);
  */
 struct hio_lte_attach_timeout hio_lte_get_curr_attach_timeout(void);
 
-/**
- * @brief Convert connection evaluation result code to string.
- *
- * @param result Integer code from @ref hio_lte_conn_param::result.
- * @return       Constant string description.
- */
-const char *hio_lte_coneval_result_str(int result);
+/* -------- Utility functions -------- */
+
+/** Convert connection evaluation result code to string. */
+const char *hio_lte_str_coneval_result(int result);
+/** Convert +CEREG registration status to text. */
+const char *hio_lte_str_cereg_stat(enum hio_lte_cereg_param_stat stat);
+/** Convert +CEREG registration status to human-readable text. */
+const char *hio_lte_str_cereg_stat_human(enum hio_lte_cereg_param_stat stat);
+/** Convert access technology (AcT) to text. */
+const char *hio_lte_str_act(enum hio_lte_cereg_param_act act);
 
 /** @} */ /* end of group hio_lte_modem */
 

@@ -1,6 +1,7 @@
 #include "hio_lte_config.h"
 #include "hio_lte_flow.h"
 #include "hio_lte_state.h"
+#include "hio_lte_str.h"
 
 /* HIO includes */
 #include <hio/hio_rtc.h>
@@ -51,7 +52,7 @@ struct fsm_state_desc {
 	enum fsm_state state;
 	int (*on_enter)(void);
 	int (*on_leave)(void);
-	int (*event_handler)(enum hio_lte_event event);
+	int (*event_handler)(enum hio_lte_fsm_event event);
 };
 
 int m_attach_retry_count = 0;
@@ -77,6 +78,8 @@ static uint32_t m_start = 0;
 static uint32_t m_start_cscon1 = 0;
 
 struct hio_lte_cereg_param m_cereg_param;
+
+static sys_slist_t cb_list = SYS_SLIST_STATIC_INIT(&cb_list);
 
 #define ON_ERROR_MAX_FLOW_CHECK_RETRIES 3
 static int flow_check_failures = 0;
@@ -150,75 +153,6 @@ const char *fsm_state_str(enum fsm_state state)
 	return "unknown";
 }
 
-const char *hio_lte_event_str(enum hio_lte_event event)
-{
-	switch (event) {
-	case HIO_LTE_EVENT_ERROR:
-		return "ERROR";
-	case HIO_LTE_EVENT_TIMEOUT:
-		return "TIMEOUT";
-	case HIO_LTE_EVENT_ENABLE:
-		return "ENABLE";
-	case HIO_LTE_EVENT_READY:
-		return "READY";
-	case HIO_LTE_EVENT_SIMDETECTED:
-		return "SIMDETECTED";
-	case HIO_LTE_EVENT_REGISTERED:
-		return "REGISTERED";
-	case HIO_LTE_EVENT_DEREGISTERED:
-		return "DEREGISTERED";
-	case HIO_LTE_EVENT_RESET_LOOP:
-		return "RESET_LOOP";
-	case HIO_LTE_EVENT_SOCKET_OPENED:
-		return "SOCKET_OPENED";
-	case HIO_LTE_EVENT_XMODEMSLEEP:
-		return "XMODEMSLEEP";
-	case HIO_LTE_EVENT_CSCON_0:
-		return "CSCON_0";
-	case HIO_LTE_EVENT_CSCON_1:
-		return "CSCON_1";
-	case HIO_LTE_EVENT_XTIME:
-		return "XTIME";
-	case HIO_LTE_EVENT_SEND:
-		return "SEND";
-	case HIO_LTE_EVENT_RECV:
-		return "RECV";
-	case HIO_LTE_EVENT_XGPS_ENABLE:
-		return "XGPS_ENABLE";
-	case HIO_LTE_EVENT_XGPS_DISABLE:
-		return "XGPS_DISABLE";
-	case HIO_LTE_EVENT_XGPS:
-		return "XGPS";
-	case HIO_LTE_EVENT_COUNT:
-		return "for internal use only";
-	}
-	return "UNKNOWN";
-}
-
-const char *hio_lte_coneval_result_str(int result)
-{
-	switch (result) {
-	case 0:
-		return "Connection pre-evaluation successful";
-	case 1:
-		return "Evaluation failed, no cell available";
-	case 2:
-		return "Evaluation failed, UICC not available";
-	case 3:
-		return "Evaluation failed, only barred cells available";
-	case 4:
-		return "Evaluation failed, busy";
-	case 5:
-		return "Evaluation failed, aborted because of higher priority operation";
-	case 6:
-		return "Evaluation failed, not registered";
-	case 7:
-		return "Evaluation failed, unspecified";
-	default:
-		return "Evaluation failed, unknown result";
-	}
-}
-
 const char *hio_lte_get_state(void)
 {
 	return fsm_state_str(m_state);
@@ -240,11 +174,11 @@ static void stop_timer(void)
 	k_work_cancel_delayable(&m_timeout_work);
 }
 
-static void delegate_event(enum hio_lte_event event)
+static void delegate_event(enum hio_lte_fsm_event event)
 {
-	if (event == HIO_LTE_EVENT_CSCON_1) {
+	if (event == HIO_LTE_FSM_EVENT_CSCON_1) {
 		m_start_cscon1 = k_uptime_get_32();
-	} else if (event == HIO_LTE_EVENT_CSCON_0) {
+	} else if (event == HIO_LTE_FSM_EVENT_CSCON_0) {
 		k_mutex_lock(&m_metrics_lock, K_FOREVER);
 		m_metrics.cscon_1_last_duration_ms = k_uptime_get_32() - m_start_cscon1;
 		m_metrics.cscon_1_duration_ms += m_metrics.cscon_1_last_duration_ms;
@@ -266,17 +200,37 @@ static void delegate_event(enum hio_lte_event event)
 	}
 }
 
-static void event_handler(enum hio_lte_event event)
+static void hio_lte_notify(enum hio_lte_event event)
 {
-	LOG_INF("event: %s, state: %s", hio_lte_event_str(event), fsm_state_str(m_state));
+	struct hio_lte_cb *cb;
+
+	SYS_SLIST_FOR_EACH_CONTAINER(&cb_list, cb, node) {
+		cb->handler(cb, event);
+	}
+}
+
+static void event_handler(enum hio_lte_fsm_event event)
+{
+	LOG_INF("event: %s, state: %s", hio_lte_str_fsm_event(event), fsm_state_str(m_state));
+
+	switch (event) {
+	case HIO_LTE_FSM_EVENT_CSCON_0:
+		hio_lte_notify(HIO_LTE_EVENT_CSCON_0);
+		break;
+	case HIO_LTE_FSM_EVENT_CSCON_1:
+		hio_lte_notify(HIO_LTE_EVENT_CSCON_1);
+		break;
+	default:
+		break;
+	}
 
 	struct fsm_state_desc *fsm_state = get_fsm_state(m_state);
 	if (fsm_state && fsm_state->event_handler) {
 		int ret = fsm_state->event_handler(event);
 		if (ret < 0) {
 			LOG_WRN("failed to handle event, error: %i", ret);
-			if (event != HIO_LTE_EVENT_ERROR) {
-				delegate_event(HIO_LTE_EVENT_ERROR);
+			if (event != HIO_LTE_FSM_EVENT_ERROR) {
+				delegate_event(HIO_LTE_FSM_EVENT_ERROR);
 			}
 		}
 	}
@@ -291,7 +245,7 @@ static void enter_state(enum fsm_state state)
 		if (ret < 0) {
 			LOG_WRN("failed to leave state, error: %i", ret);
 			if (state != FSM_STATE_ERROR) {
-				delegate_event(HIO_LTE_EVENT_ERROR);
+				delegate_event(HIO_LTE_FSM_EVENT_ERROR);
 			}
 			return;
 		}
@@ -305,7 +259,7 @@ static void enter_state(enum fsm_state state)
 		if (ret < 0) {
 			LOG_WRN("failed to enter state error: %i", ret);
 			if (state != FSM_STATE_ERROR) {
-				delegate_event(HIO_LTE_EVENT_ERROR);
+				delegate_event(HIO_LTE_FSM_EVENT_ERROR);
 			}
 			return;
 		}
@@ -314,7 +268,7 @@ static void enter_state(enum fsm_state state)
 
 static void timeout_work_handler(struct k_work *item)
 {
-	delegate_event(HIO_LTE_EVENT_TIMEOUT);
+	delegate_event(HIO_LTE_FSM_EVENT_TIMEOUT);
 }
 
 static void event_dispatch_work_handler(struct k_work *item)
@@ -327,7 +281,7 @@ static void event_dispatch_work_handler(struct k_work *item)
 	k_mutex_unlock(&m_event_rb_lock);
 
 	for (uint8_t i = 0; i < events_cnt; i++) {
-		event_handler((enum hio_lte_event)events[i]);
+		event_handler((enum hio_lte_fsm_event)events[i]);
 	}
 }
 
@@ -337,7 +291,7 @@ int hio_lte_enable(void)
 		LOG_WRN("LTE Test mode enabled");
 		return -ENOTSUP;
 	}
-	delegate_event(HIO_LTE_EVENT_ENABLE);
+	delegate_event(HIO_LTE_FSM_EVENT_ENABLE);
 	return 0;
 }
 
@@ -363,7 +317,7 @@ int hio_lte_reconnect(void)
 
 	enter_state(FSM_STATE_DISABLED);
 
-	delegate_event(HIO_LTE_EVENT_ENABLE);
+	delegate_event(HIO_LTE_FSM_EVENT_ENABLE);
 
 	return 0;
 }
@@ -416,7 +370,7 @@ int hio_lte_send_recv(const struct hio_lte_send_recv_param *param)
 
 	k_event_clear(&m_states_event, SEND_RECV_BIT);
 
-	delegate_event(HIO_LTE_EVENT_SEND);
+	delegate_event(HIO_LTE_FSM_EVENT_SEND);
 
 	LOG_DBG("waiting for end transaction");
 
@@ -424,7 +378,7 @@ int hio_lte_send_recv(const struct hio_lte_send_recv_param *param)
 
 	if (sys_timepoint_expired(end)) {
 		k_mutex_unlock(&m_send_recv_lock);
-		delegate_event(HIO_LTE_EVENT_TIMEOUT);
+		delegate_event(HIO_LTE_FSM_EVENT_TIMEOUT);
 		return -ETIMEDOUT;
 	}
 
@@ -465,6 +419,33 @@ int hio_lte_get_fsm_state(const char **state)
 	return 0;
 }
 
+int hio_lte_add_callback(struct hio_lte_cb *cb)
+{
+	if (!cb || !cb->handler) {
+		return -EINVAL;
+	}
+
+	struct hio_lte_cb *iter;
+	SYS_SLIST_FOR_EACH_CONTAINER(&cb_list, iter, node) {
+		if (iter == cb) {
+			return -EALREADY;
+		}
+	}
+
+	sys_slist_append(&cb_list, &cb->node);
+	return 0;
+}
+
+int hio_lte_remove_callback(struct hio_lte_cb *cb)
+{
+	if (!cb) {
+		return -EINVAL;
+	}
+
+	bool removed = sys_slist_find_and_remove(&cb_list, &cb->node);
+	return removed ? 0 : -ENOENT;
+}
+
 static int on_enter_disabled(void)
 {
 	int ret;
@@ -482,16 +463,16 @@ static int on_enter_disabled(void)
 	return 0;
 }
 
-static int disabled_event_handler(enum hio_lte_event event)
+static int disabled_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
-	case HIO_LTE_EVENT_ENABLE:
+	case HIO_LTE_FSM_EVENT_ENABLE:
 		enter_state(FSM_STATE_PREPARE);
 		break;
-	case HIO_LTE_EVENT_ERROR:
+	case HIO_LTE_FSM_EVENT_ERROR:
 		enter_state(FSM_STATE_ERROR);
 		break;
-	case HIO_LTE_EVENT_DEREGISTERED:
+	case HIO_LTE_FSM_EVENT_DEREGISTERED:
 		break;
 	default:
 		return -ENOTSUP;
@@ -504,7 +485,7 @@ static int error_check(void)
 	int ret = hio_lte_flow_check();
 	if (ret == 0) {
 		flow_check_failures = 0;
-		delegate_event(HIO_LTE_EVENT_READY);
+		delegate_event(HIO_LTE_FSM_EVENT_READY);
 		return 0;
 	}
 
@@ -520,7 +501,7 @@ static int error_check(void)
 
 	if (ret == -HIO_LTE_ERR_SOCKET_NOT_OPENED) {
 		LOG_ERR("Socket error, retrying in 5 seconds");
-		delegate_event(HIO_LTE_EVENT_REGISTERED);
+		delegate_event(HIO_LTE_FSM_EVENT_REGISTERED);
 		return 0;
 	}
 
@@ -545,16 +526,16 @@ static int on_enter_error(void)
 	return 0;
 }
 
-static int error_event_handler(enum hio_lte_event event)
+static int error_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
-	case HIO_LTE_EVENT_TIMEOUT:
+	case HIO_LTE_FSM_EVENT_TIMEOUT:
 		enter_state(FSM_STATE_PREPARE);
 		break;
-	case HIO_LTE_EVENT_READY:
+	case HIO_LTE_FSM_EVENT_READY:
 		enter_state(FSM_STATE_READY);
 		break;
-	case HIO_LTE_EVENT_REGISTERED:
+	case HIO_LTE_FSM_EVENT_REGISTERED:
 		enter_state(FSM_STATE_OPEN_SOCKET);
 		break;
 	default:
@@ -590,10 +571,10 @@ static int on_enter_prepare(void)
 	return 0;
 }
 
-static int prepare_event_handler(enum hio_lte_event event)
+static int prepare_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
-	case HIO_LTE_EVENT_SIMDETECTED:
+	case HIO_LTE_FSM_EVENT_SIMDETECTED:
 		stop_timer();
 		int ret = hio_lte_flow_sim_info();
 		if (ret < 0) {
@@ -614,11 +595,11 @@ static int prepare_event_handler(enum hio_lte_event event)
 		}
 		enter_state(FSM_STATE_ATTACH);
 		break;
-	case HIO_LTE_EVENT_RESET_LOOP:
+	case HIO_LTE_FSM_EVENT_RESET_LOOP:
 		enter_state(FSM_STATE_RESET_LOOP);
 		break;
-	case HIO_LTE_EVENT_TIMEOUT:
-	case HIO_LTE_EVENT_ERROR:
+	case HIO_LTE_FSM_EVENT_TIMEOUT:
+	case HIO_LTE_FSM_EVENT_ERROR:
 		enter_state(FSM_STATE_ERROR);
 		break;
 	default:
@@ -650,13 +631,13 @@ static int on_enter_reset_loop(void)
 	return 0;
 }
 
-static int reset_loop_event_handler(enum hio_lte_event event)
+static int reset_loop_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
-	case HIO_LTE_EVENT_TIMEOUT:
+	case HIO_LTE_FSM_EVENT_TIMEOUT:
 		enter_state(FSM_STATE_PREPARE);
 		break;
-	case HIO_LTE_EVENT_ERROR:
+	case HIO_LTE_FSM_EVENT_ERROR:
 		enter_state(FSM_STATE_ERROR);
 		break;
 	default:
@@ -711,13 +692,13 @@ static int on_enter_retry_delay(void)
 	return 0;
 }
 
-static int retry_delay_event_handler(enum hio_lte_event event)
+static int retry_delay_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
-	case HIO_LTE_EVENT_TIMEOUT:
+	case HIO_LTE_FSM_EVENT_TIMEOUT:
 		enter_state(FSM_STATE_ATTACH);
 		break;
-	case HIO_LTE_EVENT_ERROR:
+	case HIO_LTE_FSM_EVENT_ERROR:
 		enter_state(FSM_STATE_ERROR);
 		break;
 	default:
@@ -750,10 +731,10 @@ static int on_enter_attach(void)
 	return 0;
 }
 
-static int attach_event_handler(enum hio_lte_event event)
+static int attach_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
-	case HIO_LTE_EVENT_REGISTERED:
+	case HIO_LTE_FSM_EVENT_REGISTERED:
 		m_attach_retry_count = 0;
 		k_mutex_lock(&m_metrics_lock, K_FOREVER);
 		m_metrics.attach_last_duration_ms = k_uptime_get_32() - m_start;
@@ -762,17 +743,17 @@ static int attach_event_handler(enum hio_lte_event event)
 		k_event_post(&m_states_event, ATTACHED_BIT);
 		enter_state(FSM_STATE_OPEN_SOCKET);
 		break;
-	case HIO_LTE_EVENT_CSCON_1:
+	case HIO_LTE_FSM_EVENT_CSCON_1:
 		m_cscon = true;
 		break;
-	case HIO_LTE_EVENT_CSCON_0:
+	case HIO_LTE_FSM_EVENT_CSCON_0:
 		m_cscon = false;
 		break;
-	case HIO_LTE_EVENT_RESET_LOOP:
+	case HIO_LTE_FSM_EVENT_RESET_LOOP:
 		m_attach_retry_count = 0;
 		enter_state(FSM_STATE_RESET_LOOP);
 		break;
-	case HIO_LTE_EVENT_TIMEOUT:
+	case HIO_LTE_FSM_EVENT_TIMEOUT:
 		k_mutex_lock(&m_metrics_lock, K_FOREVER);
 		m_metrics.attach_fail_count++;
 		m_metrics.attach_last_duration_ms = k_uptime_get_32() - m_start;
@@ -780,7 +761,7 @@ static int attach_event_handler(enum hio_lte_event event)
 		k_mutex_unlock(&m_metrics_lock);
 		enter_state(FSM_STATE_RETRY_DELAY);
 		break;
-	case HIO_LTE_EVENT_ERROR:
+	case HIO_LTE_FSM_EVENT_ERROR:
 		enter_state(FSM_STATE_ERROR);
 		break;
 	default:
@@ -814,28 +795,28 @@ static int on_enter_open_socket(void)
 		return ret;
 	}
 
-	delegate_event(HIO_LTE_EVENT_SOCKET_OPENED);
+	delegate_event(HIO_LTE_FSM_EVENT_SOCKET_OPENED);
 
 	return 0;
 }
 
-static int open_socket_event_handler(enum hio_lte_event event)
+static int open_socket_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
-	case HIO_LTE_EVENT_SOCKET_OPENED:
+	case HIO_LTE_FSM_EVENT_SOCKET_OPENED:
 		k_event_post(&m_states_event, CONNECTED_BIT);
 		enter_state(FSM_STATE_CONEVAL);
 		break;
-	case HIO_LTE_EVENT_CSCON_0:
+	case HIO_LTE_FSM_EVENT_CSCON_0:
 		m_cscon = false;
 		break;
-	case HIO_LTE_EVENT_CSCON_1:
+	case HIO_LTE_FSM_EVENT_CSCON_1:
 		m_cscon = true;
 		break;
-	case HIO_LTE_EVENT_DEREGISTERED:
+	case HIO_LTE_FSM_EVENT_DEREGISTERED:
 		enter_state(FSM_STATE_ATTACH);
 		break;
-	case HIO_LTE_EVENT_ERROR:
+	case HIO_LTE_FSM_EVENT_ERROR:
 		enter_state(FSM_STATE_ERROR);
 		break;
 	default:
@@ -847,7 +828,7 @@ static int open_socket_event_handler(enum hio_lte_event event)
 static int on_enter_ready(void)
 {
 	if (m_send_recv_param) {
-		delegate_event(HIO_LTE_EVENT_SEND);
+		delegate_event(HIO_LTE_FSM_EVENT_SEND);
 	}
 
 	start_timer(K_MSEC(500));
@@ -855,40 +836,40 @@ static int on_enter_ready(void)
 	return 0;
 }
 
-static int ready_event_handler(enum hio_lte_event event)
+static int ready_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
-	case HIO_LTE_EVENT_SEND:
+	case HIO_LTE_FSM_EVENT_SEND:
 		int ret = hio_lte_flow_check();
 		if (ret < 0) {
 			LOG_ERR("Call `hio_lte_flow_check` failed: %d", ret);
 			if (ret == -ENOTCONN) {
-				delegate_event(HIO_LTE_EVENT_DEREGISTERED);
+				delegate_event(HIO_LTE_FSM_EVENT_DEREGISTERED);
 				return 0;
 			}
 			return ret;
 		}
 		enter_state(FSM_STATE_SEND);
 		break;
-	case HIO_LTE_EVENT_DEREGISTERED:
+	case HIO_LTE_FSM_EVENT_DEREGISTERED:
 		if (m_cereg_param.active_time == -1) {
 			return 0;
 		}
 		enter_state(FSM_STATE_ATTACH);
 		break;
-	case HIO_LTE_EVENT_CSCON_0:
+	case HIO_LTE_FSM_EVENT_CSCON_0:
 		m_cscon = false;
 		break;
-	case HIO_LTE_EVENT_CSCON_1:
+	case HIO_LTE_FSM_EVENT_CSCON_1:
 		m_cscon = true;
 		break;
-	case HIO_LTE_EVENT_XMODEMSLEEP:
+	case HIO_LTE_FSM_EVENT_XMODEMSLEEP:
 		enter_state(FSM_STATE_SLEEP);
 		break;
-	case HIO_LTE_EVENT_ERROR:
+	case HIO_LTE_FSM_EVENT_ERROR:
 		enter_state(FSM_STATE_ERROR);
 		break;
-	case HIO_LTE_EVENT_TIMEOUT:
+	case HIO_LTE_FSM_EVENT_TIMEOUT:
 		hio_lte_state_get_cereg_param(&m_cereg_param);
 		if (m_cereg_param.active_time == -1) {
 			LOG_WRN("Active time is not set, skipping cfun 4");
@@ -915,16 +896,16 @@ static int on_leave_ready(void)
 static int on_enter_sleep(void)
 {
 	if (m_send_recv_param) {
-		delegate_event(HIO_LTE_EVENT_SEND);
+		delegate_event(HIO_LTE_FSM_EVENT_SEND);
 	}
 
 	return 0;
 }
 
-static int sleep_event_handler(enum hio_lte_event event)
+static int sleep_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
-	case HIO_LTE_EVENT_SEND:
+	case HIO_LTE_FSM_EVENT_SEND:
 		if (m_cereg_param.active_time == -1) {
 			int ret = hio_lte_flow_cfun(1);
 			if (ret < 0) {
@@ -936,7 +917,7 @@ static int sleep_event_handler(enum hio_lte_event event)
 		};
 		enter_state(FSM_STATE_SEND);
 		break;
-	case HIO_LTE_EVENT_ERROR:
+	case HIO_LTE_FSM_EVENT_ERROR:
 		enter_state(FSM_STATE_ERROR);
 		break;
 	default:
@@ -950,7 +931,7 @@ static int on_enter_send(void)
 	int ret;
 
 	if (!m_send_recv_param) {
-		delegate_event(HIO_LTE_EVENT_READY);
+		delegate_event(HIO_LTE_FSM_EVENT_READY);
 		return 0;
 	}
 
@@ -977,23 +958,23 @@ static int on_enter_send(void)
 	start_timer(SEND_CSCON_1_TIMEOUT);
 
 	if (m_cscon) {
-		delegate_event(HIO_LTE_EVENT_SEND);
+		delegate_event(HIO_LTE_FSM_EVENT_SEND);
 	}
 
 	return 0;
 }
 
-static int send_event_handler(enum hio_lte_event event)
+static int send_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
-	case HIO_LTE_EVENT_CSCON_0:
+	case HIO_LTE_FSM_EVENT_CSCON_0:
 		m_cscon = false;
 		enter_state(FSM_STATE_READY);
 		break;
-	case HIO_LTE_EVENT_CSCON_1:
+	case HIO_LTE_FSM_EVENT_CSCON_1:
 		m_cscon = true;
 		__fallthrough;
-	case HIO_LTE_EVENT_SEND:
+	case HIO_LTE_FSM_EVENT_SEND:
 		stop_timer();
 		LOG_INF("Send event on send state");
 		if (m_send_recv_param) {
@@ -1008,18 +989,18 @@ static int send_event_handler(enum hio_lte_event event)
 			enter_state(FSM_STATE_READY);
 		}
 		break;
-	case HIO_LTE_EVENT_READY:
+	case HIO_LTE_FSM_EVENT_READY:
 		__fallthrough;
-	case HIO_LTE_EVENT_TIMEOUT:
+	case HIO_LTE_FSM_EVENT_TIMEOUT:
 		k_mutex_lock(&m_metrics_lock, K_FOREVER);
 		m_metrics.uplink_errors++;
 		k_mutex_unlock(&m_metrics_lock);
 		enter_state(FSM_STATE_READY);
 		break;
-	case HIO_LTE_EVENT_DEREGISTERED:
+	case HIO_LTE_FSM_EVENT_DEREGISTERED:
 		enter_state(FSM_STATE_ATTACH);
 		break;
-	case HIO_LTE_EVENT_ERROR:
+	case HIO_LTE_FSM_EVENT_ERROR:
 		enter_state(FSM_STATE_ERROR);
 		break;
 	default:
@@ -1040,7 +1021,7 @@ static int on_enter_receive(void)
 	LOG_INF("on_enter_receive");
 
 	if (!m_send_recv_param) {
-		delegate_event(HIO_LTE_EVENT_READY);
+		delegate_event(HIO_LTE_FSM_EVENT_READY);
 		return 0;
 	}
 
@@ -1068,7 +1049,7 @@ static int on_enter_receive(void)
 	k_mutex_unlock(&m_metrics_lock);
 
 	k_sleep(K_MSEC(100));
-	delegate_event(HIO_LTE_EVENT_RECV);
+	delegate_event(HIO_LTE_FSM_EVENT_RECV);
 
 	m_send_recv_param = NULL;
 	k_event_post(&m_states_event, SEND_RECV_BIT);
@@ -1076,28 +1057,28 @@ static int on_enter_receive(void)
 	return 0;
 }
 
-static int receive_event_handler(enum hio_lte_event event)
+static int receive_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
-	case HIO_LTE_EVENT_RECV:
+	case HIO_LTE_FSM_EVENT_RECV:
 		if (!m_send_recv_param) {
 			enter_state(FSM_STATE_CONEVAL);
 			return 0;
 		}
 		__fallthrough;
-	case HIO_LTE_EVENT_READY:
+	case HIO_LTE_FSM_EVENT_READY:
 		__fallthrough;
-	case HIO_LTE_EVENT_TIMEOUT:
+	case HIO_LTE_FSM_EVENT_TIMEOUT:
 		enter_state(FSM_STATE_READY);
 		break;
-	case HIO_LTE_EVENT_CSCON_0:
+	case HIO_LTE_FSM_EVENT_CSCON_0:
 		m_cscon = false;
 		// enter_state(FSM_STATE_CONEVAL);
 		break;
-	case HIO_LTE_EVENT_DEREGISTERED:
+	case HIO_LTE_FSM_EVENT_DEREGISTERED:
 		enter_state(FSM_STATE_ATTACH);
 		break;
-	case HIO_LTE_EVENT_ERROR:
+	case HIO_LTE_FSM_EVENT_ERROR:
 		enter_state(FSM_STATE_ERROR);
 		break;
 	default:
@@ -1113,29 +1094,29 @@ static int on_enter_coneval(void)
 		LOG_WRN("Call `hio_lte_flow_coneval` failed: %d", ret);
 	}
 
-	delegate_event(HIO_LTE_EVENT_READY);
+	delegate_event(HIO_LTE_FSM_EVENT_READY);
 
 	return 0;
 }
 
-static int coneval_event_handler(enum hio_lte_event event)
+static int coneval_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
-	case HIO_LTE_EVENT_READY:
+	case HIO_LTE_FSM_EVENT_READY:
 		__fallthrough;
-	case HIO_LTE_EVENT_TIMEOUT:
+	case HIO_LTE_FSM_EVENT_TIMEOUT:
 		enter_state(FSM_STATE_READY);
 		break;
-	case HIO_LTE_EVENT_CSCON_0:
+	case HIO_LTE_FSM_EVENT_CSCON_0:
 		m_cscon = false;
 		break;
-	case HIO_LTE_EVENT_CSCON_1:
+	case HIO_LTE_FSM_EVENT_CSCON_1:
 		m_cscon = true;
 		break;
-	case HIO_LTE_EVENT_DEREGISTERED:
+	case HIO_LTE_FSM_EVENT_DEREGISTERED:
 		enter_state(FSM_STATE_ATTACH);
 		break;
-	case HIO_LTE_EVENT_ERROR:
+	case HIO_LTE_FSM_EVENT_ERROR:
 		enter_state(FSM_STATE_ERROR);
 		break;
 	default:
@@ -1179,6 +1160,8 @@ static int init(void)
 	int ret;
 
 	LOG_INF("System initialization");
+
+	sys_slist_init(&cb_list);
 
 	ret = hio_lte_config_init();
 	if (ret) {

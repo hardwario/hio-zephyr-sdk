@@ -3,6 +3,7 @@
 #include "hio_lte_state.h"
 #include "hio_lte_talk.h"
 #include "hio_lte_tok.h"
+#include "hio_lte_str.h"
 
 /* HIO includes */
 #include <hio/hio_rtc.h>
@@ -53,7 +54,7 @@ struct cgdcont_param {
 
 static K_EVENT_DEFINE(m_flow_events);
 
-static hio_lte_flow_event_delegate_cb m_event_delegate_cb;
+static HIO_LTE_FSM_EVENT_delegate_cb m_event_delegate_cb;
 
 static K_MUTEX_DEFINE(m_addr_info_lock);
 static struct nrf_sockaddr_in m_addr_info;
@@ -396,11 +397,11 @@ static void process_urc(const char *line, void *user_data)
 	LOG_INF("URC: %s", line);
 
 	if (!strcmp(line, "Ready")) {
-		m_event_delegate_cb(HIO_LTE_EVENT_READY);
+		m_event_delegate_cb(HIO_LTE_FSM_EVENT_READY);
 	} else if (!strncmp(line, "%XSIM: 1", 8)) {
-		m_event_delegate_cb(HIO_LTE_EVENT_SIMDETECTED);
+		m_event_delegate_cb(HIO_LTE_FSM_EVENT_SIMDETECTED);
 	} else if (!strncmp(line, "%XTIME:", 7)) {
-		m_event_delegate_cb(HIO_LTE_EVENT_XTIME);
+		m_event_delegate_cb(HIO_LTE_FSM_EVENT_XTIME);
 	} else if (!strncmp(line, "+CEREG: ", 8)) {
 		struct hio_lte_cereg_param cereg_param = {0};
 
@@ -419,19 +420,19 @@ static void process_urc(const char *line, void *user_data)
 
 		if (cereg_param.stat == HIO_LTE_CEREG_PARAM_STAT_REGISTERED_HOME ||
 		    cereg_param.stat == HIO_LTE_CEREG_PARAM_STAT_REGISTERED_ROAMING) {
-			m_event_delegate_cb(HIO_LTE_EVENT_REGISTERED);
+			m_event_delegate_cb(HIO_LTE_FSM_EVENT_REGISTERED);
 		} else {
-			m_event_delegate_cb(HIO_LTE_EVENT_DEREGISTERED);
+			m_event_delegate_cb(HIO_LTE_FSM_EVENT_DEREGISTERED);
 		}
 	} else if (!strncmp(line, "%MDMEV: ", 8)) {
 		if (!strncmp(&line[8], "RESET LOOP", 10)) {
 			LOG_WRN("Modem reset loop detected");
-			m_event_delegate_cb(HIO_LTE_EVENT_RESET_LOOP);
+			m_event_delegate_cb(HIO_LTE_FSM_EVENT_RESET_LOOP);
 		}
 	} else if (!strncmp(line, "+CSCON: 0", 9)) {
-		m_event_delegate_cb(HIO_LTE_EVENT_CSCON_0);
+		m_event_delegate_cb(HIO_LTE_FSM_EVENT_CSCON_0);
 	} else if (!strncmp(line, "+CSCON: 1", 9)) {
-		m_event_delegate_cb(HIO_LTE_EVENT_CSCON_1);
+		m_event_delegate_cb(HIO_LTE_FSM_EVENT_CSCON_1);
 	} else if (!strncmp(line, "%XMODEMSLEEP: ", 14)) {
 		int p1 = 0, p2 = 0;
 
@@ -441,7 +442,7 @@ static void process_urc(const char *line, void *user_data)
 			return;
 		}
 		if (p2 > 0 || p1 == 4) {
-			m_event_delegate_cb(HIO_LTE_EVENT_XMODEMSLEEP);
+			m_event_delegate_cb(HIO_LTE_FSM_EVENT_XMODEMSLEEP);
 		}
 	} else if (!strncmp(line, "%RAI: ", 6)) {
 		struct hio_lte_rai_param rai_param = {0};
@@ -903,7 +904,6 @@ int hio_lte_flow_open_socket(void)
 	hio_lte_talk_at_cmd("AT+CEREG?");
 	hio_lte_talk_at_cmd("AT%XCBAND");
 	hio_lte_talk_at_cmd("AT+CEINFO?");
-	hio_lte_talk_at_cmd("AT+CGPADDR=0");
 	hio_lte_talk_at_cmd("AT+CGATT?");
 	hio_lte_talk_at_cmd("AT+CGACT?");
 
@@ -913,7 +913,7 @@ int hio_lte_flow_open_socket(void)
 		return ret;
 	}
 
-	LOG_INF("addr: %s, port: %d", m_cgdcont.addr, CONFIG_HIO_LTE_PORT);
+	LOG_INF("addr: %s, port: %d", g_hio_lte_config.addr, CONFIG_HIO_LTE_PORT);
 
 	k_mutex_lock(&m_addr_info_lock, K_FOREVER);
 	m_addr_info.sin_family = NRF_AF_INET;
@@ -973,6 +973,10 @@ int hio_lte_flow_open_socket(void)
 	}
 
 	LOG_INF("Socket opened: %d", m_socket_fd);
+
+	// nrf_close(m_socket_fd);
+	// m_socket_fd = -1;
+	// return -114;
 
 	ret = nrf_connect(m_socket_fd, (struct nrf_sockaddr *)&m_addr_info, sizeof(m_addr_info));
 	if (ret == -1) {
@@ -1271,7 +1275,7 @@ int hio_lte_flow_coneval(void)
 
 	if (conn_params.result != 0) {
 		LOG_ERR("Connection evaluation: %s",
-			hio_lte_coneval_result_str(conn_params.result));
+			hio_lte_str_coneval_result(conn_params.result));
 		return -EIO;
 	}
 
@@ -1318,7 +1322,7 @@ int hio_lte_flow_xmodemtrace(int lvl)
 	return 0;
 }
 
-int hio_lte_flow_init(hio_lte_flow_event_delegate_cb cb)
+int hio_lte_flow_init(HIO_LTE_FSM_EVENT_delegate_cb cb)
 {
 	m_socket_fd = -1;
 

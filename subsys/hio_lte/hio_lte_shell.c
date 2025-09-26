@@ -143,49 +143,16 @@ static int cmd_state(const struct shell *shell, size_t argc, char **argv)
 
 	shell_print(shell, "attached: %s", attached ? "yes" : "no");
 
+	const char *lte_cereg = "not available";
+	const char *lte_mode = "not available";
 	struct hio_lte_cereg_param cereg_param;
 	hio_lte_get_cereg_param(&cereg_param);
 	if (cereg_param.valid) {
-		switch (cereg_param.stat) {
-		case HIO_LTE_CEREG_PARAM_STAT_NOT_REGISTERED:
-			shell_print(shell, "cereg: not registered");
-			break;
-		case HIO_LTE_CEREG_PARAM_STAT_REGISTERED_HOME:
-			shell_print(shell, "cereg: registered home");
-			break;
-		case HIO_LTE_CEREG_PARAM_STAT_SEARCHING:
-			shell_print(shell, "cereg: searching");
-			break;
-		case HIO_LTE_CEREG_PARAM_STAT_REGISTRATION_DENIED:
-			shell_print(shell, "cereg: registration denied");
-			break;
-		case HIO_LTE_CEREG_PARAM_STAT_UNKNOWN:
-			shell_print(shell, "cereg: unknown");
-			break;
-		case HIO_LTE_CEREG_PARAM_STAT_REGISTERED_ROAMING:
-			shell_print(shell, "cereg: registered roaming");
-			break;
-		case HIO_LTE_CEREG_PARAM_STAT_SIM_FAILURE:
-			shell_print(shell, "cereg: sim failure");
-			break;
-		default:
-			shell_print(shell, "cereg: unknown");
-			break;
-		}
-
-		switch (cereg_param.act) {
-		case HIO_LTE_CEREG_PARAM_ACT_LTE:
-			shell_print(shell, "mode: lte-m");
-			break;
-		case HIO_LTE_CEREG_PARAM_ACT_NBIOT:
-			shell_print(shell, "mode: nb-iot");
-			break;
-		case HIO_LTE_CEREG_PARAM_ACT_UNKNOWN:
-		default:
-			shell_print(shell, "act: unknown");
-			break;
-		}
+		lte_cereg = hio_lte_str_cereg_stat(cereg_param.stat);
+		lte_mode = hio_lte_str_act(cereg_param.act);
 	}
+	shell_print(shell, "cereg: %s", lte_cereg);
+	shell_print(shell, "mode: %s", lte_mode);
 
 	struct hio_lte_conn_param conn_param;
 	hio_lte_get_conn_param(&conn_param);
@@ -201,7 +168,7 @@ static int cmd_state(const struct shell *shell, size_t argc, char **argv)
 		shell_print(shell, "earfcn: %d", conn_param.earfcn);
 	}
 
-	shell_print(shell, "state: %s", hio_lte_get_state());
+	shell_print(shell, "fsm-state: %s", hio_lte_get_state());
 
 	if (strcmp(hio_lte_get_state(), "attach") == 0) {
 		struct hio_lte_attach_timeout at_timeout = hio_lte_get_curr_attach_timeout();
