@@ -2,7 +2,8 @@ config HIO_RTC
 	bool "HIO_RTC"
 	depends on SHELL
 	select EVENTS
-	select NRFX_RTC0
+	select NRFX_RTC0 if SOC_SERIES_NRF52X || SOC_SERIES_NRF91X
+	select NRFX_GRTC if SOC_SERIES_NRF54LX
 	select POLL
 
 if HIO_RTC

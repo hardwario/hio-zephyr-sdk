@@ -14,6 +14,8 @@
 #include <nrf9120.h>
 #include <tfm_ns_interface.h>
 #include <tfm_ioctl_api.h>
+#elif defined(CONFIG_SOC_SERIES_NRF54LX)
+#include <nrf54l15.h>
 #else
 #warning "Unsupported SoC series"
 #endif
@@ -106,9 +108,13 @@ static int load_pib(void)
 {
 	uint8_t pib[128];
 
-#ifdef CONFIG_SOC_SERIES_NRF52X
+#if defined(CONFIG_SOC_SERIES_NRF52X)
 	for (int i = 0; i < (ARRAY_SIZE(pib) / 4); i++) {
 		((uint32_t *)pib)[i] = NRF_UICR->CUSTOMER[i];
+	}
+#elif defined(CONFIG_SOC_SERIES_NRF54LX)
+	for (int i = 0; i < (ARRAY_SIZE(pib) / 4); i++) {
+		((uint32_t *)pib)[i] = NRF_UICR->OTP[i];
 	}
 #else
 	uint32_t err = 0;
