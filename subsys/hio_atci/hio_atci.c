@@ -198,7 +198,7 @@ static int execute(const struct hio_atci *atci)
 
 	char *buff = atci->ctx->cmd_buff;
 
-	LOG_INF("cmd: %s len: %d", buff, atci->ctx->cmd_buff_len);
+	LOG_DBG("cmd: %s len: %d", buff, atci->ctx->cmd_buff_len);
 
 	if (buff[0] != 'A' || buff[1] != 'T') {
 		LOG_ERR("Invalid command: %s", buff);
