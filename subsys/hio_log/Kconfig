@@ -1,0 +1,15 @@
+config HIO_LOG
+	bool "HIO_LOG"
+	select HIO_CONFIG
+if HIO_LOG
+
+config HIO_LOG_INIT_PRIORITY
+	int "Initialization priority"
+	default 1
+
+module = HIO_LOG
+module-str = HIO log Subsystem
+source "subsys/logging/Kconfig.template.log_config"
+
+
+endif # HIO_LOG
