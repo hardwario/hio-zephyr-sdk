@@ -3,9 +3,52 @@ config HIO_LOG
 	select HIO_CONFIG
 if HIO_LOG
 
+config HIO_LOG_DBG
+    bool "Enable debug logs items"
+    default y
+
+config HIO_LOG_INF
+    bool "Enable info logs items"
+    default y
+
+config HIO_LOG_WRN
+    bool "Enable warning logs items"
+    default n
+
+config HIO_LOG_ERR
+    bool "Enable error logs items"
+    default n
+
+config HIO_LOG_DBG_DEFAULT
+	string "Default debug log modules"
+	default ""
+
+config HIO_LOG_INF_DEFAULT
+	string "Default info log modules"
+	default ""
+
+config HIO_LOG_WRN_DEFAULT
+	string "Default warning log modules"
+	default ""
+
+config HIO_LOG_ERR_DEFAULT
+	string "Default error log modules"
+	default ""
+
 config HIO_LOG_INIT_PRIORITY
 	int "Initialization priority"
+	default 10
+	help
+		Initialization priority of the HIO log subsystem. Useful when diffrent modules dynamically change their
+		log levels during runtime. But you would like to apply hio_log rules after all modules are initialized.
+
+config HIO_LOG_HELPER_MACRO_INIT_PRIORITY
+	int "Initialization priority"
 	default 1
+	help
+		Used in macro for applications to set default priority. Should have lower priority than HIO_LOG_INIT_PRIORITY so that
+		hio_log can override log levels after its initialization.
+
 
 module = HIO_LOG
 module-str = HIO log Subsystem
