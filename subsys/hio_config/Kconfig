@@ -3,6 +3,7 @@ config HIO_CONFIG
 	select HIO_UTIL
 	select HIO_SYS
 	select CBPRINTF_FP_SUPPORT
+	select EVENTS
 	select FLASH
 	select FLASH_MAP
 	select NVS
