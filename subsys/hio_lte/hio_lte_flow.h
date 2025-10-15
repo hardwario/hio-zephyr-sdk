@@ -15,20 +15,6 @@
 extern "C" {
 #endif
 
-enum {
-	HIO_LTE_ERR_NONE = 0,
-
-	HIO_LTE_ERR_MODEM_INACTIVE = 1000,       /* CFUN != 1 */
-	HIO_LTE_ERR_CEREG_NOT_SUBSCRIBED = 1001, /* CEREG unsolicited codes off */
-	HIO_LTE_ERR_CEREG_NOT_REGISTERED = 1002, /* not registered to network */
-
-	HIO_LTE_ERR_PDN_NOT_ATTACHED = 1003, /* CGATT != 1 */
-	HIO_LTE_ERR_PDN_NOT_ACTIVE = 1004,   /* CGACT != 0,1 */
-
-	HIO_LTE_ERR_SOCKET_NOT_OPENED = 1005, /* socket is not opened */
-	HIO_LTE_ERR_SOCKET_ERROR = 1006,      /* socket check failed */
-};
-
 enum hio_lte_fsm_event {
 	HIO_LTE_FSM_EVENT_ERROR = 0,
 	HIO_LTE_FSM_EVENT_TIMEOUT,

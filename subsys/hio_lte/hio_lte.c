@@ -69,6 +69,11 @@ static K_EVENT_DEFINE(m_states_event);
 #define ATTACHED_BIT  BIT(1)
 #define CONNECTED_BIT BIT(2)
 
+#define FLAG_CSCON       BIT(0)
+#define FLAG_GNSS_ENABLE BIT(1)
+#define FLAG_CFUN4       BIT(2)
+atomic_t m_flag = ATOMIC_INIT(0);
+
 K_MUTEX_DEFINE(m_send_recv_lock);
 struct hio_lte_send_recv_param *m_send_recv_param = NULL;
 
@@ -82,7 +87,12 @@ struct hio_lte_cereg_param m_cereg_param;
 static sys_slist_t cb_list = SYS_SLIST_STATIC_INIT(&cb_list);
 
 #define ON_ERROR_MAX_FLOW_CHECK_RETRIES 3
-static int flow_check_failures = 0;
+static struct {
+	enum fsm_state prev_state;
+	int flow_check_failures;
+	enum fsm_state on_timeout_state;
+	uint32_t timeout_s;
+} m_error_ctx = {0};
 
 static struct fsm_state_desc *get_fsm_state(enum fsm_state state);
 
@@ -236,33 +246,64 @@ static void event_handler(enum hio_lte_fsm_event event)
 	}
 }
 
-static void enter_state(enum fsm_state state)
+static inline int leaving_state(enum fsm_state next)
 {
-	LOG_INF("leaving state: %s", fsm_state_str(m_state));
 	struct fsm_state_desc *fsm_state = get_fsm_state(m_state);
 	if (fsm_state && fsm_state->on_leave) {
+		LOG_INF("%s", fsm_state_str(m_state));
 		int ret = fsm_state->on_leave();
 		if (ret < 0) {
 			LOG_WRN("failed to leave state, error: %i", ret);
-			if (state != FSM_STATE_ERROR) {
+			if (next != FSM_STATE_ERROR) {
+				delegate_event(HIO_LTE_FSM_EVENT_ERROR);
+			}
+			return ret;
+		}
+	}
+	return 0;
+}
+
+static void entering_state(struct fsm_state_desc *next_desc)
+{
+	LOG_INF("%s", fsm_state_str(next_desc->state));
+
+	m_state = next_desc->state;
+	if (next_desc->on_enter) {
+		int ret = next_desc->on_enter();
+		if (ret < 0) {
+			LOG_WRN("failed to enter state error: %i", ret);
+			if (next_desc->state != FSM_STATE_ERROR) {
 				delegate_event(HIO_LTE_FSM_EVENT_ERROR);
 			}
 			return;
 		}
 	}
+}
 
-	m_state = state;
-	LOG_INF("entering to state: %s", fsm_state_str(state));
-	fsm_state = get_fsm_state(state);
-	if (fsm_state && fsm_state->on_enter) {
-		int ret = fsm_state->on_enter();
-		if (ret < 0) {
-			LOG_WRN("failed to enter state error: %i", ret);
-			if (state != FSM_STATE_ERROR) {
-				delegate_event(HIO_LTE_FSM_EVENT_ERROR);
-			}
-			return;
-		}
+static void transition_state(enum fsm_state next)
+{
+	if (next == m_state) {
+		LOG_INF("no-op: already in %s", fsm_state_str(next));
+		return;
+	}
+
+	struct fsm_state_desc *next_desc = get_fsm_state(next);
+	if (!next_desc) {
+		LOG_ERR("Unknown state: %s %d", fsm_state_str(next), next);
+		return;
+	}
+
+	if (next == FSM_STATE_ERROR && m_state == FSM_STATE_ERROR) {
+		LOG_WRN("Already in error state, ignoring");
+		return;
+	}
+
+	if (m_state == FSM_STATE_ERROR) {
+		m_error_ctx.prev_state = m_state; /* Save previous state before error */
+	}
+
+	if (leaving_state(next) == 0) {
+		entering_state(next_desc);
 	}
 }
 
@@ -304,7 +345,7 @@ int hio_lte_reconnect(void)
 
 	if (m_state == FSM_STATE_DISABLED) {
 		LOG_WRN("Cannot reconnect, LTE is disabled");
-		return -ENOTSUP;
+		return -ENODEV;
 	}
 
 	stop_timer();
@@ -315,7 +356,7 @@ int hio_lte_reconnect(void)
 	ring_buf_reset(&m_event_rb);
 	k_mutex_unlock(&m_event_rb_lock);
 
-	enter_state(FSM_STATE_DISABLED);
+	transition_state(FSM_STATE_DISABLED);
 
 	delegate_event(HIO_LTE_FSM_EVENT_ENABLE);
 
@@ -456,9 +497,20 @@ static int on_enter_disabled(void)
 	}
 
 	k_event_clear(&m_states_event, ATTACHED_BIT | CONNECTED_BIT);
-	flow_check_failures = 0;
+	m_error_ctx.flow_check_failures = 0;
 
 	start_timer(K_SECONDS(5));
+
+	return 0;
+}
+
+static int on_leave_disabled(void)
+{
+	memset(&m_error_ctx, 0, sizeof(m_error_ctx));
+	m_attach_retry_count = 0;
+
+	atomic_clear_bit(&m_flag, FLAG_CSCON);
+	atomic_clear_bit(&m_flag, FLAG_CFUN4);
 
 	return 0;
 }
@@ -467,10 +519,10 @@ static int disabled_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
 	case HIO_LTE_FSM_EVENT_ENABLE:
-		enter_state(FSM_STATE_PREPARE);
+		transition_state(FSM_STATE_PREPARE);
 		break;
 	case HIO_LTE_FSM_EVENT_ERROR:
-		enter_state(FSM_STATE_ERROR);
+		transition_state(FSM_STATE_ERROR);
 		break;
 	case HIO_LTE_FSM_EVENT_DEREGISTERED:
 		break;
@@ -480,48 +532,50 @@ static int disabled_event_handler(enum hio_lte_fsm_event event)
 	return 0;
 }
 
-static int error_check(void)
-{
-	int ret = hio_lte_flow_check();
-	if (ret == 0) {
-		flow_check_failures = 0;
-		delegate_event(HIO_LTE_FSM_EVENT_READY);
-		return 0;
-	}
-
-	flow_check_failures++;
-
-	LOG_INF("failed (attempt %d/%d): %d", flow_check_failures, ON_ERROR_MAX_FLOW_CHECK_RETRIES,
-		ret);
-
-	if (flow_check_failures >= ON_ERROR_MAX_FLOW_CHECK_RETRIES) {
-		LOG_ERR("Max retries reached, taking fallback action");
-		return -1;
-	}
-
-	if (ret == -HIO_LTE_ERR_SOCKET_NOT_OPENED) {
-		LOG_ERR("Socket error, retrying in 5 seconds");
-		delegate_event(HIO_LTE_FSM_EVENT_REGISTERED);
-		return 0;
-	}
-
-	return -1;
-}
-
 static int on_enter_error(void)
 {
-	int ret = error_check();
+	m_error_ctx.on_timeout_state = FSM_STATE_PREPARE; /* Default timeout state */
 
-	if (ret) {
-		k_event_clear(&m_states_event, ATTACHED_BIT | CONNECTED_BIT);
-		flow_check_failures = 0;
-
-		ret = hio_lte_flow_stop();
-		if (ret < 0) {
-			LOG_ERR("Call `hio_lte_flow_stop` failed: %d", ret);
-		}
-		start_timer(K_SECONDS(10));
+	int ret = hio_lte_flow_check();
+	if (ret == 0) {
+		m_error_ctx.flow_check_failures = 0;
+		LOG_INF("Flow check successful, resuming operation in 5 seconds");
+		m_error_ctx.on_timeout_state = FSM_STATE_READY;
+		start_timer(K_SECONDS(5));
+		return 0;
 	}
+
+	k_event_clear(&m_states_event, ATTACHED_BIT | CONNECTED_BIT);
+
+	if (ret == -ENOTSOCK) {
+		m_error_ctx.flow_check_failures++;
+
+		LOG_INF("failed (attempt %d/%d): %d", m_error_ctx.flow_check_failures,
+			ON_ERROR_MAX_FLOW_CHECK_RETRIES, ret);
+
+		if (m_error_ctx.flow_check_failures < ON_ERROR_MAX_FLOW_CHECK_RETRIES) {
+			LOG_ERR("Socket error, retrying open in 5 seconds");
+			m_error_ctx.on_timeout_state = FSM_STATE_OPEN_SOCKET;
+			start_timer(K_SECONDS(5));
+			return 0;
+		}
+
+		LOG_ERR("Max retries reached, taking fallback action");
+		m_error_ctx.flow_check_failures = 0; /* Reset counter */
+	}
+
+	ret = hio_lte_flow_stop();
+	if (ret) {
+		LOG_ERR("Call `hio_lte_flow_stop` failed: %d", ret);
+	}
+
+	m_error_ctx.timeout_s += 10;
+	if (m_error_ctx.timeout_s > 600) { /* Max 10 minutes */
+		m_error_ctx.timeout_s = 600;
+	}
+
+	LOG_INF("Waiting %u seconds before next reconnect attempt", m_error_ctx.timeout_s);
+	start_timer(K_SECONDS(m_error_ctx.timeout_s));
 
 	return 0;
 }
@@ -530,13 +584,7 @@ static int error_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
 	case HIO_LTE_FSM_EVENT_TIMEOUT:
-		enter_state(FSM_STATE_PREPARE);
-		break;
-	case HIO_LTE_FSM_EVENT_READY:
-		enter_state(FSM_STATE_READY);
-		break;
-	case HIO_LTE_FSM_EVENT_REGISTERED:
-		enter_state(FSM_STATE_OPEN_SOCKET);
+		transition_state(m_error_ctx.on_timeout_state);
 		break;
 	default:
 		break;
@@ -593,14 +641,15 @@ static int prepare_event_handler(enum hio_lte_fsm_event event)
 				return ret;
 			}
 		}
-		enter_state(FSM_STATE_ATTACH);
+		transition_state(FSM_STATE_ATTACH);
 		break;
 	case HIO_LTE_FSM_EVENT_RESET_LOOP:
-		enter_state(FSM_STATE_RESET_LOOP);
+		m_attach_retry_count = 0;
+		transition_state(FSM_STATE_RESET_LOOP);
 		break;
 	case HIO_LTE_FSM_EVENT_TIMEOUT:
 	case HIO_LTE_FSM_EVENT_ERROR:
-		enter_state(FSM_STATE_ERROR);
+		transition_state(FSM_STATE_ERROR);
 		break;
 	default:
 		break;
@@ -635,10 +684,10 @@ static int reset_loop_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
 	case HIO_LTE_FSM_EVENT_TIMEOUT:
-		enter_state(FSM_STATE_PREPARE);
+		transition_state(FSM_STATE_PREPARE);
 		break;
 	case HIO_LTE_FSM_EVENT_ERROR:
-		enter_state(FSM_STATE_ERROR);
+		transition_state(FSM_STATE_ERROR);
 		break;
 	default:
 		break;
@@ -696,10 +745,10 @@ static int retry_delay_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
 	case HIO_LTE_FSM_EVENT_TIMEOUT:
-		enter_state(FSM_STATE_ATTACH);
+		transition_state(FSM_STATE_ATTACH);
 		break;
 	case HIO_LTE_FSM_EVENT_ERROR:
-		enter_state(FSM_STATE_ERROR);
+		transition_state(FSM_STATE_ERROR);
 		break;
 	default:
 		break;
@@ -741,7 +790,7 @@ static int attach_event_handler(enum hio_lte_fsm_event event)
 		m_metrics.attach_duration_ms += m_metrics.attach_last_duration_ms;
 		k_mutex_unlock(&m_metrics_lock);
 		k_event_post(&m_states_event, ATTACHED_BIT);
-		enter_state(FSM_STATE_OPEN_SOCKET);
+		transition_state(FSM_STATE_OPEN_SOCKET);
 		break;
 	case HIO_LTE_FSM_EVENT_CSCON_1:
 		m_cscon = true;
@@ -751,7 +800,7 @@ static int attach_event_handler(enum hio_lte_fsm_event event)
 		break;
 	case HIO_LTE_FSM_EVENT_RESET_LOOP:
 		m_attach_retry_count = 0;
-		enter_state(FSM_STATE_RESET_LOOP);
+		transition_state(FSM_STATE_RESET_LOOP);
 		break;
 	case HIO_LTE_FSM_EVENT_TIMEOUT:
 		k_mutex_lock(&m_metrics_lock, K_FOREVER);
@@ -759,10 +808,10 @@ static int attach_event_handler(enum hio_lte_fsm_event event)
 		m_metrics.attach_last_duration_ms = k_uptime_get_32() - m_start;
 		m_metrics.attach_duration_ms += m_metrics.attach_last_duration_ms;
 		k_mutex_unlock(&m_metrics_lock);
-		enter_state(FSM_STATE_RETRY_DELAY);
+		transition_state(FSM_STATE_RETRY_DELAY);
 		break;
 	case HIO_LTE_FSM_EVENT_ERROR:
-		enter_state(FSM_STATE_ERROR);
+		transition_state(FSM_STATE_ERROR);
 		break;
 	default:
 		break;
@@ -805,7 +854,7 @@ static int open_socket_event_handler(enum hio_lte_fsm_event event)
 	switch (event) {
 	case HIO_LTE_FSM_EVENT_SOCKET_OPENED:
 		k_event_post(&m_states_event, CONNECTED_BIT);
-		enter_state(FSM_STATE_CONEVAL);
+		transition_state(FSM_STATE_CONEVAL);
 		break;
 	case HIO_LTE_FSM_EVENT_CSCON_0:
 		m_cscon = false;
@@ -814,10 +863,10 @@ static int open_socket_event_handler(enum hio_lte_fsm_event event)
 		m_cscon = true;
 		break;
 	case HIO_LTE_FSM_EVENT_DEREGISTERED:
-		enter_state(FSM_STATE_ATTACH);
+		transition_state(FSM_STATE_ATTACH);
 		break;
 	case HIO_LTE_FSM_EVENT_ERROR:
-		enter_state(FSM_STATE_ERROR);
+		transition_state(FSM_STATE_ERROR);
 		break;
 	default:
 		break;
@@ -840,22 +889,21 @@ static int ready_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
 	case HIO_LTE_FSM_EVENT_SEND:
+		if (atomic_test_bit(&m_flag, FLAG_CFUN4)) {
+			return 0; /* ignore SEND event */
+		}
+		stop_timer();
 		int ret = hio_lte_flow_check();
 		if (ret < 0) {
-			LOG_ERR("Call `hio_lte_flow_check` failed: %d", ret);
-			if (ret == -ENOTCONN) {
-				delegate_event(HIO_LTE_FSM_EVENT_DEREGISTERED);
-				return 0;
-			}
 			return ret;
 		}
-		enter_state(FSM_STATE_SEND);
+		transition_state(FSM_STATE_SEND);
 		break;
 	case HIO_LTE_FSM_EVENT_DEREGISTERED:
-		if (m_cereg_param.active_time == -1) {
-			return 0;
+		if (atomic_test_bit(&m_flag, FLAG_CFUN4)) {
+			return 0; /* ignore DEREGISTERED event */
 		}
-		enter_state(FSM_STATE_ATTACH);
+		transition_state(FSM_STATE_ATTACH);
 		break;
 	case HIO_LTE_FSM_EVENT_CSCON_0:
 		m_cscon = false;
@@ -864,20 +912,21 @@ static int ready_event_handler(enum hio_lte_fsm_event event)
 		m_cscon = true;
 		break;
 	case HIO_LTE_FSM_EVENT_XMODEMSLEEP:
-		enter_state(FSM_STATE_SLEEP);
+		transition_state(FSM_STATE_SLEEP);
 		break;
 	case HIO_LTE_FSM_EVENT_ERROR:
-		enter_state(FSM_STATE_ERROR);
+		transition_state(FSM_STATE_ERROR);
 		break;
 	case HIO_LTE_FSM_EVENT_TIMEOUT:
 		hio_lte_state_get_cereg_param(&m_cereg_param);
 		if (m_cereg_param.active_time == -1) {
-			LOG_WRN("Active time is not set, skipping cfun 4");
+			LOG_WRN("PSM is not supported, disabling LTE modem to save power");
 			int ret = hio_lte_flow_cfun(4);
 			if (ret < 0) {
 				LOG_ERR("Call `hio_lte_flow_cfun` failed: %d", ret);
 				return ret;
 			}
+			atomic_set_bit(&m_flag, FLAG_CFUN4);
 			return 0;
 		}
 
@@ -906,19 +955,20 @@ static int sleep_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
 	case HIO_LTE_FSM_EVENT_SEND:
-		if (m_cereg_param.active_time == -1) {
-			int ret = hio_lte_flow_cfun(1);
+		if (atomic_test_bit(&m_flag, FLAG_CFUN4)) {
+			int ret = hio_lte_flow_cfun(1); /* Exit power save mode */
 			if (ret < 0) {
 				LOG_ERR("Call `hio_lte_flow_cfun` failed: %d", ret);
 				return ret;
 			}
-			enter_state(FSM_STATE_ATTACH);
+			atomic_clear_bit(&m_flag, FLAG_CFUN4);
+			transition_state(FSM_STATE_ATTACH);
 			return 0;
-		};
-		enter_state(FSM_STATE_SEND);
+		}
+		transition_state(FSM_STATE_SEND);
 		break;
 	case HIO_LTE_FSM_EVENT_ERROR:
-		enter_state(FSM_STATE_ERROR);
+		transition_state(FSM_STATE_ERROR);
 		break;
 	default:
 		break;
@@ -969,7 +1019,7 @@ static int send_event_handler(enum hio_lte_fsm_event event)
 	switch (event) {
 	case HIO_LTE_FSM_EVENT_CSCON_0:
 		m_cscon = false;
-		enter_state(FSM_STATE_READY);
+		transition_state(FSM_STATE_READY);
 		break;
 	case HIO_LTE_FSM_EVENT_CSCON_1:
 		m_cscon = true;
@@ -979,14 +1029,14 @@ static int send_event_handler(enum hio_lte_fsm_event event)
 		LOG_INF("Send event on send state");
 		if (m_send_recv_param) {
 			if (m_send_recv_param->recv_buf) {
-				enter_state(FSM_STATE_RECEIVE);
+				transition_state(FSM_STATE_RECEIVE);
 			} else {
 				m_send_recv_param = NULL;
 				k_event_post(&m_states_event, SEND_RECV_BIT);
-				enter_state(FSM_STATE_CONEVAL);
+				transition_state(FSM_STATE_CONEVAL);
 			}
 		} else {
-			enter_state(FSM_STATE_READY);
+			transition_state(FSM_STATE_READY);
 		}
 		break;
 	case HIO_LTE_FSM_EVENT_READY:
@@ -995,13 +1045,13 @@ static int send_event_handler(enum hio_lte_fsm_event event)
 		k_mutex_lock(&m_metrics_lock, K_FOREVER);
 		m_metrics.uplink_errors++;
 		k_mutex_unlock(&m_metrics_lock);
-		enter_state(FSM_STATE_READY);
+		transition_state(FSM_STATE_READY);
 		break;
 	case HIO_LTE_FSM_EVENT_DEREGISTERED:
-		enter_state(FSM_STATE_ATTACH);
+		transition_state(FSM_STATE_ATTACH);
 		break;
 	case HIO_LTE_FSM_EVENT_ERROR:
-		enter_state(FSM_STATE_ERROR);
+		transition_state(FSM_STATE_ERROR);
 		break;
 	default:
 		break;
@@ -1062,24 +1112,24 @@ static int receive_event_handler(enum hio_lte_fsm_event event)
 	switch (event) {
 	case HIO_LTE_FSM_EVENT_RECV:
 		if (!m_send_recv_param) {
-			enter_state(FSM_STATE_CONEVAL);
+			transition_state(FSM_STATE_CONEVAL);
 			return 0;
 		}
 		__fallthrough;
 	case HIO_LTE_FSM_EVENT_READY:
 		__fallthrough;
 	case HIO_LTE_FSM_EVENT_TIMEOUT:
-		enter_state(FSM_STATE_READY);
+		transition_state(FSM_STATE_READY);
 		break;
 	case HIO_LTE_FSM_EVENT_CSCON_0:
 		m_cscon = false;
-		// enter_state(FSM_STATE_CONEVAL);
+		// transition_state(FSM_STATE_CONEVAL);
 		break;
 	case HIO_LTE_FSM_EVENT_DEREGISTERED:
-		enter_state(FSM_STATE_ATTACH);
+		transition_state(FSM_STATE_ATTACH);
 		break;
 	case HIO_LTE_FSM_EVENT_ERROR:
-		enter_state(FSM_STATE_ERROR);
+		transition_state(FSM_STATE_ERROR);
 		break;
 	default:
 		break;
@@ -1105,7 +1155,7 @@ static int coneval_event_handler(enum hio_lte_fsm_event event)
 	case HIO_LTE_FSM_EVENT_READY:
 		__fallthrough;
 	case HIO_LTE_FSM_EVENT_TIMEOUT:
-		enter_state(FSM_STATE_READY);
+		transition_state(FSM_STATE_READY);
 		break;
 	case HIO_LTE_FSM_EVENT_CSCON_0:
 		m_cscon = false;
@@ -1114,10 +1164,10 @@ static int coneval_event_handler(enum hio_lte_fsm_event event)
 		m_cscon = true;
 		break;
 	case HIO_LTE_FSM_EVENT_DEREGISTERED:
-		enter_state(FSM_STATE_ATTACH);
+		transition_state(FSM_STATE_ATTACH);
 		break;
 	case HIO_LTE_FSM_EVENT_ERROR:
-		enter_state(FSM_STATE_ERROR);
+		transition_state(FSM_STATE_ERROR);
 		break;
 	default:
 		break;
@@ -1127,7 +1177,7 @@ static int coneval_event_handler(enum hio_lte_fsm_event event)
 
 /* clang-format off */
 static struct fsm_state_desc m_fsm_states[] = {
-	{FSM_STATE_DISABLED, on_enter_disabled, NULL, disabled_event_handler},
+	{FSM_STATE_DISABLED, on_enter_disabled, on_leave_disabled, disabled_event_handler},
 	{FSM_STATE_ERROR, on_enter_error, NULL, error_event_handler},
 	{FSM_STATE_PREPARE, on_enter_prepare, on_leave_prepare, prepare_event_handler},
 	{FSM_STATE_ATTACH, on_enter_attach, on_leave_attach, attach_event_handler},

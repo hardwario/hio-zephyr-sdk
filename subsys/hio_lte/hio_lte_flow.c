@@ -1012,7 +1012,7 @@ int hio_lte_flow_check(void)
 
 	if (strcmp(resp, "1") != 0) {
 		LOG_ERR("Unexpected CFUN response: %s", resp);
-		return -HIO_LTE_ERR_MODEM_INACTIVE;
+		return -ENODEV;
 	}
 
 	/* Check network registration status */
@@ -1024,7 +1024,7 @@ int hio_lte_flow_check(void)
 
 	if (resp[0] == '0') {
 		LOG_ERR("CEREG unsubscribe unsolicited result codes");
-		return -HIO_LTE_ERR_CEREG_NOT_SUBSCRIBED;
+		return -EOPNOTSUPP;
 	}
 
 	struct hio_lte_cereg_param cereg_param;
@@ -1040,7 +1040,7 @@ int hio_lte_flow_check(void)
 	if (cereg_param.stat != HIO_LTE_CEREG_PARAM_STAT_REGISTERED_HOME &&
 	    cereg_param.stat != HIO_LTE_CEREG_PARAM_STAT_REGISTERED_ROAMING) {
 		LOG_ERR("Unexpected CEREG response: %s", resp);
-		return -HIO_LTE_ERR_CEREG_NOT_REGISTERED;
+		return -ENETUNREACH;
 	}
 
 	/* Check if PDN is active */
@@ -1052,7 +1052,7 @@ int hio_lte_flow_check(void)
 
 	if (strcmp(resp, "1") != 0) {
 		LOG_ERR("Unexpected CGATT response: %s", resp);
-		return -HIO_LTE_ERR_PDN_NOT_ATTACHED;
+		return -ENETDOWN;
 	}
 
 	/* Check PDN connections */
@@ -1064,21 +1064,22 @@ int hio_lte_flow_check(void)
 
 	if (strcmp(resp, "0,1") != 0) {
 		LOG_ERR("Unexpected CGACT response: %s", resp);
-		return -HIO_LTE_ERR_PDN_NOT_ACTIVE;
+		return -ENOTCONN;
 	}
 
 	hio_lte_talk_at_cmd("AT+CGPADDR=0");
 
 	if (m_socket_fd < 0) {
 		LOG_ERR("Socket is not opened");
-		return -HIO_LTE_ERR_SOCKET_NOT_OPENED;
+		return -ENOTSOCK;
 	}
 
 	int error;
 	nrf_socklen_t len = sizeof(error);
 	ret = nrf_getsockopt(m_socket_fd, NRF_SOL_SOCKET, NRF_SO_ERROR, &error, &len);
 	if (ret != 0 || error != 0) {
-		return -HIO_LTE_ERR_SOCKET_ERROR;
+		LOG_ERR("Socket error: %d (ret %d)", error, ret);
+		return -ENOTSOCK;
 	}
 
 	return 0;

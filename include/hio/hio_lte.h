@@ -146,7 +146,7 @@ struct hio_lte_attach_timeout {
  * Performs initialization, configuration, and network attach.
  *
  * @retval 0   Success.
- * @retval <0  Negative error code.
+ * @retval -ENOTSUP Test mode is enabled.
  */
 int hio_lte_enable(void);
 
@@ -156,7 +156,8 @@ int hio_lte_enable(void);
  * Useful for recovering from connection issues.
  *
  * @retval 0   Success.
- * @retval <0  Negative error code.
+ * @retval -ENOTSUP Test mode is enabled or not enabled.
+ * @retval -ENODEV Modem is disabled.
  */
 int hio_lte_reconnect(void);
 
@@ -165,8 +166,8 @@ int hio_lte_reconnect(void);
  *
  * @param timeout  Maximum wait duration.
  * @retval 0       Connected.
+ * @retval -ENOTSUP Test mode is enabled.
  * @retval -ETIMEDOUT Timeout expired.
- * @retval <0      Other error.
  */
 int hio_lte_wait_for_connected(k_timeout_t timeout);
 
