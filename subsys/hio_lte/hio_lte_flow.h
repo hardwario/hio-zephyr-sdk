@@ -37,6 +37,14 @@ enum hio_lte_fsm_event {
 	HIO_LTE_FSM_EVENT_COUNT /* Must be last */
 };
 
+/**
+ * @brief Attach/retry timeout configuration.
+ */
+struct hio_lte_attach_timeout {
+	k_timeout_t attach_timeout; /**< Max duration of the current attach attempt. */
+	k_timeout_t retry_delay;    /**< Delay before the *next* attempt (after a failure). */
+};
+
 #define GRPS_TIMER_DEACTIVATED -1
 #define GRPS_TIMER_INVALID     -2
 
@@ -59,6 +67,9 @@ int hio_lte_flow_recv(const struct hio_lte_send_recv_param *param);
 int hio_lte_flow_coneval(void);
 int hio_lte_flow_cmd(const char *cmd);
 int hio_lte_flow_xmodemtrace(int lvl);
+
+struct hio_lte_attach_timeout hio_lte_flow_attach_policy_periodic(int attempt, k_timeout_t pause);
+struct hio_lte_attach_timeout hio_lte_flow_attach_policy_progressive(int attempt);
 
 #ifdef __cplusplus
 }

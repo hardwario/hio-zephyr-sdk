@@ -171,11 +171,25 @@ static int cmd_state(const struct shell *shell, size_t argc, char **argv)
 	shell_print(shell, "fsm-state: %s", hio_lte_get_state());
 
 	if (strcmp(hio_lte_get_state(), "attach") == 0) {
-		struct hio_lte_attach_timeout at_timeout = hio_lte_get_curr_attach_timeout();
-		shell_print(shell, "retry/attach timeouts: %lld %lld (mins)",
-			    k_ticks_to_ms_floor64(at_timeout.retry_delay.ticks) / MSEC_PER_SEC / 60,
-			    k_ticks_to_ms_floor64(at_timeout.attach_timeout.ticks) / MSEC_PER_SEC /
-				    60);
+		int attempt, attach_timeout_sec, remaining_sec;
+		if (!hio_lte_get_curr_attach_info(&attempt, &attach_timeout_sec, NULL,
+						  &remaining_sec)) {
+			shell_print(shell, "attach-attempt: %d", attempt);
+			shell_print(shell, "attach-timeout: %d:%02d", attach_timeout_sec / 60,
+				    attach_timeout_sec % 60);
+			shell_print(shell, "attach-remaining: %d:%02d", remaining_sec / 60,
+				    remaining_sec % 60);
+		}
+	} else if (strcmp(hio_lte_get_state(), "retry_delay") == 0) {
+		int attempt, retry_delay_sec, remaining_sec;
+		if (!hio_lte_get_curr_attach_info(&attempt, NULL, &retry_delay_sec,
+						  &remaining_sec)) {
+			shell_print(shell, "attach-attempt: %d", attempt);
+			shell_print(shell, "retry-delay-timeout: %d:%02d", retry_delay_sec / 60,
+				    retry_delay_sec % 60);
+			shell_print(shell, "retry-delay-remaining: %d:%02d", remaining_sec / 60,
+				    remaining_sec % 60);
+		}
 	}
 
 	shell_print(shell, "command succeeded");

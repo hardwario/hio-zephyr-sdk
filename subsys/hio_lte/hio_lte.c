@@ -12,6 +12,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/shell/shell.h>
+#include <zephyr/sys/time_units.h>
 
 /* Standard includes */
 #include <errno.h>
@@ -96,40 +97,44 @@ static struct {
 
 static struct fsm_state_desc *get_fsm_state(enum fsm_state state);
 
-struct hio_lte_attach_timeout get_attach_timeout(int count)
+static struct hio_lte_attach_timeout get_attach_timeout(int attempt)
 {
-	return (struct hio_lte_attach_timeout){K_NO_WAIT, K_MINUTES(5)};
-	switch (count) {
-	case 0:
-		return (struct hio_lte_attach_timeout){K_NO_WAIT, K_MINUTES(5)};
-	case 1:
-		return (struct hio_lte_attach_timeout){K_NO_WAIT, K_MINUTES(5)};
-	case 2:
-		return (struct hio_lte_attach_timeout){K_NO_WAIT, K_MINUTES(50)};
-	case 3:
-		return (struct hio_lte_attach_timeout){K_HOURS(1), K_MINUTES(5)};
-	case 4:
-		return (struct hio_lte_attach_timeout){K_MINUTES(5), K_MINUTES(45)};
-	case 5:
-		return (struct hio_lte_attach_timeout){K_HOURS(6), K_MINUTES(5)};
-	case 6:
-		return (struct hio_lte_attach_timeout){K_MINUTES(5), K_MINUTES(45)};
-	case 7:
-		return (struct hio_lte_attach_timeout){K_HOURS(24), K_MINUTES(5)};
-	case 8:
-		return (struct hio_lte_attach_timeout){K_MINUTES(5), K_MINUTES(45)};
+	switch (g_hio_lte_config.attach_policy) {
+	case HIO_LTE_ATTACH_POLICY_AGGRESSIVE:
+		return hio_lte_flow_attach_policy_periodic(attempt, K_NO_WAIT);
+	case HIO_LTE_ATTACH_POLICY_PERIODIC_2H:
+		return hio_lte_flow_attach_policy_periodic(attempt, K_HOURS(1));
+	case HIO_LTE_ATTACH_POLICY_PERIODIC_6H:
+		return hio_lte_flow_attach_policy_periodic(attempt, K_HOURS(5));
+	case HIO_LTE_ATTACH_POLICY_PERIODIC_12H:
+		return hio_lte_flow_attach_policy_periodic(attempt, K_HOURS(11));
+	case HIO_LTE_ATTACH_POLICY_PERIODIC_1D:
+		return hio_lte_flow_attach_policy_periodic(attempt, K_HOURS(23));
+	case HIO_LTE_ATTACH_POLICY_PROGRESSIVE:
+		return hio_lte_flow_attach_policy_progressive(attempt);
 	default:
-		if (count % 2 != 0) { /*  9, 11 ... */
-			return (struct hio_lte_attach_timeout){K_HOURS(168), K_MINUTES(5)};
-		} else { /* 10, 12 ... */
-			return (struct hio_lte_attach_timeout){K_MINUTES(5), K_MINUTES(45)};
-		}
+		return hio_lte_flow_attach_policy_periodic(attempt, K_HOURS(1));
 	}
 }
 
-struct hio_lte_attach_timeout hio_lte_get_curr_attach_timeout(void)
+int hio_lte_get_curr_attach_info(int *attempt, int *attach_timeout_sec, int *retry_delay_sec,
+				 int *remaining_sec)
 {
-	return get_attach_timeout(m_attach_retry_count);
+	struct hio_lte_attach_timeout timeout = get_attach_timeout(m_attach_retry_count);
+	if (attempt) {
+		*attempt = m_attach_retry_count + 1;
+	}
+	if (attach_timeout_sec) {
+		*attach_timeout_sec = k_ticks_to_sec_floor32(timeout.attach_timeout.ticks);
+	}
+	if (retry_delay_sec) {
+		*retry_delay_sec = k_ticks_to_sec_floor32(timeout.retry_delay.ticks);
+	}
+	if (remaining_sec) {
+		k_ticks_t ticks = k_work_delayable_remaining_get(&m_timeout_work);
+		*remaining_sec = k_ticks_to_sec_floor32(ticks);
+	}
+	return 0;
 }
 
 const char *fsm_state_str(enum fsm_state state)
@@ -166,12 +171,6 @@ const char *fsm_state_str(enum fsm_state state)
 const char *hio_lte_get_state(void)
 {
 	return fsm_state_str(m_state);
-}
-
-int hio_lte_get_timemout_remaining(void)
-{
-	k_ticks_t ticks = k_work_delayable_remaining_get(&m_timeout_work);
-	return k_ticks_to_ms_ceil32(ticks);
 }
 
 static void start_timer(k_timeout_t timeout)
@@ -732,12 +731,15 @@ static int on_enter_retry_delay(void)
 
 	k_sleep(K_SECONDS(5));
 
-	struct hio_lte_attach_timeout timeout = get_attach_timeout(m_attach_retry_count++);
+	struct hio_lte_attach_timeout timeout = get_attach_timeout(m_attach_retry_count);
 
 	LOG_INF("Waiting %lld minutes before attach retry",
 		k_ticks_to_ms_floor64(timeout.retry_delay.ticks) / MSEC_PER_SEC / 60);
 
 	start_timer(timeout.retry_delay);
+
+	m_start = k_uptime_get_32();
+
 	return 0;
 }
 
@@ -745,7 +747,7 @@ static int retry_delay_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
 	case HIO_LTE_FSM_EVENT_TIMEOUT:
-		transition_state(FSM_STATE_ATTACH);
+		transition_state(FSM_STATE_PREPARE);
 		break;
 	case HIO_LTE_FSM_EVENT_ERROR:
 		transition_state(FSM_STATE_ERROR);
@@ -753,6 +755,13 @@ static int retry_delay_event_handler(enum hio_lte_fsm_event event)
 	default:
 		break;
 	}
+	return 0;
+}
+
+static int on_leave_retry_delay(void)
+{
+	stop_timer();
+	m_attach_retry_count++; /* Increment retry count */
 	return 0;
 }
 
@@ -1181,7 +1190,7 @@ static struct fsm_state_desc m_fsm_states[] = {
 	{FSM_STATE_ERROR, on_enter_error, NULL, error_event_handler},
 	{FSM_STATE_PREPARE, on_enter_prepare, on_leave_prepare, prepare_event_handler},
 	{FSM_STATE_ATTACH, on_enter_attach, on_leave_attach, attach_event_handler},
-	{FSM_STATE_RETRY_DELAY, on_enter_retry_delay, NULL, retry_delay_event_handler},
+	{FSM_STATE_RETRY_DELAY, on_enter_retry_delay, on_leave_retry_delay, retry_delay_event_handler},
 	{FSM_STATE_RESET_LOOP, on_enter_reset_loop, on_leave_reset_loop, reset_loop_event_handler},
 	{FSM_STATE_OPEN_SOCKET, on_enter_open_socket, NULL, open_socket_event_handler},
 	{FSM_STATE_READY, on_enter_ready, on_leave_ready, ready_event_handler},

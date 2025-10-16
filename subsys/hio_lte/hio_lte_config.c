@@ -9,6 +9,7 @@
 
 /* HIO includes */
 #include <hio/hio_config.h>
+#include <hio/hio_lte.h>
 
 /* Zephyr includes */
 #include <zephyr/init.h>
@@ -27,19 +28,21 @@ LOG_MODULE_REGISTER(hio_lte_config, CONFIG_HIO_LTE_LOG_LEVEL);
 
 #define SETTINGS_PFX "lte"
 
-#define LOAD_NB_IOT_MODE BIT(0)
-#define LOAD_LTE_M_MODE  BIT(1)
-#define LOAD_AUTOCONN    BIT(2)
-#define LOAD_PLMNID      BIT(3)
-#define LOAD_ADDR        BIT(4)
-#define LOAD_PORT        BIT(5)
-#define LOAD_NETWORK     BIT(6)
-#define LOAD_MODE        BIT(7)
-
 struct hio_lte_config g_hio_lte_config;
 static struct hio_lte_config m_config_interim;
 
-static const char *m_enum_auth_items[] = {"none", "pap", "chap"};
+static const char *m_enum_auth_items[] = {[HIO_LTE_CONFIG_AUTH_NONE] = "none",
+					  [HIO_LTE_CONFIG_AUTH_PAP] = "pap",
+					  [HIO_LTE_CONFIG_AUTH_CHAP] = "chap"};
+
+static const char *m_enum_attach_policy_items[] = {
+	[HIO_LTE_ATTACH_POLICY_AGGRESSIVE] = "aggressive",
+	[HIO_LTE_ATTACH_POLICY_PERIODIC_2H] = "periodic-2h",
+	[HIO_LTE_ATTACH_POLICY_PERIODIC_6H] = "periodic-6h",
+	[HIO_LTE_ATTACH_POLICY_PERIODIC_12H] = "periodic-12h",
+	[HIO_LTE_ATTACH_POLICY_PERIODIC_1D] = "periodic-1d",
+	[HIO_LTE_ATTACH_POLICY_PROGRESSIVE] = "progressive",
+};
 
 static int mode_parse_cb(const struct hio_config_item *item, char *argv, const char **err_msg)
 {
@@ -202,6 +205,9 @@ static struct hio_config_item m_config_items[] = {
 	HIO_CONFIG_ITEM_STRING("password", m_config_interim.password, "password", ""),
 	HIO_CONFIG_ITEM_STRING("addr", m_config_interim.addr, "default IP address",
 			       CONFIG_HIO_LTE_DEFAULT_ADDR),
+	HIO_CONFIG_ITEM_ENUM("attach-policy", m_config_interim.attach_policy,
+			     m_enum_attach_policy_items, "attach policy",
+			     HIO_LTE_ATTACH_POLICY_PERIODIC_2H),
 	// HIO_CONFIG_ITEM_INT("port", m_config_interim.port, 1, 65536, "default UDP port", 5002),
 	HIO_CONFIG_ITEM_BOOL("modemtrace", m_config_interim.modemtrace, "enable modem trace",
 			     false),

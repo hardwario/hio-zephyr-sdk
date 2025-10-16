@@ -65,6 +65,18 @@ enum hio_lte_cereg_param_act {
 };
 
 /**
+ * @brief Attach policy for retry and timeout configuration.
+ */
+enum hio_lte_attach_policy {
+	HIO_LTE_ATTACH_POLICY_AGGRESSIVE = 0,   /**< Aggressive attach. */
+	HIO_LTE_ATTACH_POLICY_PERIODIC_2H = 1,  /**< Periodic attach every 2 hours. */
+	HIO_LTE_ATTACH_POLICY_PERIODIC_6H = 2,  /**< Periodic attach every 6 hours. */
+	HIO_LTE_ATTACH_POLICY_PERIODIC_12H = 3, /**< Periodic attach every 12 hours. */
+	HIO_LTE_ATTACH_POLICY_PERIODIC_1D = 4,  /**< Periodic attach every 1 day. */
+	HIO_LTE_ATTACH_POLICY_PROGRESSIVE = 5,  /**< Progressive attach. */
+};
+
+/**
  * @brief Decoded +CEREG parameters.
  */
 struct hio_lte_cereg_param {
@@ -130,14 +142,6 @@ struct hio_lte_metrics {
 
 	uint32_t cscon_1_duration_ms;      /**< Total time in RRC Connected (CSCON=1). */
 	uint32_t cscon_1_last_duration_ms; /**< Duration of last RRC Connected period. */
-};
-
-/**
- * @brief Attach/retry timeout configuration.
- */
-struct hio_lte_attach_timeout {
-	k_timeout_t retry_delay;    /**< Delay before retrying attach. */
-	k_timeout_t attach_timeout; /**< Maximum duration of one attach attempt. */
 };
 
 /**
@@ -306,11 +310,18 @@ int hio_lte_add_callback(struct hio_lte_cb *cb);
 int hio_lte_remove_callback(struct hio_lte_cb *cb);
 
 /**
- * @brief Get current attach/retry timeouts.
+ * @brief Get current attach information.
  *
- * @return Copy of current timeout configuration.
+ * @note This API is experimental and may change in future releases.
+ *
+ * @param attempt         Input: current attach attempt (0 for first).
+ * @param attach_timeout_sec Output: current attach timeout in seconds.
+ * @param retry_delay_sec    Output: current retry delay in seconds.
+ * @param remaining_sec      Output: remaining time for current timeout in seconds.
+ * @retval 0               Success.
  */
-struct hio_lte_attach_timeout hio_lte_get_curr_attach_timeout(void);
+int hio_lte_get_curr_attach_info(int *attempt, int *attach_timeout_sec, int *retry_delay_sec,
+				 int *remaining_sec);
 
 /* -------- Utility functions -------- */
 

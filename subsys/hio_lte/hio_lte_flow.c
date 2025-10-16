@@ -1323,6 +1323,49 @@ int hio_lte_flow_xmodemtrace(int lvl)
 	return 0;
 }
 
+struct hio_lte_attach_timeout hio_lte_flow_attach_policy_periodic(int attempt, k_timeout_t pause)
+{
+	switch (attempt % 3) {
+	case 0:
+		return (struct hio_lte_attach_timeout){K_MINUTES(5), K_NO_WAIT};
+	case 1:
+		return (struct hio_lte_attach_timeout){K_MINUTES(5), K_NO_WAIT};
+	default: /* 2 */
+		return (struct hio_lte_attach_timeout){K_MINUTES(50), pause};
+	}
+}
+
+struct hio_lte_attach_timeout hio_lte_flow_attach_policy_progressive(int attempt)
+{
+	switch (attempt) {
+	case 0:
+		return (struct hio_lte_attach_timeout){K_MINUTES(5), K_NO_WAIT};
+	case 1:
+		return (struct hio_lte_attach_timeout){K_MINUTES(5), K_NO_WAIT};
+	case 2:
+		return (struct hio_lte_attach_timeout){K_MINUTES(50), K_HOURS(1)};
+	case 3:
+		return (struct hio_lte_attach_timeout){K_MINUTES(5), K_MINUTES(5)};
+	case 4:
+		return (struct hio_lte_attach_timeout){K_MINUTES(45), K_HOURS(6)};
+	case 5:
+		return (struct hio_lte_attach_timeout){K_MINUTES(5), K_MINUTES(5)};
+	case 6:
+		return (struct hio_lte_attach_timeout){K_MINUTES(45), K_HOURS(24)};
+	case 7:
+		return (struct hio_lte_attach_timeout){K_MINUTES(5), K_MINUTES(5)};
+	case 8:
+		return (struct hio_lte_attach_timeout){K_MINUTES(45), K_HOURS(168)};
+	default: {
+		/* 9+: attach alternates 5m (odd), 45m (even) */
+		k_timeout_t attach = (attempt & 1) ? K_MINUTES(5) : K_MINUTES(45);
+		// delay is determined by the NEXT attempt: for next=odd => 168h, otherwise 5m
+		k_timeout_t delay = ((attempt + 1) & 1) ? K_HOURS(168) : K_MINUTES(5);
+		return (struct hio_lte_attach_timeout){attach, delay};
+	}
+	};
+}
+
 int hio_lte_flow_init(HIO_LTE_FSM_EVENT_delegate_cb cb)
 {
 	m_socket_fd = -1;

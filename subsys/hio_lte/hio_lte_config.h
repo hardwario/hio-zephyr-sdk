@@ -1,6 +1,9 @@
 #ifndef HIO_INCLUDE_LTE_CONFIG_H_
 #define HIO_INCLUDE_LTE_CONFIG_H_
 
+/* HIO includes */
+#include <hio/hio_lte.h>
+
 /* Standard includes */
 #include <stdbool.h>
 #include <stddef.h>
@@ -27,6 +30,7 @@ struct hio_lte_config {
 	enum hio_lte_config_auth auth;
 	char username[32 + 1];
 	char password[32 + 1];
+	enum hio_lte_attach_policy attach_policy;
 
 	char addr[15 + 1];
 	bool modemtrace;
