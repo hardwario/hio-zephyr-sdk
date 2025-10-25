@@ -1,9 +1,10 @@
 #include "hio_lte_config.h"
 #include "hio_lte_flow.h"
+#include "hio_lte_parse.h"
 #include "hio_lte_state.h"
+#include "hio_lte_str.h"
 #include "hio_lte_talk.h"
 #include "hio_lte_tok.h"
-#include "hio_lte_str.h"
 
 /* HIO includes */
 #include <hio/hio_rtc.h>
@@ -38,13 +39,6 @@
 
 LOG_MODULE_REGISTER(hio_lte_flow, CONFIG_HIO_LTE_LOG_LEVEL);
 
-struct cgdcont_param {
-	int cid;          /* CID (context ID) */
-	char pdn_type[9]; /* "IP" or "IPV6" */
-	char apn[64];     /* Access Point Name */
-	char addr[16];    /* IPv4 address */
-};
-
 #define XSLEEP_PAUSE K_MSEC(100)
 
 #define XRECVFROM_TIMEOUT_SEC 5
@@ -61,324 +55,6 @@ static struct nrf_sockaddr_in m_addr_info;
 static struct cgdcont_param m_cgdcont;
 
 static int m_socket_fd = -1;
-
-int cellid_hex2int(char *ci, size_t size, int *cid)
-{
-	if (!ci || size != 9 || !cid) {
-		return -EINVAL;
-	}
-
-	uint8_t cell_id_buf[4];
-
-	size_t n = hex2bin(ci, 8, cell_id_buf, sizeof(cell_id_buf));
-
-	if (n != sizeof(cell_id_buf)) {
-		return -EINVAL;
-	}
-
-	*cid = sys_get_be32(cell_id_buf);
-
-	return 0;
-}
-
-int parse_gprs_timer(const char *binary_string, int flag)
-{
-	if (strlen(binary_string) != 8) {
-		return GRPS_TIMER_INVALID;
-	}
-
-	int byte_value = (int)strtol(binary_string, NULL, 2);
-	int time_unit = (byte_value >> 5) & 0x07;
-	int timer_value = byte_value & 0x1F;
-
-	if (time_unit == 0b111) {
-		return GRPS_TIMER_DEACTIVATED;
-	}
-
-	int multiplier = 0;
-	if (flag == 2) {
-		/* GPRS Timer 2 (Active-Time) */
-		switch (time_unit) {
-		case 0b000:
-			multiplier = 2;
-			break; /* 2 seconds */
-		case 0b001:
-			multiplier = 60;
-			break; /* 1 minute */
-		case 0b010:
-			multiplier = 360;
-			break; /* 6 minutes */
-		default:
-			return GRPS_TIMER_INVALID;
-		}
-	} else if (flag == 3) {
-		/* GPRS Timer 3 (Periodic-TAU-ext) */
-		switch (time_unit) {
-		case 0b000:
-			multiplier = 600;
-			break; /* 10 minutes */
-		case 0b001:
-			multiplier = 3600;
-			break; /* 1 hour */
-		case 0b010:
-			multiplier = 36000;
-			break; /* 10 hours */
-		case 0b011:
-			multiplier = 2;
-			break; /* 2 seconds */
-		case 0b100:
-			multiplier = 30;
-			break; /* 30 seconds */
-		case 0b101:
-			multiplier = 60;
-			break; /* 1 minute */
-		case 0b110:
-			multiplier = 1152000;
-			break; /* 320 hours */
-		default:
-			return GRPS_TIMER_INVALID;
-		}
-	} else {
-		return GRPS_TIMER_INVALID;
-	}
-
-	return timer_value * multiplier;
-}
-
-static int parse_cereg(const char *line, struct hio_lte_cereg_param *param)
-{
-	/* <stat>[,[<tac>],[<ci>],[<AcT>][,<cause_type>],[<reject_cause>][,[<Active-Time>],[<Periodic-TAU-ext>]]]]
-	5,"AF66","009DE067",9,,,"00000000","00111000"
-	2,"B4DC","000AE520",9 */
-
-	if (!line || !param) {
-		return -EINVAL;
-	}
-
-	memset(param, 0, sizeof(*param));
-
-	const char *p = line;
-
-	bool def;
-	long num;
-	char str[8 + 1];
-
-	if (!(p = hio_tok_num(p, &def, &num)) || !def) {
-		LOG_ERR("Failed to parse stat");
-		return -EINVAL;
-	}
-
-	param->stat = (enum hio_lte_cereg_param_stat)num;
-
-	if (!(p = hio_tok_sep(p))) {
-		param->valid = true;
-		return 0;
-	}
-
-	if (!(p = hio_tok_str(p, &def, param->tac, sizeof(param->tac))) || !def) {
-		return -EINVAL;
-	}
-
-	if (!(p = hio_tok_sep(p))) {
-		return -EINVAL;
-	}
-
-	if (!(p = hio_tok_str(p, &def, str, sizeof(str))) || !def) {
-		return -EINVAL;
-	}
-
-	if (cellid_hex2int(str, sizeof(str), &param->cid) != 0) {
-		return -EINVAL;
-	}
-
-	if (!(p = hio_tok_sep(p))) {
-		return -EINVAL;
-	}
-
-	if (!(p = hio_tok_num(p, &def, &num)) || !def) {
-		return -EINVAL;
-	}
-
-	param->act = (enum hio_lte_cereg_param_act)num;
-
-	if (!(p = hio_tok_sep(p))) {
-		param->valid = true;
-		return 0;
-	}
-
-	if (!(p = hio_tok_num(p, &def, &num)) && !def) {
-		return -EINVAL;
-	}
-
-	param->cause_type = num;
-
-	if (!(p = hio_tok_sep(p))) {
-		return 0;
-	}
-
-	if (!(p = hio_tok_num(p, &def, &num)) && !def) {
-		return -EINVAL;
-	}
-
-	param->reject_cause = num;
-
-	if (!(p = hio_tok_sep(p))) {
-		param->valid = true;
-		return 0;
-	}
-
-	if (!(p = hio_tok_str(p, &def, str, sizeof(str))) || !def) {
-		return -EINVAL;
-	}
-
-	param->active_time = parse_gprs_timer(str, 2);
-
-	if (!(p = hio_tok_sep(p))) {
-		return -EINVAL;
-	}
-
-	if (!(p = hio_tok_str(p, &def, str, sizeof(str))) || !def) {
-		return -EINVAL;
-	}
-
-	param->periodic_tau_ext = parse_gprs_timer(str, 3);
-
-	if (!hio_tok_end(p)) {
-		return -EINVAL;
-	}
-
-	param->valid = true;
-
-	return 0;
-}
-
-static int parse_xmodemsleep(const char *line, int *p1, int *p2)
-{
-	int ret;
-
-	if (!line) {
-		return -EINVAL;
-	}
-
-	int p1_ = 0;
-	int p2_ = 0;
-
-	ret = sscanf(line, "%d,%d", &p1_, &p2_);
-	if (ret != 1 && ret != 2) {
-		LOG_ERR("Failed to parse xmodemsleep: %d", ret);
-		return -EINVAL;
-	}
-
-	if (p1) {
-		*p1 = p1_;
-	}
-
-	if (p2) {
-		*p2 = p2_;
-	}
-
-	return 0;
-}
-
-static int parse_rai(const char *line, struct hio_lte_rai_param *param)
-{
-	int ret;
-	char cell_id[9];
-	char plmn[6];
-	int as_rai;
-	int cp_rai;
-
-	if (!line || !param) {
-		return -EINVAL;
-	}
-
-	memset(param, 0, sizeof(*param));
-	ret = sscanf(line, "\"%8[0-9A-F]\",\"%5[0-9A-F]\",%d,%d", cell_id, plmn, &as_rai, &cp_rai);
-	if (ret != 4) {
-		LOG_ERR("Failed to parse rai: %d", ret);
-		return -EINVAL;
-	}
-
-	char *tol_end = NULL;
-	int cell_id_int = strtol(cell_id, &tol_end, 16);
-	if (tol_end != cell_id + 8) {
-		LOG_ERR("Failed to parse cell_id parameter");
-		return -EINVAL;
-	}
-
-	param->cell_id = cell_id_int;
-
-	tol_end = NULL;
-	long plmn_int = strtol(plmn, &tol_end, 10);
-	if (tol_end != plmn + 5) {
-		LOG_ERR("Failed to parse plmn parameter");
-		return -EINVAL;
-	}
-
-	param->plmn = (int)plmn_int;
-
-	param->as_rai = as_rai != 0;
-	param->cp_rai = cp_rai != 0;
-
-	param->valid = true;
-
-	return 0;
-}
-
-static int parse_cgcont(const char *line, struct cgdcont_param *param)
-{
-	/* 0,"IP","iot.1nce.net","10.52.2.149",0,0 */
-	if (!line || !param) {
-		return -EINVAL;
-	}
-
-	memset(param, 0, sizeof(*param));
-	param->cid = -1; /* Default CID is -1 (not set) */
-
-	const char *p = line;
-
-	bool def;
-	long num;
-
-	if (!(p = hio_tok_num(p, &def, &num)) || !def) {
-		LOG_ERR("Failed to parse CID");
-		return -EINVAL;
-	}
-
-	param->cid = (int)num;
-
-	if (!(p = hio_tok_sep(p))) {
-		LOG_ERR("Failed to parse PDN type");
-		return -EINVAL;
-	}
-
-	if (!(p = hio_tok_str(p, &def, param->pdn_type, sizeof(param->pdn_type))) || !def) {
-		LOG_ERR("Failed to parse PDN type");
-		return -EINVAL;
-	}
-
-	if (!(p = hio_tok_sep(p))) {
-		LOG_ERR("Failed to parse APN");
-		return -EINVAL;
-	}
-
-	if (!(p = hio_tok_str(p, &def, param->apn, sizeof(param->apn))) || !def) {
-		LOG_ERR("Failed to parse APN");
-		return -EINVAL;
-	}
-
-	if (!(p = hio_tok_sep(p))) {
-		LOG_ERR("Failed to parse address");
-		return -EINVAL;
-	}
-
-	if (!(p = hio_tok_str(p, &def, param->addr, sizeof(param->addr))) || !def) {
-		LOG_ERR("Failed to parse address");
-		return -EINVAL;
-	}
-
-	return 0;
-}
 
 static void process_urc(const char *line, void *user_data)
 {
@@ -405,9 +81,9 @@ static void process_urc(const char *line, void *user_data)
 	} else if (!strncmp(line, "+CEREG: ", 8)) {
 		struct hio_lte_cereg_param cereg_param = {0};
 
-		ret = parse_cereg(&line[8], &cereg_param);
+		ret = hio_lte_parse_urc_cereg(&line[8], &cereg_param);
 		if (ret) {
-			LOG_WRN("Call `parse_cereg` failed: %d", ret);
+			LOG_WRN("Call `hio_lte_parse_urc_cereg` failed: %d", ret);
 			return;
 		}
 
@@ -436,9 +112,9 @@ static void process_urc(const char *line, void *user_data)
 	} else if (!strncmp(line, "%XMODEMSLEEP: ", 14)) {
 		int p1 = 0, p2 = 0;
 
-		ret = parse_xmodemsleep(line + 14, &p1, &p2);
+		ret = hio_lte_parse_urc_xmodemsleep(line + 14, &p1, &p2);
 		if (ret) {
-			LOG_WRN("Call `parse_xmodemsleep` failed: %d", ret);
+			LOG_WRN("Call `hio_lte_parse_urc_xmodemsleep` failed: %d", ret);
 			return;
 		}
 		if (p2 > 0 || p1 == 4) {
@@ -446,9 +122,9 @@ static void process_urc(const char *line, void *user_data)
 		}
 	} else if (!strncmp(line, "%RAI: ", 6)) {
 		struct hio_lte_rai_param rai_param = {0};
-		ret = parse_rai(line + 6, &rai_param);
+		ret = hio_lte_parse_urc_rai(line + 6, &rai_param);
 		if (ret) {
-			LOG_WRN("Call `parse_rai` failed: %d", ret);
+			LOG_WRN("Call `hio_lte_parse_urc_rai` failed: %d", ret);
 			return;
 		}
 
@@ -869,9 +545,9 @@ static int update_cgdcont(void)
 	int lines = hio_lte_talk_at_cgdcont_q(tmp, sizeof(tmp));
 	char *line = tmp;
 	for (int i = 0; i < lines; i++) {
-		ret = parse_cgcont(line, &m_cgdcont);
+		ret = hio_lte_parse_cgcont(line, &m_cgdcont);
 		if (ret) {
-			LOG_ERR("Call `parse_cgcont` failed: %d", ret);
+			LOG_ERR("Call `hio_lte_parse_cgcont` failed: %d", ret);
 			return ret;
 		}
 
@@ -1029,7 +705,7 @@ int hio_lte_flow_check(void)
 
 	struct hio_lte_cereg_param cereg_param;
 
-	ret = parse_cereg(resp + 2, &cereg_param);
+	ret = hio_lte_parse_urc_cereg(resp + 2, &cereg_param);
 	if (ret) {
 		LOG_WRN("Call `hio_lte_parse_urc_cereg` failed: %d", ret);
 		return ret;
@@ -1200,60 +876,6 @@ int hio_lte_flow_recv(const struct hio_lte_send_recv_param *param)
 	return readb;
 }
 
-int parse_coneval(const char *str, struct hio_lte_conn_param *params)
-{
-	int ret;
-
-	if (!str || !params) {
-		return -EINVAL;
-	}
-
-	/* 0,1,5,8,2,14,"011B0780”,"26295",7,1575,3,1,1,23,16,32,130 */
-	/* r,-,e,r,r,s ,"CIDCIDCI","PLMNI",f,g   ,h,i,j,k ,l ,m ,n  */
-	/* 0,1,9,72,22,47,"00094F0C","26806",382,6200,20,0,0,-8,1,1,87*/
-	memset(params, 0, sizeof(*params));
-
-	int result;
-	int energy_estimate;
-	int rsrp;
-	int rsrq;
-	int snr;
-	char cid[8 + 1];
-	int plmn;
-	int earfcn;
-	int band;
-	int ce_level;
-
-	ret = sscanf(str, "%d,%*d,%d,%d,%d,%d,\"%8[0-9A-F]\",\"%d\",%*d,%d,%d,%*d,%d", &result,
-		     &energy_estimate, &rsrp, &rsrq, &snr, cid, &plmn, &earfcn, &band, &ce_level);
-	if (ret != 1 && ret != 10) {
-		LOG_ERR("Failed to parse coneval");
-		return -EINVAL;
-	}
-
-	params->result = result;
-
-	if (params->result != 0) {
-		return 0;
-	}
-
-	if (cellid_hex2int(cid, sizeof(cid), &params->cid) != 0) {
-		return -EINVAL;
-	}
-
-	params->eest = energy_estimate;
-	params->rsrp = rsrp - 140;
-	params->rsrq = (rsrq - 39) / 2;
-	params->snr = snr - 24;
-	params->plmn = plmn;
-	params->earfcn = earfcn;
-	params->band = band;
-	params->ecl = ce_level;
-	params->valid = true;
-
-	return 0;
-}
-
 int hio_lte_flow_coneval(void)
 {
 	int ret;
@@ -1268,7 +890,7 @@ int hio_lte_flow_coneval(void)
 
 	struct hio_lte_conn_param conn_params;
 
-	ret = parse_coneval(buf, &conn_params);
+	ret = hio_lte_parse_coneval(buf, &conn_params);
 	if (ret) {
 		LOG_ERR("Failed to parse coneval: %d", ret);
 		return ret;

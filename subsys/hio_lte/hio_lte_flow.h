@@ -45,9 +45,6 @@ struct hio_lte_attach_timeout {
 	k_timeout_t retry_delay;    /**< Delay before the *next* attempt (after a failure). */
 };
 
-#define GRPS_TIMER_DEACTIVATED -1
-#define GRPS_TIMER_INVALID     -2
-
 typedef void (*HIO_LTE_FSM_EVENT_delegate_cb)(enum hio_lte_fsm_event event);
 
 int hio_lte_flow_init(HIO_LTE_FSM_EVENT_delegate_cb cb);

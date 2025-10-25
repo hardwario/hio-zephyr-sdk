@@ -1,0 +1,7 @@
+tests:
+  hio_lte.parser:
+    sysbuild: true
+    platform_allow: native_posix
+    integration_platforms:
+      - native_posix
+    tags: hio sysbuild
