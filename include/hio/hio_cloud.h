@@ -1,12 +1,17 @@
 #ifndef HIO_INCLUDE_CLOUD_H_
 #define HIO_INCLUDE_CLOUD_H_
 
+/* HIO includes */
+#include <hio/hio_lte.h>
+
 /* Zephyr includes */
 #include <zephyr/kernel.h>
 
 /* Standard includes */
 #include <stddef.h>
 #include <stdint.h>
+
+#include <zcbor_common.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -62,6 +67,8 @@ int hio_cloud_send(const void *buf, size_t len);
 int hio_cloud_get_last_seen_ts(int64_t *ts);
 int hio_cloud_firmware_update(const char *firmwareId);
 int hio_cloud_recv(void);
+
+int hio_cloud_cbor_ncellmeas_put(zcbor_state_t *zs, const struct hio_lte_ncellmeas_param *param);
 
 #ifdef __cplusplus
 }
