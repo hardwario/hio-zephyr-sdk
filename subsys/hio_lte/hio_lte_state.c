@@ -20,6 +20,7 @@ static char m_fw_version[64] = {0};
 static struct hio_lte_conn_param m_conn_param = {0};
 static struct hio_lte_cereg_param m_cereg_param = {0};
 static struct hio_lte_rai_param m_rai_param = {0};
+static struct hio_lte_ncellmeas_param m_ncellmeas_param = {0};
 
 int hio_lte_state_get_imei(uint64_t *imei)
 {
@@ -205,6 +206,35 @@ void hio_lte_state_set_rai_param(const struct hio_lte_rai_param *param)
 	k_mutex_lock(&m_lock, K_FOREVER);
 
 	memcpy(&m_rai_param, param, sizeof(m_rai_param));
+
+	k_mutex_unlock(&m_lock);
+}
+
+int hio_lte_state_get_ncellmeas_param(struct hio_lte_ncellmeas_param *param)
+{
+	if (!param) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&m_lock, K_FOREVER);
+
+	memcpy(param, &m_ncellmeas_param, sizeof(m_ncellmeas_param));
+
+	k_mutex_unlock(&m_lock);
+	return 0;
+}
+
+void hio_lte_state_set_ncellmeas_param(const struct hio_lte_ncellmeas_param *param)
+{
+	if (!param) {
+		return;
+	}
+
+	k_mutex_lock(&m_lock, K_FOREVER);
+
+	memcpy(&m_ncellmeas_param, param, sizeof(m_ncellmeas_param));
+
+	m_ncellmeas_param.act = m_cereg_param.act;
 
 	k_mutex_unlock(&m_lock);
 }

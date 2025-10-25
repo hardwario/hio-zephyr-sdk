@@ -510,3 +510,327 @@ int hio_lte_parse_cgcont(const char *line, struct cgdcont_param *param)
 
 	return 0;
 }
+
+static inline int parse_ncellmeas_ncell(const char **p_ptr,
+					struct hio_lte_ncellmeas_ncell_param *cell)
+{
+	/* <n_earfcn>,<n_phys_cell_id>,<n_rsrp>,<n_rsrq>,<n_time_diff> */
+	bool def;
+	const char *p = *p_ptr;
+
+	if (!(p = hio_tok_uint32(p, &def, &cell->earfcn)) || !def) {
+		return -EBADMSG;
+	}
+
+	if (!(p = hio_tok_sep(p))) {
+		return -EPROTO;
+	}
+
+	if (!(p = hio_tok_uint16(p, &def, &cell->pci)) || !def) {
+		return -EBADMSG;
+	}
+
+	if (!(p = hio_tok_sep(p))) {
+		return -EPROTO;
+	}
+
+	long num;
+
+	if (!(p = hio_tok_num(p, &def, &num)) || !def) {
+		return -EBADMSG;
+	}
+
+	if (num < -17 || num > 255) {
+		LOG_ERR("ncells RSRP out of range: %ld", num);
+		return -ERANGE;
+	}
+
+	cell->rsrp = (int16_t)num;
+
+	if (!(p = hio_tok_sep(p))) {
+		return -EPROTO;
+	}
+
+	if (!(p = hio_tok_num(p, &def, &num)) || !def) {
+		return -EBADMSG;
+	}
+
+	if (num < -17 || num > 255) {
+		LOG_ERR("ncells RSRQ out of range: %ld", num);
+		return -ERANGE;
+	}
+
+	cell->rsrq = (int16_t)num;
+
+	if (!(p = hio_tok_sep(p))) {
+		return -EPROTO;
+	}
+
+	if (!(p = hio_tok_num(p, &def, &num)) || !def) {
+		return -EBADMSG;
+	}
+
+	if (num < -99999 || num > 99999) {
+		LOG_ERR("ncells time_diff out of range: %ld", num);
+		return -ERANGE;
+	}
+
+	cell->time_diff = (int)num;
+
+	*p_ptr = p;
+
+	return 0;
+}
+
+static inline int parse_ncellmeas_cell(const char **p_ptr,
+				       struct hio_lte_ncellmeas_cell_param *cell)
+{
+	/* <cell_id>,<plmn>,<tac>,<timing_advance>,<timing_advance_measurement_time>,<earfcn>,
+	<phys_cell_id>,<rsrp>,<rsrq>,<measurement_time>,<serving>,<neighbor_count> */
+
+	int ret;
+	bool def;
+	char tmp_str[16] = {0};
+	const char *p = *p_ptr;
+
+	if (!(p = hio_tok_str(p, &def, tmp_str, sizeof(tmp_str))) || !def) {
+		return -EBADMSG;
+	}
+
+	ret = parse_hex2cellid(tmp_str, &cell->eci);
+	if (ret != 0) {
+		LOG_ERR("Failed to parse cell_id");
+		return ret;
+	}
+
+	if (!(p = hio_tok_sep(p))) {
+		return -EPROTO;
+	}
+
+	if (!(p = hio_tok_str(p, &def, tmp_str, sizeof(tmp_str))) || !def) {
+		return -EBADMSG;
+	}
+
+	ret = hio_lte_parse_plmn(tmp_str, NULL, &cell->mcc, &cell->mnc);
+	if (ret != 0) {
+		LOG_ERR("Failed to parse plmn");
+		return ret;
+	}
+
+	if (!(p = hio_tok_sep(p))) {
+		return -EPROTO;
+	}
+
+	if (!(p = hio_tok_str(p, &def, tmp_str, sizeof(tmp_str))) || !def) {
+		return -EBADMSG;
+	}
+
+	ret = parse_hex2tac(tmp_str, &cell->tac);
+	if (ret != 0) {
+		LOG_ERR("Failed to parse tac");
+		return ret;
+	}
+
+	if (!(p = hio_tok_sep(p))) {
+		return -EPROTO;
+	}
+
+	if (!(p = hio_tok_uint16(p, &def, &cell->adv)) || !def) {
+		return -EBADMSG;
+	}
+
+	if (!(p = hio_tok_sep(p))) {
+		return -EPROTO;
+	}
+
+	if (!(p = hio_tok_num(p, &def, NULL)) || !def) { /* skip: timing_advance_measurement_time */
+		return -EBADMSG;
+	}
+
+	if (!(p = hio_tok_sep(p))) {
+		return -EPROTO;
+	}
+
+	if (!(p = hio_tok_uint32(p, &def, &cell->earfcn)) || !def) {
+		return -EBADMSG;
+	}
+
+	if (cell->earfcn > HIO_LTE_CELL_EARFCN_MAX) {
+		LOG_ERR("EARFCN out of range: %u", cell->earfcn);
+		return -ERANGE;
+	}
+
+	if (!(p = hio_tok_sep(p))) {
+		return -EPROTO;
+	}
+
+	if (!(p = hio_tok_uint16(p, &def, &cell->pci)) || !def) {
+		return -EBADMSG;
+	}
+
+	if (!(p = hio_tok_sep(p))) {
+		return -EPROTO;
+	}
+
+	long num;
+
+	if (!(p = hio_tok_num(p, &def, &num)) || !def) {
+		return -EBADMSG;
+	}
+
+	if (num < -17 || num > 255) {
+		LOG_ERR("RSRP out of range: %ld", num);
+		return -ERANGE;
+	}
+
+	cell->rsrp = (int16_t)num;
+
+	if (!(p = hio_tok_sep(p))) {
+		return -EPROTO;
+	}
+
+	if (!(p = hio_tok_num(p, &def, &num)) || !def) {
+		return -EBADMSG;
+	}
+
+	if (num < -17 || num > 255) {
+		LOG_ERR("RSRQ out of range: %ld", num);
+		return -ERANGE;
+	}
+
+	cell->rsrq = (int16_t)num;
+
+	if (!(p = hio_tok_sep(p))) {
+		return -EPROTO;
+	}
+
+	if (!(p = hio_tok_num(p, &def, NULL)) || !def) { /* skip: measurement_time */
+		return -EBADMSG;
+	}
+
+	if (!(p = hio_tok_sep(p))) {
+		return -EPROTO;
+	}
+
+	if (!(p = hio_tok_uint8(p, &def, NULL)) || !def) { /* skip: serving */
+		return -EBADMSG;
+	}
+
+	if (!(p = hio_tok_sep(p))) {
+		return -EPROTO;
+	}
+
+	if (!(p = hio_tok_uint8(p, &def, &cell->neighbor_count)) || !def) {
+		return -EBADMSG;
+	}
+
+	*p_ptr = p;
+
+	return 0;
+}
+
+int hio_lte_parse_urc_ncellmeas(const char *line, uint8_t search_type,
+				struct hio_lte_ncellmeas_param *param)
+{
+	/*
+	<status>
+	[,<cell_id>,<plmn>,<tac>,<timing_advance>,<timing_advance_measurement_time>,<earfcn>,
+	<phys_cell_id>,<rsrp>,<rsrq>,<measurement_time>,<serving>,<neighbor_count>
+		[,<n_earfcn>1,<n_phys_cell_id>1,<n_rsrp>1,<n_rsrq>1,<time_diff>1]
+		[,<n_earfcn>2,<n_phys_cell_id>2,<n_rsrp>2,<n_rsrq>2,<time_diff>2]...],
+	[<cell_id>,<plmn>,<tac>,<timing_advance>,<timing_advance_measurement_time>,<earfcn>,
+	<phys_cell_id>,<rsrp>,<rsrq>,<measurement_time>,<serving>,<neighbor_count>
+		[,<n_earfcn>1,<n_phys_cell_id>1,<n_rsrp>1,<n_rsrq>1,<time_diff>1]
+		[,<n_earfcn>2,<n_phys_cell_id>2,<n_rsrp>2,<n_rsrq>2,<time_diff>2]...]...
+	*/
+
+	if (!line || !param) {
+		return -EINVAL;
+	}
+
+	if (search_type < 3 || search_type > 5) {
+		LOG_ERR("Unsupported search type: %d", search_type);
+		return -EINVAL;
+	}
+
+	memset(param, 0, sizeof(*param));
+	for (int i = 0; i < HIO_LTE_NCELLMEAS_CELL_MAX; ++i) {
+		param->cells[i].eci = HIO_LTE_CELL_ECI_INVALID;
+	}
+
+	int ret;
+	const char *p = line;
+	bool def;
+
+	if (!(p = hio_tok_uint8(p, &def, &param->status)) || !def) {
+		LOG_ERR("Failed to parse status");
+		return -EBADMSG;
+	}
+
+	if (param->status == 1) {
+		param->valid = true;
+		return 0;
+	}
+
+	if (param->status != 0 && param->status != 3) {
+		LOG_ERR("Unknown status value: %d", param->status);
+		return -EOPNOTSUPP;
+	}
+
+	struct hio_lte_ncellmeas_cell_param *cell;
+	struct hio_lte_ncellmeas_ncell_param *ncell;
+
+	while (!hio_tok_end(p)) {
+		if (!(p = hio_tok_sep(p))) {
+			return -EPROTO;
+		}
+
+		cell = &param->cells[param->num_cells];
+
+		ret = parse_ncellmeas_cell(&p, cell);
+		if (ret != 0) {
+			LOG_ERR("Failed to parse cell failed: %d", ret);
+			return ret;
+		}
+
+		param->num_cells += 1;
+
+		if (cell->neighbor_count) {
+			cell->ncells =
+				&param->ncells[param->num_ncells]; /* point to the start of the
+								      neighboring cells */
+
+			for (int j = 0; j < cell->neighbor_count; ++j) {
+				if (!(p = hio_tok_sep(p))) {
+					return -EPROTO;
+				}
+
+				ncell = &param->ncells[param->num_ncells];
+				ret = parse_ncellmeas_ncell(&p, ncell);
+				if (ret != 0) {
+					LOG_ERR("Failed to parse neighboring cell: %d", ret);
+					return ret;
+				}
+
+				param->num_ncells += 1;
+
+				if (param->num_ncells == HIO_LTE_NCELLMEAS_NCELL_MAX) {
+					cell->neighbor_count = j + 1; /* adjust to the actual number
+								      of neighboring cells parsed */
+					return -EMSGSIZE;
+				}
+			}
+		}
+
+		if (param->num_cells == HIO_LTE_NCELLMEAS_CELL_MAX) {
+			return -EMSGSIZE;
+		}
+
+		if (hio_tok_end(p)) {
+			param->valid = true;
+			return 0;
+		}
+	}
+
+	return -EPROTO;
+}

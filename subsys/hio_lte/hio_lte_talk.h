@@ -59,6 +59,7 @@ int hio_lte_talk_crsm_214(void);
 int hio_lte_talk_at_cmd(const char *s);
 int hio_lte_talk_at_cmd_with_resp(const char *s, char *buf, size_t size);
 int hio_lte_talk_at_cmd_with_resp_prefix(const char *s, char *buf, size_t size, const char *pfx);
+int hio_lte_talk_ncellmeas(int p1, int p2);
 
 typedef void (*hio_lte_talk_bypass_cb)(void *user_data, const uint8_t *data, size_t len);
 int hio_lte_talk_bypass_set_cb(hio_lte_talk_bypass_cb cb, void *user_data);

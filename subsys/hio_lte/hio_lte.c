@@ -2,6 +2,7 @@
 #include "hio_lte_flow.h"
 #include "hio_lte_state.h"
 #include "hio_lte_str.h"
+#include "hio_lte_talk.h"
 
 /* HIO includes */
 #include <hio/hio_rtc.h>
@@ -11,8 +12,8 @@
 #include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
-#include <zephyr/shell/shell.h>
 #include <zephyr/sys/time_units.h>
+#include <zephyr/sys/ring_buffer.h>
 
 /* Standard includes */
 #include <errno.h>
@@ -27,6 +28,7 @@ LOG_MODULE_REGISTER(hio_lte, CONFIG_HIO_LTE_LOG_LEVEL);
 #define MDMEV_RESET_LOOP_DELAY K_MINUTES(32)
 #define SEND_CSCON_1_TIMEOUT   K_SECONDS(30)
 #define CONEVAL_TIMEOUT        K_SECONDS(30)
+#define NCELLMEAS_TIMEOUT      K_SECONDS(60)
 
 #define WORK_Q_STACK_SIZE 4096
 #define WORK_Q_PRIORITY   K_LOWEST_APPLICATION_THREAD_PRIO
@@ -47,6 +49,7 @@ enum fsm_state {
 	FSM_STATE_SEND,
 	FSM_STATE_RECEIVE,
 	FSM_STATE_CONEVAL,
+	FSM_STATE_NCELLMEAS,
 };
 
 struct fsm_state_desc {
@@ -61,7 +64,6 @@ enum fsm_state m_state;
 struct k_work_delayable m_timeout_work;
 struct k_work m_event_dispatch_work;
 uint8_t m_event_buf[8];
-bool m_cscon = false;
 struct ring_buf m_event_rb;
 K_MUTEX_DEFINE(m_event_rb_lock);
 
@@ -70,9 +72,10 @@ static K_EVENT_DEFINE(m_states_event);
 #define ATTACHED_BIT  BIT(1)
 #define CONNECTED_BIT BIT(2)
 
-#define FLAG_CSCON       BIT(0)
-#define FLAG_GNSS_ENABLE BIT(1)
-#define FLAG_CFUN4       BIT(2)
+#define FLAG_CSCON         BIT(0)
+#define FLAG_GNSS_ENABLE   BIT(1)
+#define FLAG_CFUN4         BIT(2)
+#define FLAG_NCELLMEAS_REQ BIT(3)
 atomic_t m_flag = ATOMIC_INIT(0);
 
 K_MUTEX_DEFINE(m_send_recv_lock);
@@ -137,6 +140,11 @@ int hio_lte_get_curr_attach_info(int *attempt, int *attach_timeout_sec, int *ret
 	return 0;
 }
 
+int hio_lte_get_ncellmeas_param(struct hio_lte_ncellmeas_param *param)
+{
+	return hio_lte_state_get_ncellmeas_param(param);
+}
+
 const char *fsm_state_str(enum fsm_state state)
 {
 	switch (state) {
@@ -164,6 +172,8 @@ const char *fsm_state_str(enum fsm_state state)
 		return "receive";
 	case FSM_STATE_CONEVAL:
 		return "coneval";
+	case FSM_STATE_NCELLMEAS:
+		return "ncellmeas";
 	}
 	return "unknown";
 }
@@ -186,8 +196,10 @@ static void stop_timer(void)
 static void delegate_event(enum hio_lte_fsm_event event)
 {
 	if (event == HIO_LTE_FSM_EVENT_CSCON_1) {
+		atomic_set_bit(&m_flag, FLAG_CSCON);
 		m_start_cscon1 = k_uptime_get_32();
 	} else if (event == HIO_LTE_FSM_EVENT_CSCON_0) {
+		atomic_clear_bit(&m_flag, FLAG_CSCON);
 		k_mutex_lock(&m_metrics_lock, K_FOREVER);
 		m_metrics.cscon_1_last_duration_ms = k_uptime_get_32() - m_start_cscon1;
 		m_metrics.cscon_1_duration_ms += m_metrics.cscon_1_last_duration_ms;
@@ -237,6 +249,7 @@ static void event_handler(enum hio_lte_fsm_event event)
 	if (fsm_state && fsm_state->event_handler) {
 		int ret = fsm_state->event_handler(event);
 		if (ret < 0) {
+			stop_timer();
 			LOG_WRN("failed to handle event, error: %i", ret);
 			if (event != HIO_LTE_FSM_EVENT_ERROR) {
 				delegate_event(HIO_LTE_FSM_EVENT_ERROR);
@@ -510,6 +523,8 @@ static int on_leave_disabled(void)
 
 	atomic_clear_bit(&m_flag, FLAG_CSCON);
 	atomic_clear_bit(&m_flag, FLAG_CFUN4);
+	// atomic_clear_bit(&m_flag, FLAG_NCELLMEAS_REQ);
+	atomic_set_bit(&m_flag, FLAG_NCELLMEAS_REQ);
 
 	return 0;
 }
@@ -643,7 +658,6 @@ static int prepare_event_handler(enum hio_lte_fsm_event event)
 		transition_state(FSM_STATE_ATTACH);
 		break;
 	case HIO_LTE_FSM_EVENT_RESET_LOOP:
-		m_attach_retry_count = 0;
 		transition_state(FSM_STATE_RESET_LOOP);
 		break;
 	case HIO_LTE_FSM_EVENT_TIMEOUT:
@@ -675,6 +689,8 @@ static int on_enter_reset_loop(void)
 	k_sleep(K_SECONDS(5));
 
 	start_timer(MDMEV_RESET_LOOP_DELAY);
+
+	m_attach_retry_count = 0;
 
 	return 0;
 }
@@ -801,14 +817,7 @@ static int attach_event_handler(enum hio_lte_fsm_event event)
 		k_event_post(&m_states_event, ATTACHED_BIT);
 		transition_state(FSM_STATE_OPEN_SOCKET);
 		break;
-	case HIO_LTE_FSM_EVENT_CSCON_1:
-		m_cscon = true;
-		break;
-	case HIO_LTE_FSM_EVENT_CSCON_0:
-		m_cscon = false;
-		break;
 	case HIO_LTE_FSM_EVENT_RESET_LOOP:
-		m_attach_retry_count = 0;
 		transition_state(FSM_STATE_RESET_LOOP);
 		break;
 	case HIO_LTE_FSM_EVENT_TIMEOUT:
@@ -865,12 +874,6 @@ static int open_socket_event_handler(enum hio_lte_fsm_event event)
 		k_event_post(&m_states_event, CONNECTED_BIT);
 		transition_state(FSM_STATE_CONEVAL);
 		break;
-	case HIO_LTE_FSM_EVENT_CSCON_0:
-		m_cscon = false;
-		break;
-	case HIO_LTE_FSM_EVENT_CSCON_1:
-		m_cscon = true;
-		break;
 	case HIO_LTE_FSM_EVENT_DEREGISTERED:
 		transition_state(FSM_STATE_ATTACH);
 		break;
@@ -915,10 +918,9 @@ static int ready_event_handler(enum hio_lte_fsm_event event)
 		transition_state(FSM_STATE_ATTACH);
 		break;
 	case HIO_LTE_FSM_EVENT_CSCON_0:
-		m_cscon = false;
-		break;
-	case HIO_LTE_FSM_EVENT_CSCON_1:
-		m_cscon = true;
+		if (atomic_test_bit(&m_flag, FLAG_NCELLMEAS_REQ)) {
+			transition_state(FSM_STATE_NCELLMEAS);
+		}
 		break;
 	case HIO_LTE_FSM_EVENT_XMODEMSLEEP:
 		transition_state(FSM_STATE_SLEEP);
@@ -1016,7 +1018,7 @@ static int on_enter_send(void)
 
 	start_timer(SEND_CSCON_1_TIMEOUT);
 
-	if (m_cscon) {
+	if (atomic_test_bit(&m_flag, FLAG_CSCON)) {
 		delegate_event(HIO_LTE_FSM_EVENT_SEND);
 	}
 
@@ -1027,11 +1029,9 @@ static int send_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
 	case HIO_LTE_FSM_EVENT_CSCON_0:
-		m_cscon = false;
 		transition_state(FSM_STATE_READY);
 		break;
 	case HIO_LTE_FSM_EVENT_CSCON_1:
-		m_cscon = true;
 		__fallthrough;
 	case HIO_LTE_FSM_EVENT_SEND:
 		stop_timer();
@@ -1130,10 +1130,6 @@ static int receive_event_handler(enum hio_lte_fsm_event event)
 	case HIO_LTE_FSM_EVENT_TIMEOUT:
 		transition_state(FSM_STATE_READY);
 		break;
-	case HIO_LTE_FSM_EVENT_CSCON_0:
-		m_cscon = false;
-		// transition_state(FSM_STATE_CONEVAL);
-		break;
 	case HIO_LTE_FSM_EVENT_DEREGISTERED:
 		transition_state(FSM_STATE_ATTACH);
 		break;
@@ -1166,12 +1162,6 @@ static int coneval_event_handler(enum hio_lte_fsm_event event)
 	case HIO_LTE_FSM_EVENT_TIMEOUT:
 		transition_state(FSM_STATE_READY);
 		break;
-	case HIO_LTE_FSM_EVENT_CSCON_0:
-		m_cscon = false;
-		break;
-	case HIO_LTE_FSM_EVENT_CSCON_1:
-		m_cscon = true;
-		break;
 	case HIO_LTE_FSM_EVENT_DEREGISTERED:
 		transition_state(FSM_STATE_ATTACH);
 		break;
@@ -1181,6 +1171,50 @@ static int coneval_event_handler(enum hio_lte_fsm_event event)
 	default:
 		break;
 	}
+	return 0;
+}
+
+static int on_enter_ncellmeas(void)
+{
+	start_timer(NCELLMEAS_TIMEOUT);
+
+	int ret = hio_lte_talk_ncellmeas(5, HIO_LTE_NCELLMEAS_CELL_MAX);
+	if (ret < 0) {
+		LOG_ERR("Enable NCELLMEAS failed: %d", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+static int ncellmeas_event_handler(enum hio_lte_fsm_event event)
+{
+	switch (event) {
+	case HIO_LTE_FSM_EVENT_TIMEOUT:
+		transition_state(FSM_STATE_READY);
+		break;
+	case HIO_LTE_FSM_EVENT_NCELLMEAS:
+		atomic_clear_bit(&m_flag, FLAG_NCELLMEAS_REQ);
+		transition_state(FSM_STATE_READY);
+		break;
+	case HIO_LTE_FSM_EVENT_ERROR:
+		transition_state(FSM_STATE_ERROR);
+		break;
+	default:
+		break;
+	}
+	return 0;
+}
+
+static int on_leave_ncellmeas(void)
+{
+	stop_timer();
+
+	int ret = hio_lte_flow_cmd("AT%NCELLMEASSTOP");
+	if (ret < 0) {
+		LOG_WRN("Disable NCELLMEAS failed: %d", ret);
+	}
+
 	return 0;
 }
 
@@ -1198,6 +1232,7 @@ static struct fsm_state_desc m_fsm_states[] = {
 	{FSM_STATE_SEND, on_enter_send, on_leave_send, send_event_handler},
 	{FSM_STATE_RECEIVE, on_enter_receive, NULL, receive_event_handler},
 	{FSM_STATE_CONEVAL, on_enter_coneval, NULL, coneval_event_handler},
+	{FSM_STATE_NCELLMEAS, on_enter_ncellmeas, on_leave_ncellmeas, ncellmeas_event_handler},
 };
 /* clang-format on */
 

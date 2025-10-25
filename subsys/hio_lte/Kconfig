@@ -2,12 +2,13 @@ config HIO_LTE
 	bool "HIO_LTE"
 	select HIO_CONFIG
 	select HIO_BUF
+	select AT_MONITOR
+	select EVENTS
+	select NRF_MODEM_LIB
 	select PM_DEVICE
 	select POSIX_API
 	select REQUIRES_FULL_LIBC
 	select RING_BUFFER
-	select NRF_MODEM_LIB
-	select AT_MONITOR
 
 if HIO_LTE
 

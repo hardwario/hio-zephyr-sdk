@@ -254,4 +254,168 @@ ZTEST(parser, test_cgcont_no_address)
 	zassert_true(strcmp(param.addr, "") == 0, "param.addr not equal");
 }
 
+ZTEST(parser, test_urc_ncellmeas_one_cell_four_neighboring)
+{
+	struct hio_lte_ncellmeas_param param;
+	int ret = hio_lte_parse_urc_ncellmeas(
+		"0,\"00011B07\",\"26295\",\"00B7\",10512,9034,2300,7,63,31,150344527,1,4,2300,"
+		"8,60,29,92,2300,9,59,28,100,2400,10,56,27,162,2400,11,55,26,184",
+		5, &param);
+
+	zassert_ok(ret, "hio_lte_parse_ncellmeas failed");
+	zassert_equal(param.valid, true, "param.valid not true");
+	zassert_equal(param.num_cells, 1, "param.num_cells not equal");
+	zassert_equal(param.num_ncells, 4, "param.num_ncells not equal");
+
+	zassert_equal(param.cells[0].eci, 0x00011B07, "cells[0].eci not equal");
+	zassert_equal(param.cells[0].mcc, 262, "cells[0].mcc not equal");
+	zassert_equal(param.cells[0].mnc, 95, "cells[0].mnc not equal");
+	zassert_equal(param.cells[0].tac, 0x00B7, "cells[0].tac not equal");
+	zassert_equal(param.cells[0].adv, 10512, "cells[0].adv not equal");
+	zassert_equal(param.cells[0].earfcn, 2300, "cells[0].earfcn not equal");
+	zassert_equal(param.cells[0].pci, 7, "cells[0].pci not equal");
+	zassert_equal(param.cells[0].rsrp, 63, "cells[0].rsrp not equal");
+	zassert_equal(param.cells[0].rsrq, 31, "cells[0].rsrq not equal");
+	zassert_equal(param.cells[0].neighbor_count, 4, "cells[0].neighbor_count not equal");
+	zassert_equal(param.cells[0].ncells, &param.ncells[0], "cells[0].ncells not equal pointer");
+
+	zassert_equal(param.ncells[0].earfcn, 2300, "ncells[0].earfcn not equal");
+	zassert_equal(param.ncells[0].pci, 8, "ncells[0].pci not equal");
+	zassert_equal(param.ncells[0].rsrp, 60, "ncells[0].rsrp not equal");
+	zassert_equal(param.ncells[0].rsrq, 29, "ncells[0].rsrq not equal");
+	zassert_equal(param.ncells[0].time_diff, 92, "ncells[0].time_diff not equal");
+
+	zassert_equal(param.ncells[1].earfcn, 2300, "ncells[1].earfcn not equal");
+	zassert_equal(param.ncells[1].pci, 9, "ncells[1].pci not equal");
+	zassert_equal(param.ncells[1].rsrp, 59, "ncells[1].rsrp not equal");
+	zassert_equal(param.ncells[1].rsrq, 28, "ncells[1].rsrq not equal");
+	zassert_equal(param.ncells[1].time_diff, 100, "ncells[1].time_diff not equal");
+
+	zassert_equal(param.ncells[2].earfcn, 2400, "ncells[2].earfcn not equal");
+	zassert_equal(param.ncells[2].pci, 10, "ncells[2].pci not equal");
+	zassert_equal(param.ncells[2].rsrp, 56, "ncells[2].rsrp not equal");
+	zassert_equal(param.ncells[2].rsrq, 27, "ncells[2].rsrq not equal");
+	zassert_equal(param.ncells[2].time_diff, 162, "ncells[2].time_diff not equal");
+
+	zassert_equal(param.ncells[3].earfcn, 2400, "ncells[3].earfcn not equal");
+	zassert_equal(param.ncells[3].pci, 11, "ncells[3].pci not equal");
+	zassert_equal(param.ncells[3].rsrp, 55, "ncells[3].rsrp not equal");
+	zassert_equal(param.ncells[3].rsrq, 26, "ncells[3].rsrq not equal");
+	zassert_equal(param.ncells[3].time_diff, 184, "ncells[3].time_diff not equal");
+}
+
+ZTEST(parser, test_urc_ncellmeas_two_cells_no_neighboring)
+{
+	struct hio_lte_ncellmeas_param param;
+	int ret = hio_lte_parse_urc_ncellmeas(
+		"0,\"00011B07\",\"26295\",\"00B7\",10512,9034,2300,7,63,31,150344527,"
+		"1,0,\"00011B08\",\"26295\",\"00B7\",65535,0,2300,9,62,30,150345527,0,0",
+		5, &param);
+
+	zassert_ok(ret, "hio_lte_parse_urc_ncellmeas failed");
+	zassert_equal(param.valid, true, "param.valid not true");
+	zassert_equal(param.num_cells, 2, "param.num_cells not equal");
+	zassert_equal(param.num_ncells, 0, "param.num_ncells not equal");
+
+	zassert_equal(param.cells[0].eci, 0x00011B07, "cells[0].eci not equal");
+	zassert_equal(param.cells[0].mcc, 262, "cells[0].mcc not equal");
+	zassert_equal(param.cells[0].mnc, 95, "cells[0].mnc not equal");
+	zassert_equal(param.cells[0].tac, 0x00B7, "cells[0].tac not equal");
+	zassert_equal(param.cells[0].adv, 10512, "cells[0].adv not equal");
+	zassert_equal(param.cells[0].earfcn, 2300, "cells[0].earfcn not equal");
+	zassert_equal(param.cells[0].pci, 7, "cells[0].pci not equal");
+	zassert_equal(param.cells[0].rsrp, 63, "cells[0].rsrp not equal");
+	zassert_equal(param.cells[0].rsrq, 31, "cells[0].rsrq not equal");
+	zassert_equal(param.cells[0].neighbor_count, 0, "cells[0].neighbor_count not equal");
+	zassert_is_null(param.cells[0].ncells, "cells[0].ncells not equal pointer");
+
+	zassert_equal(param.cells[1].eci, 0x00011B08, "cells[1].eci not equal");
+	zassert_equal(param.cells[1].mcc, 262, "cells[1].mcc not equal");
+	zassert_equal(param.cells[1].mnc, 95, "cells[1].mnc not equal");
+	zassert_equal(param.cells[1].tac, 0x00B7, "cells[1].tac not equal");
+	zassert_equal(param.cells[1].adv, 65535, "cells[1].adv not equal");
+	zassert_equal(param.cells[1].earfcn, 2300, "cells[1].earfcn not equal");
+	zassert_equal(param.cells[1].pci, 9, "cells[1].pci not equal");
+	zassert_equal(param.cells[1].rsrp, 62, "cells[1].rsrp not equal");
+	zassert_equal(param.cells[1].rsrq, 30, "cells[1].rsrq not equal");
+	zassert_equal(param.cells[1].neighbor_count, 0, "cells[1].neighbor_count not equal");
+	zassert_is_null(param.cells[1].ncells, "cells[1].ncells not equal pointer");
+}
+
+ZTEST(parser, test_urc_ncellmeas_complex)
+{
+	struct hio_lte_ncellmeas_param param;
+	int ret = hio_lte_parse_urc_ncellmeas(
+		"0,\"000AE5CA\",\"23003\",\"8DCC\",65535,0,3544,135,67,31,549479,0,0,\"00011B07\","
+		"\"26295\",\"00B7\",10512,9034,2300,7,63,31,150344527,1,3,2300,"
+		"8,60,29,92,2300,9,59,28,100,2400,10,56,27,162,\"074FEB02\",\"23002\",\"05F2\","
+		"65535,0,6300,226,60,9,549525,0,1,2400,11,55,26,184",
+		5, &param);
+
+	zassert_ok(ret, "hio_lte_parse_ncellmeas failed");
+	zassert_equal(param.valid, true, "param.valid not true");
+	zassert_equal(param.num_cells, 3, "param.num_cells not equal");
+	zassert_equal(param.num_ncells, 4, "param.num_ncells not equal");
+
+	zassert_equal(param.cells[0].eci, 0x000AE5CA, "cells[0].eci not equal");
+	zassert_equal(param.cells[0].mcc, 230, "cells[0].mcc not equal");
+	zassert_equal(param.cells[0].mnc, 3, "cells[0].mnc not equal");
+	zassert_equal(param.cells[0].tac, 0x8DCC, "cells[0].tac not equal");
+	zassert_equal(param.cells[0].adv, 65535, "cells[0].adv not equal");
+	zassert_equal(param.cells[0].earfcn, 3544, "cells[0].earfcn not equal");
+	zassert_equal(param.cells[0].pci, 135, "cells[0].pci not equal");
+	zassert_equal(param.cells[0].rsrp, 67, "cells[0].rsrp not equal");
+	zassert_equal(param.cells[0].rsrq, 31, "cells[0].rsrq not equal");
+	zassert_equal(param.cells[0].neighbor_count, 0, "cells[0].neighbor_count not equal");
+	zassert_is_null(param.cells[0].ncells, "cells[0].ncells not equal pointer");
+
+	zassert_equal(param.cells[1].eci, 0x00011B07, "cells[1].eci not equal");
+	zassert_equal(param.cells[1].mcc, 262, "cells[1].mcc not equal");
+	zassert_equal(param.cells[1].mnc, 95, "cells[1].mnc not equal");
+	zassert_equal(param.cells[1].tac, 0x00B7, "cells[1].tac not equal");
+	zassert_equal(param.cells[1].adv, 10512, "cells[1].adv not equal");
+	zassert_equal(param.cells[1].earfcn, 2300, "cells[1].earfcn not equal");
+	zassert_equal(param.cells[1].pci, 7, "cells[1].pci not equal");
+	zassert_equal(param.cells[1].rsrp, 63, "cells[1].rsrp not equal");
+	zassert_equal(param.cells[1].rsrq, 31, "cells[1].rsrq not equal");
+	zassert_equal(param.cells[1].neighbor_count, 3, "cells[1].neighbor_count not equal");
+	zassert_equal(param.cells[1].ncells, &param.ncells[0], "cells[1].ncells not equal pointer");
+
+	zassert_equal(param.cells[2].eci, 0x074FEB02, "cells[2].eci not equal");
+	zassert_equal(param.cells[2].mcc, 230, "cells[2].mcc not equal");
+	zassert_equal(param.cells[2].mnc, 2, "cells[2].mnc not equal");
+	zassert_equal(param.cells[2].tac, 0x05F2, "cells[2].tac not equal");
+	zassert_equal(param.cells[2].adv, 65535, "cells[2].adv not equal");
+	zassert_equal(param.cells[2].earfcn, 6300, "cells[2].earfcn not equal");
+	zassert_equal(param.cells[2].pci, 226, "cells[2].pci not equal");
+	zassert_equal(param.cells[2].rsrp, 60, "cells[2].rsrp not equal");
+	zassert_equal(param.cells[2].rsrq, 9, "cells[2].rsrq not equal");
+	zassert_equal(param.cells[2].neighbor_count, 1, "cells[2].neighbor_count not equal");
+	zassert_equal(param.cells[2].ncells, &param.ncells[3], "cells[2].ncells not equal pointer");
+
+	zassert_equal(param.ncells[0].earfcn, 2300, "ncells[0].earfcn not equal");
+	zassert_equal(param.ncells[0].pci, 8, "ncells[0].pci not equal");
+	zassert_equal(param.ncells[0].rsrp, 60, "ncells[0].rsrp not equal");
+	zassert_equal(param.ncells[0].rsrq, 29, "ncells[0].rsrq not equal");
+	zassert_equal(param.ncells[0].time_diff, 92, "ncells[0].time_diff not equal");
+
+	zassert_equal(param.ncells[1].earfcn, 2300, "ncells[1].earfcn not equal");
+	zassert_equal(param.ncells[1].pci, 9, "ncells[1].pci not equal");
+	zassert_equal(param.ncells[1].rsrp, 59, "ncells[1].rsrp not equal");
+	zassert_equal(param.ncells[1].rsrq, 28, "ncells[1].rsrq not equal");
+	zassert_equal(param.ncells[1].time_diff, 100, "ncells[1].time_diff not equal");
+
+	zassert_equal(param.ncells[2].earfcn, 2400, "ncells[2].earfcn not equal");
+	zassert_equal(param.ncells[2].pci, 10, "ncells[2].pci not equal");
+	zassert_equal(param.ncells[2].rsrp, 56, "ncells[2].rsrp not equal");
+	zassert_equal(param.ncells[2].rsrq, 27, "ncells[2].rsrq not equal");
+	zassert_equal(param.ncells[2].time_diff, 162, "ncells[2].time_diff not equal");
+
+	zassert_equal(param.ncells[3].earfcn, 2400, "ncells[3].earfcn not equal");
+	zassert_equal(param.ncells[3].pci, 11, "ncells[3].pci not equal");
+	zassert_equal(param.ncells[3].rsrp, 55, "ncells[3].rsrp not equal");
+	zassert_equal(param.ncells[3].rsrq, 26, "ncells[3].rsrq not equal");
+	zassert_equal(param.ncells[3].time_diff, 184, "ncells[3].time_diff not equal");
+}
+
 ZTEST_SUITE(parser, NULL, NULL, NULL, NULL, NULL);

@@ -36,6 +36,9 @@ void hio_lte_state_set_cereg_param(const struct hio_lte_cereg_param *param);
 int hio_lte_state_get_rai_param(struct hio_lte_rai_param *param);
 void hio_lte_state_set_rai_param(const struct hio_lte_rai_param *param);
 
+int hio_lte_state_get_ncellmeas_param(struct hio_lte_ncellmeas_param *param);
+void hio_lte_state_set_ncellmeas_param(const struct hio_lte_ncellmeas_param *param);
+
 const char *hio_lte_get_state(void);
 
 #ifdef __cplusplus

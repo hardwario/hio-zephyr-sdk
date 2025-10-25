@@ -79,9 +79,8 @@ static int gather_prefix_values(const char *prefix, char *out_buf, size_t out_bu
 }
 
 /* Split to tx and rx function is for nice logging */
-static void rx(void)
+static void rx(const char *ptr)
 {
-	const char *ptr = m_talk_buffer;
 	const char *line_start = ptr;
 
 	while (*ptr != '\0') {
@@ -102,15 +101,21 @@ static void rx(void)
 	}
 }
 
-static int tx(const char *fmt, va_list args)
+static int tx(bool async, const char *fmt, va_list args)
 {
 	int ret;
 	static char cmd_buf[256];
 
 	vsnprintf(cmd_buf, sizeof(cmd_buf), fmt, args);
 	LOG_INF("%s", cmd_buf);
-	ret = nrf_modem_at_cmd(m_talk_buffer, sizeof(m_talk_buffer), "%s", cmd_buf);
-	m_talk_buffer[sizeof(m_talk_buffer) - 1] = '\0';
+
+	if (async) {
+		m_talk_buffer[0] = '\0';
+		ret = nrf_modem_at_cmd_async(rx, "%s", cmd_buf);
+	} else {
+		ret = nrf_modem_at_cmd(m_talk_buffer, sizeof(m_talk_buffer), "%s", cmd_buf);
+		m_talk_buffer[sizeof(m_talk_buffer) - 1] = '\0';
+	}
 
 	if (ret < 0) {
 		LOG_ERR("Call `nrf_modem_at_cmd` failed: %d", ret);
@@ -127,16 +132,28 @@ static int cmd(const char *fmt, ...)
 	va_list args;
 
 	va_start(args, fmt);
-	int ret = tx(fmt, args);
+	int ret = tx(false, fmt, args);
 	va_end(args);
 
 	if (!ret) {
-		rx();
+		rx(m_talk_buffer);
 		if (m_bypass_cb) {
 			m_bypass_cb(m_bypass_cb_user_data, (const uint8_t *)m_talk_buffer,
 				    strlen(m_talk_buffer));
 		}
 	}
+
+	return ret;
+}
+
+static int cmd_async(const char *fmt, ...)
+{
+	va_list args;
+	int ret;
+
+	va_start(args, fmt);
+	ret = tx(true, fmt, args);
+	va_end(args);
 
 	return ret;
 }
@@ -781,6 +798,19 @@ int hio_lte_talk_at_cmd_with_resp_prefix(const char *s, char *buf, size_t size, 
 	}
 
 	return gather_prefix_values(pfx, buf, size, 1) == 1 ? 0 : -EILSEQ;
+}
+
+int hio_lte_talk_ncellmeas(int p1, int p2)
+{
+	int ret;
+
+	ret = cmd_async("AT%%NCELLMEAS=%d,%d", p1, p2);
+	if (ret < 0) {
+		LOG_ERR("Call `cmd` failed: %d", ret);
+		return ret;
+	}
+
+	return 0;
 }
 
 int hio_lte_talk_bypass_set_cb(hio_lte_talk_bypass_cb cb, void *user_data)

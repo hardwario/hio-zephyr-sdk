@@ -269,6 +269,20 @@ int hio_lte_get_fsm_state(const char **state);
  */
 int hio_lte_is_attached(bool *attached);
 
+/**
+ * @brief Get current attach information.
+ *
+ * @note This API is experimental and may change in future releases.
+ *
+ * @param attempt         Input: current attach attempt (0 for first).
+ * @param attach_timeout_sec Output: current attach timeout in seconds.
+ * @param retry_delay_sec    Output: current retry delay in seconds.
+ * @param remaining_sec      Output: remaining time for current timeout in seconds.
+ * @retval 0               Success.
+ */
+int hio_lte_get_curr_attach_info(int *attempt, int *attach_timeout_sec, int *retry_delay_sec,
+				 int *remaining_sec);
+
 /* -------- Callbacks for LTE events -------- */
 
 /**
@@ -309,19 +323,51 @@ int hio_lte_add_callback(struct hio_lte_cb *cb);
  */
 int hio_lte_remove_callback(struct hio_lte_cb *cb);
 
-/**
- * @brief Get current attach information.
- *
- * @note This API is experimental and may change in future releases.
- *
- * @param attempt         Input: current attach attempt (0 for first).
- * @param attach_timeout_sec Output: current attach timeout in seconds.
- * @param retry_delay_sec    Output: current retry delay in seconds.
- * @param remaining_sec      Output: remaining time for current timeout in seconds.
- * @retval 0               Success.
- */
-int hio_lte_get_curr_attach_info(int *attempt, int *attach_timeout_sec, int *retry_delay_sec,
-				 int *remaining_sec);
+/* -------- Neighbor Cell Measurements -------- */
+#define HIO_LTE_CELL_ECI_MAX            268435455
+#define HIO_LTE_CELL_ECI_INVALID        UINT32_MAX
+#define HIO_LTE_CELL_ADV_MAX            20512
+#define HIO_LTE_CELL_ADV_INVALID        65535
+#define HIO_LTE_CELL_EARFCN_MAX         262143
+#define HIO_LTE_CELL_RSRP_LEVEL_INVALID 255
+#define HIO_LTE_CELL_RSRQ_LEVEL_INVALID 255
+#define HIO_LTE_NCELLMEAS_CELL_MAX      7
+#define HIO_LTE_NCELLMEAS_NCELL_MAX     10
+
+struct hio_lte_ncellmeas_ncell_param {
+	uint32_t earfcn; /**< EARFCN. */
+	uint16_t pci;    /**< Physical Cell ID. */
+	int16_t rsrp;    /**< Level index Reference Signal Received Power. Range: -17 to 255. */
+	int16_t rsrq;    /**< Level index Reference Signal Received Quality. Range: -17 to 255. */
+	int time_diff;   /**< Time Difference (ns or quantized units, depending on source). */
+};
+
+struct hio_lte_ncellmeas_cell_param {
+	uint32_t eci;    /**< E-UTRA Cell Identifier. */
+	uint16_t mcc;    /**< Mobile Country Code. */
+	uint16_t mnc;    /**< Mobile Network Code. */
+	uint16_t tac;    /**< Tracking Area Code. */
+	uint16_t adv;    /**< Timing Advance. */
+	uint32_t earfcn; /**< EARFCN. */
+	uint16_t pci;    /**< Physical Cell ID. */
+	int16_t rsrp;    /**< Level index Reference Signal Received Power. Range: -17 to 255. */
+	int16_t rsrq;    /**< Level index Reference Signal Received Quality. Range: -17 to 255. */
+
+	uint8_t neighbor_count;                       /**< Number of neighbor cells reported. */
+	struct hio_lte_ncellmeas_ncell_param *ncells; /**< Pointer to first neighbor cell entry. */
+};
+
+struct hio_lte_ncellmeas_param {
+	bool valid;                       /**< True if values are valid. */
+	uint8_t status;                   /**< Status code of the measurement. */
+	enum hio_lte_cereg_param_act act; /**< Access technology. */
+	uint8_t num_cells;                /**< Number of neighbor cell measurement entries. */
+	uint8_t num_ncells;               /**< Total number of neighbor cells reported. */
+	struct hio_lte_ncellmeas_cell_param cells[HIO_LTE_NCELLMEAS_CELL_MAX];
+	struct hio_lte_ncellmeas_ncell_param ncells[HIO_LTE_NCELLMEAS_NCELL_MAX];
+};
+
+int hio_lte_get_ncellmeas_param(struct hio_lte_ncellmeas_param *param);
 
 /* -------- Utility functions -------- */
 

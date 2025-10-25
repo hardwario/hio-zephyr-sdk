@@ -29,6 +29,8 @@ int hio_lte_parse_urc_xmodemsleep(const char *line, int *p1, int *p2);
 int hio_lte_parse_urc_rai(const char *line, struct hio_lte_rai_param *param);
 int hio_lte_parse_coneval(const char *str, struct hio_lte_conn_param *params);
 int hio_lte_parse_cgcont(const char *line, struct cgdcont_param *param);
+int hio_lte_parse_urc_ncellmeas(const char *line, uint8_t search_type,
+				struct hio_lte_ncellmeas_param *param);
 
 #ifdef __cplusplus
 }

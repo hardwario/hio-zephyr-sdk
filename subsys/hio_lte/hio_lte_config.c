@@ -31,9 +31,12 @@ LOG_MODULE_REGISTER(hio_lte_config, CONFIG_HIO_LTE_LOG_LEVEL);
 struct hio_lte_config g_hio_lte_config;
 static struct hio_lte_config m_config_interim;
 
-static const char *m_enum_auth_items[] = {[HIO_LTE_CONFIG_AUTH_NONE] = "none",
-					  [HIO_LTE_CONFIG_AUTH_PAP] = "pap",
-					  [HIO_LTE_CONFIG_AUTH_CHAP] = "chap"};
+/* clang-format off */
+static const char *m_enum_auth_items[] = {
+	[HIO_LTE_CONFIG_AUTH_NONE] = "none",
+	[HIO_LTE_CONFIG_AUTH_PAP] = "pap",
+	[HIO_LTE_CONFIG_AUTH_CHAP] = "chap"
+};
 
 static const char *m_enum_attach_policy_items[] = {
 	[HIO_LTE_ATTACH_POLICY_AGGRESSIVE] = "aggressive",
@@ -43,6 +46,7 @@ static const char *m_enum_attach_policy_items[] = {
 	[HIO_LTE_ATTACH_POLICY_PERIODIC_1D] = "periodic-1d",
 	[HIO_LTE_ATTACH_POLICY_PROGRESSIVE] = "progressive",
 };
+/* clang-format on */
 
 static int mode_parse_cb(const struct hio_config_item *item, char *argv, const char **err_msg)
 {

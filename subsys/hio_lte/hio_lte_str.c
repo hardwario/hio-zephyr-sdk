@@ -130,6 +130,8 @@ const char *hio_lte_str_fsm_event(enum hio_lte_fsm_event event)
 		return "XGPS_DISABLE";
 	case HIO_LTE_FSM_EVENT_XGPS:
 		return "XGPS";
+	case HIO_LTE_FSM_EVENT_NCELLMEAS:
+		return "NCELLMEAS";
 	case HIO_LTE_FSM_EVENT_COUNT:
 		return "for internal use only";
 	}
