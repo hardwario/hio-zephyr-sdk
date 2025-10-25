@@ -221,7 +221,7 @@ static int chunk(const struct hio_atci *atci, char *argv)
 	bool def = false;
 	uint32_t offset = 0;
 
-	if (!(p = hio_tok_uint(p, &def, &offset)) || !def) {
+	if (!(p = hio_tok_uint32(p, &def, &offset)) || !def) {
 		hio_atci_error(atci, "\"Invalid offset\"");
 		return -EINVAL;
 	}

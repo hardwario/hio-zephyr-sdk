@@ -133,7 +133,7 @@ const char *hio_tok_num(const char *s, bool *def, long *num)
 	return end;
 }
 
-const char *hio_tok_uint(const char *s, bool *def, uint32_t *num)
+const char *hio_tok_uint32(const char *s, bool *def, uint32_t *num)
 {
 	if (!s) {
 		return NULL;
@@ -176,6 +176,54 @@ const char *hio_tok_uint(const char *s, bool *def, uint32_t *num)
 	}
 
 	return end;
+}
+
+const char *hio_tok_uint16(const char *s, bool *def, uint16_t *num)
+{
+	uint32_t value;
+	bool vdef;
+	const char *next = hio_tok_uint32(s, &vdef, &value);
+	if (!next) {
+		return NULL;
+	}
+
+	if (vdef && value > 0xFFFF) {
+		return NULL;
+	}
+
+	if (def) {
+		*def = vdef;
+	}
+
+	if (num) {
+		*num = (uint16_t)value;
+	}
+
+	return next;
+}
+
+const char *hio_tok_uint8(const char *s, bool *def, uint8_t *num)
+{
+	uint32_t value;
+	bool vdef;
+	const char *next = hio_tok_uint32(s, &vdef, &value);
+	if (!next) {
+		return NULL;
+	}
+
+	if (vdef && value > 0xFF) {
+		return NULL;
+	}
+
+	if (def) {
+		*def = vdef;
+	}
+
+	if (num) {
+		*num = (uint8_t)value;
+	}
+
+	return next;
 }
 
 const char *hio_tok_float(const char *s, bool *def, float *num)

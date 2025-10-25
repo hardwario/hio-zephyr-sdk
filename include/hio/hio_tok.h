@@ -81,7 +81,7 @@ const char *hio_tok_num(const char *s, bool *def, long *num);
 const char *hio_tok_float(const char *s, bool *def, float *num);
 
 /**
- * @brief Parses an unsigned integer (decimal or 0x-prefixed hex).
+ * @brief Parses an unsigned 16-bit integer (decimal or 0x-prefixed hex).
  *
  * Sets `def` to true if a value was found. Accepts '0x' prefix for hexadecimal.
  *
@@ -90,7 +90,31 @@ const char *hio_tok_float(const char *s, bool *def, float *num);
  * @param num   Output value.
  * @return      Pointer to next character, or NULL on error.
  */
-const char *hio_tok_uint(const char *s, bool *def, uint32_t *num);
+const char *hio_tok_uint32(const char *s, bool *def, uint32_t *num);
+
+/**
+ * @brief Parses an unsigned 16-bit integer (decimal or 0x-prefixed hex).
+ *
+ * Sets `def` to true if a value was found.
+ *
+ * @param s     The input string.
+ * @param def   Output: true if value was present.
+ * @param num   Output value.
+ * @return      Pointer to next character, or NULL on error.
+ */
+const char *hio_tok_uint16(const char *s, bool *def, uint16_t *num);
+
+/**
+ * @brief Parses an unsigned 8-bit integer (decimal or 0x-prefixed hex).
+ *
+ * Sets `def` to true if a value was found.
+ *
+ * @param s     The input string.
+ * @param def   Output: true if value was present.
+ * @param num   Output value.
+ * @return      Pointer to next character, or NULL on error.
+ */
+const char *hio_tok_uint8(const char *s, bool *def, uint8_t *num);
 
 /**
  * @brief Parses a hexadecimal string into a binary buffer.
