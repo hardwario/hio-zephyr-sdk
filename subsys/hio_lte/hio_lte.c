@@ -140,11 +140,6 @@ int hio_lte_get_curr_attach_info(int *attempt, int *attach_timeout_sec, int *ret
 	return 0;
 }
 
-int hio_lte_get_ncellmeas_param(struct hio_lte_ncellmeas_param *param)
-{
-	return hio_lte_state_get_ncellmeas_param(param);
-}
-
 const char *fsm_state_str(enum fsm_state state)
 {
 	switch (state) {
@@ -497,6 +492,29 @@ int hio_lte_remove_callback(struct hio_lte_cb *cb)
 
 	bool removed = sys_slist_find_and_remove(&cb_list, &cb->node);
 	return removed ? 0 : -ENOENT;
+}
+
+int hio_lte_get_ncellmeas_param(struct hio_lte_ncellmeas_param *param)
+{
+	return hio_lte_state_get_ncellmeas_param(param);
+}
+
+int hio_lte_schedule_ncellmeas(void)
+{
+	if (g_hio_lte_config.test) {
+		LOG_WRN("LTE Test mode enabled");
+		return -ENOTSUP;
+	}
+
+	if (atomic_test_and_set_bit(&m_flag, FLAG_NCELLMEAS_REQ)) {
+		return -EALREADY;
+	}
+
+	if (m_state == FSM_STATE_SLEEP) {
+		delegate_event(HIO_LTE_FSM_EVENT_READY);
+	}
+
+	return 0;
 }
 
 static int on_enter_disabled(void)
@@ -929,6 +947,9 @@ static int ready_event_handler(enum hio_lte_fsm_event event)
 		transition_state(FSM_STATE_ERROR);
 		break;
 	case HIO_LTE_FSM_EVENT_TIMEOUT:
+		if (atomic_test_bit(&m_flag, FLAG_NCELLMEAS_REQ)) {
+			return 0; /* ignore TIMEOUT event, wait for CSCON_0 */
+		}
 		hio_lte_state_get_cereg_param(&m_cereg_param);
 		if (m_cereg_param.active_time == -1) {
 			LOG_WRN("PSM is not supported, disabling LTE modem to save power");
@@ -966,6 +987,8 @@ static int sleep_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
 	case HIO_LTE_FSM_EVENT_SEND:
+		__fallthrough;
+	case HIO_LTE_FSM_EVENT_READY:
 		if (atomic_test_bit(&m_flag, FLAG_CFUN4)) {
 			int ret = hio_lte_flow_cfun(1); /* Exit power save mode */
 			if (ret < 0) {
@@ -976,7 +999,11 @@ static int sleep_event_handler(enum hio_lte_fsm_event event)
 			transition_state(FSM_STATE_ATTACH);
 			return 0;
 		}
-		transition_state(FSM_STATE_SEND);
+		if (event == HIO_LTE_FSM_EVENT_SEND) {
+			transition_state(FSM_STATE_SEND);
+		} else {
+			transition_state(FSM_STATE_READY);
+		}
 		break;
 	case HIO_LTE_FSM_EVENT_ERROR:
 		transition_state(FSM_STATE_ERROR);
@@ -1035,8 +1062,8 @@ static int send_event_handler(enum hio_lte_fsm_event event)
 		__fallthrough;
 	case HIO_LTE_FSM_EVENT_SEND:
 		stop_timer();
-		LOG_INF("Send event on send state");
 		if (m_send_recv_param) {
+			LOG_INF("Send event on send state");
 			if (m_send_recv_param->recv_buf) {
 				transition_state(FSM_STATE_RECEIVE);
 			} else {
@@ -1195,6 +1222,7 @@ static int ncellmeas_event_handler(enum hio_lte_fsm_event event)
 		break;
 	case HIO_LTE_FSM_EVENT_NCELLMEAS:
 		atomic_clear_bit(&m_flag, FLAG_NCELLMEAS_REQ);
+		hio_lte_notify(HIO_LTE_EVENT_NCELLMEAS_DONE);
 		transition_state(FSM_STATE_READY);
 		break;
 	case HIO_LTE_FSM_EVENT_ERROR:

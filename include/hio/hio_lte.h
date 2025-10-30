@@ -289,8 +289,9 @@ int hio_lte_get_curr_attach_info(int *attempt, int *attach_timeout_sec, int *ret
  * @brief LTE event types.
  */
 enum hio_lte_event {
-	HIO_LTE_EVENT_CSCON_0 = 0, /**< Connection Status (Idle). */
-	HIO_LTE_EVENT_CSCON_1,     /**< Connection Status (Connected). */
+	HIO_LTE_EVENT_CSCON_0 = 0,    /**< Connection Status (Idle). */
+	HIO_LTE_EVENT_CSCON_1,        /**< Connection Status (Connected). */
+	HIO_LTE_EVENT_NCELLMEAS_DONE, /**< Neighbor Cell Measurement completed. */
 };
 
 /**
@@ -368,6 +369,18 @@ struct hio_lte_ncellmeas_param {
 };
 
 int hio_lte_get_ncellmeas_param(struct hio_lte_ncellmeas_param *param);
+
+/**
+ * @brief Schedule a new Neighbor Cell Measurement (NCELLMEAS) cycle.
+ *
+ * After the measurement completes, the cached values returned by
+ * @ref hio_lte_get_ncellmeas_param are updated.
+ *
+ * @retval 0         Scheduled successfully.
+ * @retval -EALREADY A measurement request is already pending.
+ * @retval -ENOTSUP  Test mode is enabled.
+ */
+int hio_lte_schedule_ncellmeas(void);
 
 /* -------- Utility functions -------- */
 

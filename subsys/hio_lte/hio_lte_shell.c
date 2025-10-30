@@ -192,6 +192,17 @@ static int cmd_state(const struct shell *shell, size_t argc, char **argv)
 		}
 	}
 
+	struct hio_lte_ncellmeas_param ncellmeas_param;
+	hio_lte_get_ncellmeas_param(&ncellmeas_param);
+	if (ncellmeas_param.valid) {
+		if (ncellmeas_param.status != 0) {
+			shell_print(shell, "ncellmeas-error: status %u", ncellmeas_param.status);
+		}
+		shell_print(shell, "ncellmeas-act: %s", hio_lte_str_act(ncellmeas_param.act));
+		shell_print(shell, "ncellmeas-num-cells: %u", ncellmeas_param.num_cells);
+		shell_print(shell, "ncellmeas-num-ncells: %u", ncellmeas_param.num_ncells);
+	}
+
 	shell_print(shell, "command succeeded");
 
 	return 0;
@@ -439,6 +450,27 @@ static int cmd_reconnect(const struct shell *shell, size_t argc, char **argv)
 	return 0;
 }
 
+static int cmd_ncellmeas_schedule(const struct shell *shell, size_t argc, char **argv)
+{
+	int ret;
+
+	if (g_hio_lte_config.test) {
+		shell_error(shell, "not supported in test mode");
+		return -ENOEXEC;
+	}
+
+	ret = hio_lte_schedule_ncellmeas();
+	if (ret && ret != -EALREADY) {
+		LOG_ERR("Call `hio_lte_schedule_ncellmeas` failed: %d", ret);
+		shell_error(shell, "command failed");
+		return ret;
+	}
+
+	shell_info(shell, "command succeeded");
+
+	return 0;
+}
+
 static int print_help(const struct shell *shell, size_t argc, char **argv)
 {
 	if (argc > 1) {
@@ -514,6 +546,10 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(reconnect, NULL,
 	              "Reconnect LTE modem.",
 	              cmd_reconnect, 1, 0),
+
+	SHELL_CMD_ARG(ncellmeas-schedule, NULL,
+	              "Schedule NCELLMEAS measurement.",
+	              cmd_ncellmeas_schedule, 1, 0),
 
 
 	SHELL_SUBCMD_SET_END
