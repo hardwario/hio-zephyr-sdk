@@ -103,13 +103,13 @@ static int item_print_help(const struct shell *shell, const struct hio_config_it
 
 int hio_config_shell_cmd(const struct shell *shell, size_t argc, char **argv)
 {
-	LOG_INF("hio_config_shell_cmd: argc: %d", argc);
+	LOG_DBG("hio_config_shell_cmd: argc: %d", argc);
 
 	for (int i = 0; i < argc; i++) {
-		LOG_INF("argv[%d]: %s", i, argv[i]);
+		LOG_DBG("argv[%d]: %s", i, argv[i]);
 	}
 
-	LOG_INF("cmd_buff: %s", shell->ctx->cmd_buff);
+	LOG_DBG("cmd_buff: %s", shell->ctx->cmd_buff);
 
 	const char *module_name = shell->ctx->cmd_buff;
 
