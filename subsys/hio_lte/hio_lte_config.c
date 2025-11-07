@@ -5,11 +5,11 @@
  */
 
 #include "hio_lte_config.h"
-#include "hio_lte_tok.h"
 
 /* HIO includes */
 #include <hio/hio_config.h>
 #include <hio/hio_lte.h>
+#include <hio/hio_tok.h>
 
 /* Zephyr includes */
 #include <zephyr/init.h>
@@ -71,11 +71,11 @@ static int mode_parse_cb(const struct hio_config_item *item, char *argv, const c
 			return -EINVAL;
 		}
 
-		if (hio_lte_tok_end(p)) {
+		if (hio_tok_end(p)) {
 			break;
 		}
 
-		if (!(p = hio_lte_tok_sep(p))) {
+		if (!(p = hio_tok_sep(p))) {
 			*err_msg = "Expected comma";
 			return -EINVAL;
 		}
@@ -123,7 +123,7 @@ int bands_parse_cb(const struct hio_config_item *item, char *argv, const char **
 	long band;
 
 	while (p) {
-		if (!(p = hio_lte_tok_num(p, &def, &band)) || !def || band < 0 || band > 255) {
+		if (!(p = hio_tok_num(p, &def, &band)) || !def || band < 0 || band > 255) {
 			*err_msg = "Invalid number format";
 			return -EINVAL;
 		}
@@ -133,11 +133,11 @@ int bands_parse_cb(const struct hio_config_item *item, char *argv, const char **
 			return -EINVAL;
 		}
 
-		if (hio_lte_tok_end(p)) {
+		if (hio_tok_end(p)) {
 			break;
 		}
 
-		if (!(p = hio_lte_tok_sep(p))) {
+		if (!(p = hio_tok_sep(p))) {
 			*err_msg = "Expected comma or end of string";
 			return -EINVAL;
 		}

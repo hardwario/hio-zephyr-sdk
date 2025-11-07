@@ -4,7 +4,6 @@
 #include "hio_lte_state.h"
 #include "hio_lte_str.h"
 #include "hio_lte_talk.h"
-#include "hio_lte_tok.h"
 
 /* HIO includes */
 #include <hio/hio_rtc.h>
@@ -201,7 +200,7 @@ static int fill_bands(char *bands)
 	bool def;
 	long band;
 	while (p) {
-		if (!(p = hio_lte_tok_num(p, &def, &band)) || !def || band < 0 || band > 255) {
+		if (!(p = hio_tok_num(p, &def, &band)) || !def || band < 0 || band > 255) {
 			LOG_ERR("Invalid number format");
 			return -EINVAL;
 		}
@@ -216,11 +215,11 @@ static int fill_bands(char *bands)
 
 		bands[n] = '1';
 
-		if (hio_lte_tok_end(p)) {
+		if (hio_tok_end(p)) {
 			break;
 		}
 
-		if (!(p = hio_lte_tok_sep(p))) {
+		if (!(p = hio_tok_sep(p))) {
 			LOG_ERR("Expected comma");
 			return -EINVAL;
 		}
