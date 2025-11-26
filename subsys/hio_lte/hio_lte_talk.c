@@ -761,6 +761,27 @@ int hio_lte_talk_crsm_214()
 	return 0;
 }
 
+/**
+ * @brief Set the power class for the LTE module.
+ *
+ * @param p1 Power class max TX level:
+ * 		3: 23 dBm,
+ * 		5: 20 dBm
+ * @return int 0 on success, negative error code on failure.
+ */
+int hio_lte_talk_at_powerclass(int p1)
+{
+	int ret;
+
+	ret = cmd("AT%%POWERCLASS=%d", p1);
+	if (ret < 0) {
+		LOG_ERR("Call `cmd` failed: %d", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
 int hio_lte_talk_at_cmd(const char *s)
 {
 	int ret;
