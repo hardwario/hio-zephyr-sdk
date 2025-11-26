@@ -398,6 +398,13 @@ int hio_lte_flow_prepare(void)
 		return ret;
 	}
 
+	ret = hio_lte_talk_at_powerclass(
+		g_hio_lte_config.powerclass == HIO_LTE_CONFIG_POWERCLASS_23_DBM ? 3 : 5);
+	if (ret) {
+		LOG_ERR("Call `hio_lte_talk_at_powerclass` failed: %d", ret);
+		return ret;
+	}
+
 	ret = hio_lte_talk_at_cscon(1);
 	if (ret) {
 		LOG_ERR("Call `hio_lte_talk_at_cscon` failed: %d", ret);

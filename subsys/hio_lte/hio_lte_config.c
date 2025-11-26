@@ -46,6 +46,11 @@ static const char *m_enum_attach_policy_items[] = {
 	[HIO_LTE_ATTACH_POLICY_PERIODIC_1D] = "periodic-1d",
 	[HIO_LTE_ATTACH_POLICY_PROGRESSIVE] = "progressive",
 };
+
+static const char *m_enum_powerclass_items[] = {
+	[HIO_LTE_CONFIG_POWERCLASS_23_DBM] = "23dBm",
+	[HIO_LTE_CONFIG_POWERCLASS_20_DBM] = "20dBm",
+};
 /* clang-format on */
 
 static int mode_parse_cb(const struct hio_config_item *item, char *argv, const char **err_msg)
@@ -212,6 +217,8 @@ static struct hio_config_item m_config_items[] = {
 	HIO_CONFIG_ITEM_ENUM("attach-policy", m_config_interim.attach_policy,
 			     m_enum_attach_policy_items, "attach policy",
 			     HIO_LTE_ATTACH_POLICY_PERIODIC_2H),
+	HIO_CONFIG_ITEM_ENUM("powerclass", m_config_interim.powerclass, m_enum_powerclass_items,
+			     "power class", HIO_LTE_CONFIG_POWERCLASS_20_DBM),
 	// HIO_CONFIG_ITEM_INT("port", m_config_interim.port, 1, 65536, "default UDP port", 5002),
 	HIO_CONFIG_ITEM_BOOL("modemtrace", m_config_interim.modemtrace, "enable modem trace",
 			     false),

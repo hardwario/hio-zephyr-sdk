@@ -19,6 +19,11 @@ enum hio_lte_config_auth {
 	HIO_LTE_CONFIG_AUTH_CHAP = 2,
 };
 
+enum hio_lte_config_powerclass {
+	HIO_LTE_CONFIG_POWERCLASS_23_DBM = 0,
+	HIO_LTE_CONFIG_POWERCLASS_20_DBM = 1,
+};
+
 struct hio_lte_config {
 	bool test;
 	bool nb_iot_mode;
@@ -31,6 +36,7 @@ struct hio_lte_config {
 	char username[32 + 1];
 	char password[32 + 1];
 	enum hio_lte_attach_policy attach_policy;
+	enum hio_lte_config_powerclass powerclass;
 
 	char addr[15 + 1];
 	bool modemtrace;

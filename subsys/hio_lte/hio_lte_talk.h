@@ -56,6 +56,7 @@ int hio_lte_talk_at_xmodemtrace(int lvl);
 int hio_lte_talk_at(void);
 int hio_lte_talk_crsm_176(char *buf, size_t size);
 int hio_lte_talk_crsm_214(void);
+int hio_lte_talk_at_powerclass(int p1);
 int hio_lte_talk_at_cmd(const char *s);
 int hio_lte_talk_at_cmd_with_resp(const char *s, char *buf, size_t size);
 int hio_lte_talk_at_cmd_with_resp_prefix(const char *s, char *buf, size_t size, const char *pfx);
