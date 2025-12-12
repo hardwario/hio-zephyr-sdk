@@ -418,4 +418,109 @@ ZTEST(parser, test_urc_ncellmeas_complex)
 	zassert_equal(param.ncells[3].time_diff, 184, "ncells[3].time_diff not equal");
 }
 
+ZTEST(parser, test_urc_ncellmeas_complex_b)
+{
+	// 0,"061ABD0C","23001","383E",65535,0,6200,36,36,14,26023,1,0,...
+	const char *input =
+		"0,\"061ABD0C\",\"23001\",\"383E\",65535,0,6200,36,36,14,26023,1,0,"
+		"\"06235F0B\",\"23001\",\"383E\",65535,0,6200,452,36,13,26023,0,0,"
+		"\"06239B0C\",\"23001\",\"383E\",65535,0,6200,155,33,6,26023,0,0,"
+		"\"061ABD01\",\"23002\",\"05EA\",65535,0,6300,493,36,11,26059,0,0,"
+		"\"06235F00\",\"23002\",\"05EA\",65535,0,6300,303,33,6,26059,0,0,"
+		"\"000F6ECB\",\"23003\",\"8D04\",65535,0,3544,125,42,28,26068,0,0,"
+		"\"000F6ECA\",\"23003\",\"8D04\",65535,0,3544,124,36,15,26068,0,0";
+
+	struct hio_lte_ncellmeas_param param;
+	int ret = hio_lte_parse_urc_ncellmeas(input, 5, &param);
+
+	zassert_ok(ret, "hio_lte_parse_ncellmeas failed");
+	zassert_equal(param.valid, true, "param.valid not true");
+	zassert_equal(param.num_cells, 7, "param.num_cells not equal");
+	zassert_equal(param.num_ncells, 0, "param.num_ncells not equal");
+
+	// Cell 0
+	zassert_equal(param.cells[0].eci, 0x061ABD0C, "cells[0].eci mismatch");
+	zassert_equal(param.cells[0].mcc, 230, "cells[0].mcc mismatch");
+	zassert_equal(param.cells[0].mnc, 1, "cells[0].mnc mismatch");
+	zassert_equal(param.cells[0].tac, 0x383E, "cells[0].tac mismatch");
+	zassert_equal(param.cells[0].adv, 65535, "cells[0].adv mismatch");
+	zassert_equal(param.cells[0].earfcn, 6200, "cells[0].earfcn mismatch");
+	zassert_equal(param.cells[0].pci, 36, "cells[0].pci mismatch");
+	zassert_equal(param.cells[0].rsrp, 36, "cells[0].rsrp mismatch");
+	zassert_equal(param.cells[0].rsrq, 14, "cells[0].rsrq mismatch");
+	zassert_equal(param.cells[0].neighbor_count, 0, "cells[0].neighbor_count mismatch");
+
+	// Cell 1
+	zassert_equal(param.cells[1].eci, 0x06235F0B, "cells[1].eci mismatch");
+	zassert_equal(param.cells[1].mcc, 230, "cells[1].mcc mismatch");
+	zassert_equal(param.cells[1].mnc, 1, "cells[1].mnc mismatch");
+	zassert_equal(param.cells[1].tac, 0x383E, "cells[1].tac mismatch");
+	zassert_equal(param.cells[1].adv, 65535, "cells[1].adv mismatch");
+	zassert_equal(param.cells[1].earfcn, 6200, "cells[1].earfcn mismatch");
+	zassert_equal(param.cells[1].pci, 452, "cells[1].pci mismatch");
+	zassert_equal(param.cells[1].rsrp, 36, "cells[1].rsrp mismatch");
+	zassert_equal(param.cells[1].rsrq, 13, "cells[1].rsrq mismatch");
+	zassert_equal(param.cells[1].neighbor_count, 0, "cells[1].neighbor_count mismatch");
+
+	// Cell 2
+	zassert_equal(param.cells[2].eci, 0x06239B0C, "cells[2].eci mismatch");
+	zassert_equal(param.cells[2].mcc, 230, "cells[2].mcc mismatch");
+	zassert_equal(param.cells[2].mnc, 1, "cells[2].mnc mismatch");
+	zassert_equal(param.cells[2].tac, 0x383E, "cells[2].tac mismatch");
+	zassert_equal(param.cells[2].adv, 65535, "cells[2].adv mismatch");
+	zassert_equal(param.cells[2].earfcn, 6200, "cells[2].earfcn mismatch");
+	zassert_equal(param.cells[2].pci, 155, "cells[2].pci mismatch");
+	zassert_equal(param.cells[2].rsrp, 33, "cells[2].rsrp mismatch");
+	zassert_equal(param.cells[2].rsrq, 6, "cells[2].rsrq mismatch");
+	zassert_equal(param.cells[2].neighbor_count, 0, "cells[2].neighbor_count mismatch");
+
+	// Cell 3
+	zassert_equal(param.cells[3].eci, 0x061ABD01, "cells[3].eci mismatch");
+	zassert_equal(param.cells[3].mcc, 230, "cells[3].mcc mismatch");
+	zassert_equal(param.cells[3].mnc, 2, "cells[3].mnc mismatch");
+	zassert_equal(param.cells[3].tac, 0x05EA, "cells[3].tac mismatch");
+	zassert_equal(param.cells[3].adv, 65535, "cells[3].adv mismatch");
+	zassert_equal(param.cells[3].earfcn, 6300, "cells[3].earfcn mismatch");
+	zassert_equal(param.cells[3].pci, 493, "cells[3].pci mismatch");
+	zassert_equal(param.cells[3].rsrp, 36, "cells[3].rsrp mismatch");
+	zassert_equal(param.cells[3].rsrq, 11, "cells[3].rsrq mismatch");
+	zassert_equal(param.cells[3].neighbor_count, 0, "cells[3].neighbor_count mismatch");
+
+	// Cell 4
+	zassert_equal(param.cells[4].eci, 0x06235F00, "cells[4].eci mismatch");
+	zassert_equal(param.cells[4].mcc, 230, "cells[4].mcc mismatch");
+	zassert_equal(param.cells[4].mnc, 2, "cells[4].mnc mismatch");
+	zassert_equal(param.cells[4].tac, 0x05EA, "cells[4].tac mismatch");
+	zassert_equal(param.cells[4].adv, 65535, "cells[4].adv mismatch");
+	zassert_equal(param.cells[4].earfcn, 6300, "cells[4].earfcn mismatch");
+	zassert_equal(param.cells[4].pci, 303, "cells[4].pci mismatch");
+	zassert_equal(param.cells[4].rsrp, 33, "cells[4].rsrp mismatch");
+	zassert_equal(param.cells[4].rsrq, 6, "cells[4].rsrq mismatch");
+	zassert_equal(param.cells[4].neighbor_count, 0, "cells[4].neighbor_count mismatch");
+
+	// Cell 5
+	zassert_equal(param.cells[5].eci, 0x000F6ECB, "cells[5].eci mismatch");
+	zassert_equal(param.cells[5].mcc, 230, "cells[5].mcc mismatch");
+	zassert_equal(param.cells[5].mnc, 3, "cells[5].mnc mismatch");
+	zassert_equal(param.cells[5].tac, 0x8D04, "cells[5].tac mismatch");
+	zassert_equal(param.cells[5].adv, 65535, "cells[5].adv mismatch");
+	zassert_equal(param.cells[5].earfcn, 3544, "cells[5].earfcn mismatch");
+	zassert_equal(param.cells[5].pci, 125, "cells[5].pci mismatch");
+	zassert_equal(param.cells[5].rsrp, 42, "cells[5].rsrp mismatch");
+	zassert_equal(param.cells[5].rsrq, 28, "cells[5].rsrq mismatch");
+	zassert_equal(param.cells[5].neighbor_count, 0, "cells[5].neighbor_count mismatch");
+
+	// Cell 6
+	zassert_equal(param.cells[6].eci, 0x000F6ECA, "cells[6].eci mismatch");
+	zassert_equal(param.cells[6].mcc, 230, "cells[6].mcc mismatch");
+	zassert_equal(param.cells[6].mnc, 3, "cells[6].mnc mismatch");
+	zassert_equal(param.cells[6].tac, 0x8D04, "cells[6].tac mismatch");
+	zassert_equal(param.cells[6].adv, 65535, "cells[6].adv mismatch");
+	zassert_equal(param.cells[6].earfcn, 3544, "cells[6].earfcn mismatch");
+	zassert_equal(param.cells[6].pci, 124, "cells[6].pci mismatch");
+	zassert_equal(param.cells[6].rsrp, 36, "cells[6].rsrp mismatch");
+	zassert_equal(param.cells[6].rsrq, 15, "cells[6].rsrq mismatch");
+	zassert_equal(param.cells[6].neighbor_count, 0, "cells[6].neighbor_count mismatch");
+}
+
 ZTEST_SUITE(parser, NULL, NULL, NULL, NULL, NULL);

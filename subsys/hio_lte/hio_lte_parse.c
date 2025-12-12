@@ -822,11 +822,12 @@ int hio_lte_parse_urc_ncellmeas(const char *line, uint8_t search_type,
 			}
 		}
 
-		if (param->num_cells == HIO_LTE_NCELLMEAS_CELL_MAX) {
-			return -EMSGSIZE;
+		if (hio_tok_end(p)) {
+			param->valid = true;
+			return 0;
 		}
 
-		if (hio_tok_end(p)) {
+		if (param->num_cells == HIO_LTE_NCELLMEAS_CELL_MAX) {
 			param->valid = true;
 			return 0;
 		}
