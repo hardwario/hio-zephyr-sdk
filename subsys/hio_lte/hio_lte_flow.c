@@ -133,14 +133,16 @@ static void process_urc(const char *line, void *user_data)
 		ret = hio_lte_parse_urc_ncellmeas(line + 12, 5, &ncellmeas_param);
 		if (ret) {
 			LOG_WRN("Call `hio_lte_parse_urc_ncellmeas` failed: %d", ret);
-			return;
 		}
 		if (ncellmeas_param.valid) {
 			LOG_INF("NCELLMEAS: %d cells, %d ncells", ncellmeas_param.num_cells,
 				ncellmeas_param.num_ncells);
-			m_event_delegate_cb(HIO_LTE_FSM_EVENT_NCELLMEAS);
-			hio_lte_state_set_ncellmeas_param(&ncellmeas_param);
+		} else {
+			LOG_WRN("NCELLMEAS data not valid");
+			return;
 		}
+		hio_lte_state_set_ncellmeas_param(&ncellmeas_param);
+		m_event_delegate_cb(HIO_LTE_FSM_EVENT_NCELLMEAS);
 	}
 }
 
