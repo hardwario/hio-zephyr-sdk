@@ -137,3 +137,13 @@ const char *hio_lte_str_fsm_event(enum hio_lte_fsm_event event)
 	}
 	return INVALID;
 }
+
+const char *hio_lte_str_ciphersuite(int ciphersuite)
+{
+	switch (ciphersuite) {
+	case 0xc0a8:
+		return "TLS_PSK_WITH_AES_128_CCM_8"; /**< TLS 1.2 */
+	default:
+		return INVALID;
+	}
+}

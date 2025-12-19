@@ -6,11 +6,13 @@
 
 #include "hio_cloud_packet.h"
 #include "hio_cloud_transfer.h"
+#include "hio_cloud_config.h"
 
 /* HIO includes */
 #include <hio/hio_buf.h>
 #include <hio/hio_cloud.h>
 #include <hio/hio_lte.h>
+#include <hio/hio_info.h>
 
 /* Zephyr includes */
 #include <zephyr/kernel.h>
@@ -26,17 +28,16 @@
 
 #define MODEM_SLEEP_DELAY K_SECONDS(10)
 
-#define MAX_DATA_SIZE (HIO_CLOUD_PACKET_MAX_SIZE - HIO_CLOUD_PACKET_MIN_SIZE)
-
 LOG_MODULE_REGISTER(cloud_transfer, CONFIG_HIO_CLOUD_LOG_LEVEL);
 
-HIO_BUF_DEFINE_STATIC(m_buf_0, HIO_CLOUD_PACKET_MAX_SIZE);
-HIO_BUF_DEFINE_STATIC(m_buf_1, HIO_CLOUD_PACKET_MAX_SIZE);
+HIO_BUF_DEFINE_STATIC(m_buf_0, HIO_LTE_UDP_MAX_MTU);
+HIO_BUF_DEFINE_STATIC(m_buf_1, HIO_LTE_UDP_MAX_MTU);
+
+static uint32_t m_serial_number;
+static uint8_t m_token[16];
 
 static uint16_t m_sequence;
 static uint16_t m_last_recv_sequence;
-
-static uint8_t m_token[16];
 static struct hio_cloud_packet m_pck_send;
 static struct hio_cloud_packet m_pck_recv;
 static struct hio_cloud_transfer_metrics m_metrics = {
@@ -45,6 +46,22 @@ static struct hio_cloud_transfer_metrics m_metrics = {
 };
 static K_MUTEX_DEFINE(m_lock_metrics);
 
+static size_t transfer_mode_max_data_size(void)
+{
+	size_t mtu;
+	if (hio_lte_get_socket_mtu(&mtu)) {
+		return 0;
+	}
+
+	switch (g_hio_cloud_config.protocol) {
+	case HIO_CLOUD_PROTOCOL_FLAP_HASH:
+		return (mtu - HIO_CLOUD_PACKET_SIGNED_MIN_SIZE - HIO_CLOUD_PACKET_HEADER_SIZE);
+	case HIO_CLOUD_PROTOCOL_FLAP_DTLS:
+		return (mtu - HIO_CLOUD_PACKET_HEADER_SIZE);
+	default:
+		return 0;
+	}
+}
 static int transfer(struct hio_cloud_packet *pck_send, struct hio_cloud_packet *pck_recv, bool rai)
 {
 	int ret;
@@ -57,10 +74,24 @@ static int transfer(struct hio_cloud_packet *pck_send, struct hio_cloud_packet *
 		hio_cloud_packet_flags_to_str(pck_send->flags), pck_send->data_len);
 
 	hio_buf_reset(send_buf);
-	ret = hio_cloud_packet_pack(pck_send, m_token, send_buf);
-	if (ret) {
-		LOG_ERR("Call `hio_cloud_packet_pack` failed: %d", ret);
-		return ret;
+
+	switch (g_hio_cloud_config.protocol) {
+	case HIO_CLOUD_PROTOCOL_FLAP_HASH:
+		ret = hio_cloud_packet_signed_pack(pck_send, m_serial_number, m_token, send_buf);
+		if (ret) {
+			LOG_ERR("Call `hio_cloud_packet_signed_pack` failed: %d", ret);
+			return ret;
+		}
+		break;
+	case HIO_CLOUD_PROTOCOL_FLAP_DTLS:
+		ret = hio_cloud_packet_pack(pck_send, send_buf);
+		if (ret) {
+			LOG_ERR("Call `hio_cloud_packet_pack` failed: %d", ret);
+			return ret;
+		}
+		break;
+	default:
+		return -EPROTONOSUPPORT;
 	}
 
 	len = 0;
@@ -107,10 +138,29 @@ static int transfer(struct hio_cloud_packet *pck_send, struct hio_cloud_packet *
 
 		len = 0;
 
-		ret = hio_cloud_packet_unpack(pck_recv, m_token, recv_buf);
-		if (ret) {
-			LOG_ERR("Call `hio_cloud_packet_unpack` failed: %d", ret);
-			return ret;
+		switch (g_hio_cloud_config.protocol) {
+		case HIO_CLOUD_PROTOCOL_FLAP_HASH:
+
+			uint32_t serial_number;
+			ret = hio_cloud_packet_signed_unpack(pck_recv, &serial_number, m_token,
+							     recv_buf);
+			if (ret) {
+				LOG_ERR("Call `hio_cloud_packet_signed_unpack` failed: %d", ret);
+				return ret;
+			}
+
+			if (serial_number != m_serial_number) {
+				LOG_ERR("Serial number mismatch");
+				return -EREMCHG;
+			}
+			break;
+		case HIO_CLOUD_PROTOCOL_FLAP_DTLS:
+			ret = hio_cloud_packet_unpack(pck_recv, recv_buf);
+			if (ret) {
+				LOG_ERR("Call `hio_cloud_packet_unpack` failed: %d", ret);
+				return ret;
+			}
+			break;
 		}
 
 		LOG_INF("Received packet Sequence: %u %s len: %u", pck_recv->sequence,
@@ -125,7 +175,7 @@ int hio_cloud_transfer_init(uint32_t serial_number, uint8_t token[16])
 	memset(&m_pck_send, 0, sizeof(m_pck_send));
 	memset(&m_pck_recv, 0, sizeof(m_pck_recv));
 
-	m_pck_send.serial_number = serial_number;
+	m_serial_number = serial_number;
 	memcpy(m_token, token, sizeof(m_token));
 
 	m_sequence = 0;
@@ -133,7 +183,24 @@ int hio_cloud_transfer_init(uint32_t serial_number, uint8_t token[16])
 
 	hio_cloud_transfer_reset_metrics();
 
-	hio_lte_enable();
+	struct hio_lte_socket_config socket_config = {
+		.addr = g_hio_cloud_config.addr,
+	};
+	switch (g_hio_cloud_config.protocol) {
+	case HIO_CLOUD_PROTOCOL_FLAP_HASH:
+		socket_config.dtls_enabled = false;
+		socket_config.port = g_hio_cloud_config.port_signed;
+		break;
+	case HIO_CLOUD_PROTOCOL_FLAP_DTLS:
+		socket_config.dtls_enabled = true;
+		socket_config.port = g_hio_cloud_config.port_dtls;
+		break;
+	default:
+		LOG_ERR("Unsupported cloud protocol");
+		return -EPROTONOSUPPORT;
+	}
+
+	hio_lte_enable(&socket_config);
 
 	return 0;
 }
@@ -185,6 +252,12 @@ int hio_cloud_transfer_uplink(struct hio_buf *buf, bool *has_downlink)
 		*has_downlink = false;
 	}
 
+	size_t max_data_size = transfer_mode_max_data_size();
+	if (!max_data_size) {
+		LOG_ERR("Invalid max data size");
+		return -EIO;
+	}
+
 restart:
 	part = 0;
 
@@ -193,8 +266,8 @@ restart:
 		len = hio_buf_get_used(buf);
 
 		/* calculate number of fragments */
-		fragments = len / MAX_DATA_SIZE;
-		if (len % MAX_DATA_SIZE) {
+		fragments = len / max_data_size;
+		if (len % max_data_size) {
 			fragments++;
 		}
 	}
@@ -203,7 +276,7 @@ restart:
 		LOG_INF("Processing part: %d (%d left)", part, fragments - part - 1);
 
 		m_pck_send.data = p;
-		m_pck_send.data_len = MIN(len, MAX_DATA_SIZE);
+		m_pck_send.data_len = MIN(len, max_data_size);
 		m_pck_send.sequence = m_sequence;
 		m_sequence = hio_cloud_packet_sequence_inc(m_sequence);
 
@@ -219,17 +292,8 @@ restart:
 		bool rai = m_pck_send.flags & HIO_CLOUD_PACKET_FLAG_LAST;
 		ret = transfer(&m_pck_send, &m_pck_recv, rai);
 		if (ret) {
-			LOG_ERR("Call `hio_cloud_packet_unpack` failed: %d", ret);
+			LOG_ERR("Call `transfer` failed: %d", ret);
 			res = ret;
-			goto exit;
-		}
-
-		LOG_INF("Received packet Sequence: %u %s len: %u", m_pck_recv.sequence,
-			hio_cloud_packet_flags_to_str(m_pck_recv.flags), m_pck_recv.data_len);
-
-		if (m_pck_recv.serial_number != m_pck_send.serial_number) {
-			LOG_ERR("Serial number mismatch");
-			res = -EREMCHG;
 			goto exit;
 		}
 
@@ -348,12 +412,6 @@ restart:
 			goto exit;
 		}
 
-		if (m_pck_recv.serial_number != m_pck_send.serial_number) {
-			LOG_ERR("Serial number mismatch");
-			res = -EREMCHG;
-			goto exit;
-		}
-
 		if (m_pck_recv.sequence == 0) {
 			LOG_WRN("Received sequence reset request");
 			m_sequence = 0;
@@ -431,4 +489,20 @@ exit:
 	k_mutex_unlock(&m_lock_metrics);
 
 	return res;
+}
+
+int hio_cloud_transfer_set_psk(const char *psk_hex)
+{
+	const char *serial_number_str;
+	int ret = hio_info_get_serial_number(&serial_number_str);
+	if (ret) {
+		LOG_ERR("Read serial number failed: %d", ret);
+		return ret;
+	}
+
+	char identity[4 + strlen(serial_number_str) + 1];
+
+	snprintf(identity, sizeof(identity), "hsn:%s", serial_number_str);
+
+	return hio_lte_set_psk(identity, psk_hex);
 }

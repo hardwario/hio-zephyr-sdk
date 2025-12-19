@@ -144,15 +144,23 @@ struct hio_lte_metrics {
 	uint32_t cscon_1_last_duration_ms; /**< Duration of last RRC Connected period. */
 };
 
+struct hio_lte_socket_config {
+	bool dtls_enabled; /**< True to enable DTLS. */
+	uint16_t port;     /**< Remote UDP port. */
+	char *addr;        /**< Remote address (IPv4 string). */
+};
+
 /**
  * @brief Enable LTE modem and data connection.
  *
  * Performs initialization, configuration, and network attach.
  *
+ * @param socket_config  Socket configuration.
  * @retval 0   Success.
+ * @retval -EINVAL Invalid parameter.
  * @retval -ENOTSUP Test mode is enabled.
  */
-int hio_lte_enable(void);
+int hio_lte_enable(const struct hio_lte_socket_config *socket_config);
 
 /**
  * @brief Disconnect and reconnect LTE link.
@@ -283,6 +291,36 @@ int hio_lte_is_attached(bool *attached);
 int hio_lte_get_curr_attach_info(int *attempt, int *attach_timeout_sec, int *retry_delay_sec,
 				 int *remaining_sec);
 
+/**
+ * @brief Get the DTLS ciphersuite used for the current connection.
+ *
+ * @param cipher Output: DTLS ciphersuite identifier.
+ * @retval 0      Success.
+ * @retval <0     Error.
+ */
+int hio_lte_get_dtls_ciphersuite_used(int *cipher);
+
+#define HIO_LTE_UDP_MAX_MTU       508
+#define HIO_LTE_DTLS_HEADERS_SIZE 11
+
+/**
+ * @brief Get socket MTU size.
+ * @param mtu  Output: MTU size in bytes.
+ * @retval 0    Success.
+ * @retval <0   Error.
+ */
+int hio_lte_get_socket_mtu(size_t *mtu);
+
+/**
+ * @brief Set Pre-Shared Key (PSK) identity and key for DTLS.
+ *
+ * @param identity  PSK identity string.
+ * @param psk_hex   PSK key as hexadecimal string.
+ * @retval 0        Success.
+ * @retval <0       Error.
+ */
+int hio_lte_set_psk(const char *identity, const char *psk_hex);
+
 /* -------- Callbacks for LTE events -------- */
 
 /**
@@ -392,6 +430,8 @@ const char *hio_lte_str_cereg_stat(enum hio_lte_cereg_param_stat stat);
 const char *hio_lte_str_cereg_stat_human(enum hio_lte_cereg_param_stat stat);
 /** Convert access technology (AcT) to text. */
 const char *hio_lte_str_act(enum hio_lte_cereg_param_act act);
+/** Convert DTLS ciphersuite identifier to text. */
+const char *hio_lte_str_ciphersuite(int ciphersuite);
 
 /** @} */ /* end of group hio_lte_modem */
 

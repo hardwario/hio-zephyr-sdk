@@ -26,6 +26,59 @@
 
 LOG_MODULE_REGISTER(hio_cloud_packet, CONFIG_HIO_CLOUD_LOG_LEVEL);
 
+int hio_cloud_packet_pack(struct hio_cloud_packet *pck, struct hio_buf *buf)
+{
+	if (!pck || !buf) {
+		LOG_ERR("Invalid argument");
+		return -EINVAL;
+	}
+
+	if (pck->sequence > 0x0FFF) {
+		LOG_ERR("Sequence number is too large: %u", pck->sequence);
+		return -EINVAL;
+	}
+
+	uint16_t header = ((uint16_t)pck->flags) << 12 | pck->sequence;
+	int ret = hio_buf_append_u16_be(buf, header);
+	if (ret) {
+		LOG_ERR("Call `hio_buf_append_u16_be` failed: %d", ret);
+		return ret;
+	}
+
+	if (pck->data_len > 0) {
+		ret = hio_buf_append_mem(buf, pck->data, pck->data_len);
+		if (ret) {
+			LOG_ERR("Call `hio_buf_append_mem` failed: %d", ret);
+			return ret;
+		}
+	}
+
+	return 0;
+}
+
+int hio_cloud_packet_unpack(struct hio_cloud_packet *pck, struct hio_buf *buf)
+{
+	if (!pck || !buf) {
+		LOG_ERR("Invalid argument");
+		return -EINVAL;
+	}
+
+	if (hio_buf_get_used(buf) < HIO_CLOUD_PACKET_HEADER_SIZE) {
+		LOG_ERR("Packet is too short");
+		return -EBADMSG;
+	}
+
+	uint16_t header = sys_get_be16(hio_buf_get_mem(buf));
+
+	pck->flags = (header >> 12) & 0x0F;
+	pck->sequence = header & 0x0FFF;
+	pck->data_len = hio_buf_get_used(buf) - HIO_CLOUD_PACKET_HEADER_SIZE;
+	pck->data =
+		pck->data_len > 0 ? (hio_buf_get_mem(buf) + HIO_CLOUD_PACKET_HEADER_SIZE) : NULL;
+
+	return 0;
+}
+
 static int calculate_packet_hash(uint8_t packet_hash[8], uint8_t claim_token[16],
 				 const uint8_t *buf, size_t len)
 {
@@ -74,14 +127,9 @@ static int calculate_packet_hash(uint8_t packet_hash[8], uint8_t claim_token[16]
 	return 0;
 }
 
-int hio_cloud_packet_pack(struct hio_cloud_packet *pck, uint8_t claim_token[16],
-			  struct hio_buf *buf)
+int hio_cloud_packet_signed_pack(struct hio_cloud_packet *pck, uint32_t serial_number,
+				 uint8_t claim_token[16], struct hio_buf *buf)
 {
-	if (pck->data_len > HIO_CLOUD_DATA_MAX_SIZE) {
-		LOG_ERR("Data is too large: %zu", pck->data_len);
-		return -EINVAL;
-	}
-
 	if (pck->sequence > 0x0FFF) {
 		LOG_ERR("Sequence number is too large: %u", pck->sequence);
 		return -EINVAL;
@@ -90,7 +138,7 @@ int hio_cloud_packet_pack(struct hio_cloud_packet *pck, uint8_t claim_token[16],
 	int ret;
 
 	hio_buf_reset(buf);
-	hio_buf_seek(buf, HIO_CLOUD_PACKET_MIN_SIZE);
+	hio_buf_seek(buf, HIO_CLOUD_PACKET_SIGNED_MIN_SIZE);
 
 	if (pck->data_len > 0) {
 		ret = hio_buf_append_mem(buf, pck->data, pck->data_len);
@@ -108,7 +156,7 @@ int hio_cloud_packet_pack(struct hio_cloud_packet *pck, uint8_t claim_token[16],
 		return ret;
 	}
 
-	ret = hio_buf_append_u32_be(buf, pck->serial_number);
+	ret = hio_buf_append_u32_be(buf, serial_number);
 	if (ret) {
 		LOG_ERR("Call `hio_buf_append_u32_be` failed: %d", ret);
 		return ret;
@@ -150,12 +198,12 @@ int hio_cloud_packet_pack(struct hio_cloud_packet *pck, uint8_t claim_token[16],
 	return 0;
 }
 
-int hio_cloud_packet_unpack(struct hio_cloud_packet *pck, uint8_t claim_token[16],
-			    struct hio_buf *buf)
+int hio_cloud_packet_signed_unpack(struct hio_cloud_packet *pck, uint32_t *serial_number,
+				   uint8_t claim_token[16], struct hio_buf *buf)
 {
 	int ret;
 
-	if (hio_buf_get_used(buf) < HIO_CLOUD_PACKET_MIN_SIZE) {
+	if (hio_buf_get_used(buf) < HIO_CLOUD_PACKET_SIGNED_MIN_SIZE) {
 		LOG_ERR("Packet is too short");
 		return -EBADMSG;
 	}
@@ -173,14 +221,16 @@ int hio_cloud_packet_unpack(struct hio_cloud_packet *pck, uint8_t claim_token[16
 		return -EBADMSG;
 	}
 
-	pck->serial_number = sys_get_be32(hio_buf_get_mem(buf) + 8);
+	if (serial_number) {
+		*serial_number = sys_get_be32(hio_buf_get_mem(buf) + 8);
+	}
 
 	uint16_t header = sys_get_be16(hio_buf_get_mem(buf) + 12);
 
 	pck->flags = (header >> 12) & BIT_MASK(4);
 	pck->sequence = header & BIT_MASK(12);
-	pck->data = hio_buf_get_mem(buf) + HIO_CLOUD_PACKET_MIN_SIZE;
-	pck->data_len = hio_buf_get_used(buf) - HIO_CLOUD_PACKET_MIN_SIZE;
+	pck->data = hio_buf_get_mem(buf) + HIO_CLOUD_PACKET_SIGNED_MIN_SIZE;
+	pck->data_len = hio_buf_get_used(buf) - HIO_CLOUD_PACKET_SIGNED_MIN_SIZE;
 
 	return 0;
 }

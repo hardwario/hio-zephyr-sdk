@@ -38,7 +38,7 @@ struct hio_lte_config {
 	enum hio_lte_attach_policy attach_policy;
 	enum hio_lte_config_powerclass powerclass;
 
-	char addr[15 + 1];
+	// char addr[15 + 1];
 	bool modemtrace;
 };
 

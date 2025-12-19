@@ -119,6 +119,9 @@ static int tx(bool async, const char *fmt, va_list args)
 
 	if (ret < 0) {
 		LOG_ERR("Call `nrf_modem_at_cmd` failed: %d", ret);
+		if (ret == -NRF_E2BIG) {
+			LOG_ERR("AT response buffer too small");
+		}
 		return ret;
 	} else if (ret > 0) {
 		return -EILSEQ;
@@ -826,6 +829,24 @@ int hio_lte_talk_ncellmeas(int p1, int p2)
 	int ret;
 
 	ret = cmd_async("AT%%NCELLMEAS=%d,%d", p1, p2);
+	if (ret < 0) {
+		LOG_ERR("Call `cmd` failed: %d", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
+int hio_lte_talk_at_cmng(int opcode, int sec_tag, int type, const char *content)
+{
+	int ret;
+
+	if (opcode == 0 && content) {
+		ret = cmd("AT%%CMNG=%d,%d,%d,\"%s\"", opcode, sec_tag, type, content);
+	} else {
+		ret = cmd("AT%%CMNG=%d,%d,%d", opcode, sec_tag, type);
+	}
+
 	if (ret < 0) {
 		LOG_ERR("Call `cmd` failed: %d", ret);
 		return ret;

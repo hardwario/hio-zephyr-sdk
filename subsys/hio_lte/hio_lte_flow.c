@@ -25,6 +25,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/byteorder.h>
+#include <zephyr/net/socket.h>
 #include <zephyr/net/socket_ncs.h>
 #include <zephyr/sys/timeutil.h>
 
@@ -45,11 +46,12 @@ LOG_MODULE_REGISTER(hio_lte_flow, CONFIG_HIO_LTE_LOG_LEVEL);
 #define SOCKET_SEND_TMO_SEC  30
 #define RESPONSE_TIMEOUT_SEC 5
 
+#define SEC_TAG 5005
+
 static K_EVENT_DEFINE(m_flow_events);
 
 static HIO_LTE_FSM_EVENT_delegate_cb m_event_delegate_cb;
 
-static K_MUTEX_DEFINE(m_addr_info_lock);
 static struct nrf_sockaddr_in m_addr_info;
 static struct cgdcont_param m_cgdcont;
 
@@ -322,9 +324,9 @@ int hio_lte_flow_prepare(void)
 	if (!strlen(g_hio_lte_config.bands)) {
 		ret = hio_lte_talk_at_xbandlock(0, NULL);
 	} else {
-		char bands[] =
-			"00000000000000000000000000000000000000000000000000000000000000000000"
-			"00000000000000000000";
+		char bands[] = "00000000000000000000000000000000000000000000000000000000000"
+			       "000000000"
+			       "00000000000000000000";
 
 		ret = fill_bands(bands);
 		if (ret) {
@@ -586,7 +588,108 @@ static int update_cgdcont(void)
 	return -EINVAL; /* No CGDCONT found */
 }
 
-int hio_lte_flow_open_socket(void)
+static int socket_setup(bool dtls_enabled, bool load_dtls_session)
+{
+	int ret;
+
+	struct nrf_timeval tv = {
+		.tv_sec = SOCKET_SEND_TMO_SEC,
+		.tv_usec = 0,
+	};
+
+	ret = nrf_setsockopt(m_socket_fd, NRF_SOL_SOCKET, NRF_SO_SNDTIMEO, (const void *)&tv,
+			     sizeof(struct nrf_timeval));
+	if (ret < 0) {
+		LOG_ERR("Call `nrf_setsockopt` failed: %d", -ret);
+		return ret;
+	}
+
+	tv.tv_sec = RESPONSE_TIMEOUT_SEC;
+	tv.tv_usec = 0;
+
+	ret = nrf_setsockopt(m_socket_fd, NRF_SOL_SOCKET, NRF_SO_RCVTIMEO, (const void *)&tv,
+			     sizeof(struct nrf_timeval));
+	if (ret < 0) {
+		LOG_ERR("Call `nrf_setsockopt` failed: %d", ret);
+		return ret;
+	}
+
+	/* Bind socket to the specified PDN context ID */
+	if (m_cgdcont.cid > 0) {
+		LOG_INF("Binding to PDN context ID: %d", m_cgdcont.cid);
+		ret = nrf_setsockopt(m_socket_fd, NRF_SOL_SOCKET, NRF_SO_BINDTOPDN, &m_cgdcont.cid,
+				     sizeof(m_cgdcont.cid));
+		if (ret < 0) {
+			LOG_ERR("Set BINDTOPDN failed: %d", -ret);
+			return ret;
+		}
+	}
+
+	if (dtls_enabled) {
+		/* Set up DTLS security tag */
+		nrf_sec_tag_t sec_tags[] = {SEC_TAG};
+		ret = nrf_setsockopt(m_socket_fd, NRF_SOL_SECURE, NRF_SO_SEC_TAG_LIST, sec_tags,
+				     sizeof(sec_tags));
+		if (ret) {
+			LOG_ERR("Set SEC_TAG_LIST failed: %d", -ret);
+			return ret;
+		}
+
+		/* Enable DTLS connection ID if configured */
+		int cid_option = NRF_SO_SEC_DTLS_CID_SUPPORTED;
+		ret = nrf_setsockopt(m_socket_fd, NRF_SOL_SECURE, NRF_SO_SEC_DTLS_CID, &cid_option,
+				     sizeof(cid_option));
+		if (ret) {
+			LOG_ERR("Set SEC_DTLS_CID failed: %d", -ret);
+			return ret;
+		}
+
+		/* Set DTLS handshake timeout */
+		int timeout = TLS_DTLS_HANDSHAKE_TIMEO_7S;
+		ret = nrf_setsockopt(m_socket_fd, NRF_SOL_SECURE, NRF_SO_SEC_DTLS_HANDSHAKE_TIMEO,
+				     &timeout, sizeof(timeout));
+		if (ret) {
+			LOG_ERR("Set SEC_DTLS_HANDSHAKE_TIMEO failed: %d", -ret);
+			return ret;
+		}
+
+		/* Set up peer verification */
+		int verify = NRF_SO_SEC_PEER_VERIFY_REQUIRED;
+		ret = nrf_setsockopt(m_socket_fd, NRF_SOL_SECURE, NRF_SO_SEC_PEER_VERIFY, &verify,
+				     sizeof(verify));
+
+		if (ret) {
+			LOG_ERR("Set SEC_PEER_VERIFY failed: %d", ret);
+			return ret;
+		}
+
+		/* Enable session caching */
+		int session_cache = NRF_SO_SEC_SESSION_CACHE_ENABLED;
+		ret = nrf_setsockopt(m_socket_fd, NRF_SOL_SECURE, NRF_SO_SEC_SESSION_CACHE,
+				     &session_cache, sizeof(session_cache));
+		if (ret) {
+			LOG_ERR("Set SEC_SESSION_CACHE failed: %d", ret);
+			return ret;
+		}
+
+		if (load_dtls_session) {
+			/* Load saved DTLS session */
+			int load_dtls = 1;
+			ret = nrf_setsockopt(m_socket_fd, NRF_SOL_SECURE, NRF_SO_SEC_DTLS_CONN_LOAD,
+					     &load_dtls, sizeof(load_dtls));
+			if (ret) {
+				int err = errno;
+				LOG_WRN("Set SEC_DTLS_CONN_LOAD failed: %d (errno %d)", ret, err);
+			} else {
+				LOG_INF("DTLS session restored");
+			}
+		}
+	}
+
+	return 0;
+}
+
+static int open_socket(const struct hio_lte_socket_config *socket_config, bool load_dtls_session)
 {
 	int ret;
 	char cops[32] = {0};
@@ -610,76 +713,49 @@ int hio_lte_flow_open_socket(void)
 		return ret;
 	}
 
-	LOG_INF("addr: %s, port: %d", g_hio_lte_config.addr, CONFIG_HIO_LTE_PORT);
+	int protocol = NRF_IPPROTO_UDP;
+	if (socket_config->dtls_enabled) {
+		protocol = NRF_SPROTO_DTLS1v2;
+	}
 
-	k_mutex_lock(&m_addr_info_lock, K_FOREVER);
 	m_addr_info.sin_family = NRF_AF_INET;
-	m_addr_info.sin_port = nrf_htons(CONFIG_HIO_LTE_PORT);
-	if (nrf_inet_pton(m_addr_info.sin_family, g_hio_lte_config.addr, &m_addr_info.sin_addr) <=
+	m_addr_info.sin_port = nrf_htons(socket_config->port);
+	if (nrf_inet_pton(m_addr_info.sin_family, socket_config->addr, &m_addr_info.sin_addr) <=
 	    0) {
-		LOG_ERR("Invalid IP address: %s", g_hio_lte_config.addr);
-		k_mutex_unlock(&m_addr_info_lock);
+		LOG_ERR("Invalid IP address: %s", socket_config->addr);
 		return -EINVAL;
 	}
-	k_mutex_unlock(&m_addr_info_lock);
 
 	if (m_socket_fd >= 0) {
+		// NRF_SO_SEC_SESSION_CACHE_PURGE
 		LOG_INF("Closing existing socket: %d", m_socket_fd);
 		nrf_close(m_socket_fd);
 		m_socket_fd = -1;
 	}
 
-	ret = nrf_socket(m_addr_info.sin_family, NRF_SOCK_DGRAM, NRF_IPPROTO_UDP);
+	ret = nrf_socket(m_addr_info.sin_family, NRF_SOCK_DGRAM, protocol);
 	if (ret == -1) {
-		ret = -errno;
 		LOG_ERR("Call `nrf_socket` failed: %d", ret);
+		ret = -errno;
 	}
 
 	m_socket_fd = ret;
 
-	struct nrf_timeval tv = {
-		.tv_sec = SOCKET_SEND_TMO_SEC,
-		.tv_usec = 0,
-	};
-
-	ret = nrf_setsockopt(m_socket_fd, NRF_SOL_SOCKET, NRF_SO_SNDTIMEO, (const void *)&tv,
-			     sizeof(struct nrf_timeval));
+	ret = socket_setup(socket_config->dtls_enabled, load_dtls_session);
 	if (ret < 0) {
-		LOG_ERR("Call `nrf_setsockopt` failed: %d", -ret);
 		nrf_close(m_socket_fd);
 		m_socket_fd = -1;
+		LOG_ERR("Creating socket failed: %d", ret);
 		return ret;
 	}
 
-	tv.tv_sec = RESPONSE_TIMEOUT_SEC;
-	tv.tv_usec = 0;
-
-	ret = nrf_setsockopt(m_socket_fd, NRF_SOL_SOCKET, NRF_SO_RCVTIMEO, (const void *)&tv,
-			     sizeof(struct nrf_timeval));
-	if (ret < 0) {
-		LOG_ERR("Call `nrf_setsockopt` failed: %d", -ret);
-		nrf_close(m_socket_fd);
-		m_socket_fd = -1;
-		return ret;
-	}
-
-	if (m_cgdcont.cid > 0) {
-		/* Bind socket to the specified PDN context ID */
-		nrf_setsockopt(m_socket_fd, NRF_SOL_SOCKET, NRF_SO_BINDTOPDN, &m_cgdcont.cid,
-			       sizeof(m_cgdcont.cid));
-	}
-
-	LOG_INF("Socket opened: %d", m_socket_fd);
-
-	// nrf_close(m_socket_fd);
-	// m_socket_fd = -1;
-	// return -114;
+	LOG_INF("Connection to addr: %s, port: %d", socket_config->addr, socket_config->port);
 
 	ret = nrf_connect(m_socket_fd, (struct nrf_sockaddr *)&m_addr_info, sizeof(m_addr_info));
 	if (ret == -1) {
 		ret = -errno;
 		if (ret == -NRF_EINPROGRESS) {
-			LOG_INF("Socket connecting: %d", m_socket_fd);
+			LOG_INF("Connecting: %d", m_socket_fd);
 			k_sleep(K_SECONDS(30));
 			return 0;
 		} else if (ret != -NRF_EINPROGRESS) {
@@ -690,8 +766,60 @@ int hio_lte_flow_open_socket(void)
 		}
 	}
 
-	LOG_INF("Socket connected");
+	int ciph = 0;
+	if (socket_config->dtls_enabled) {
+		/* Get Cipher */
+		socklen_t optlen = sizeof(ciph);
+		int ret = nrf_getsockopt(m_socket_fd, NRF_SOL_SECURE, NRF_SO_SEC_CIPHERSUITE_USED,
+					 &ciph, &optlen);
+		LOG_INF("DTLS Cipher suite used: 0x%04x %s (ret %d)", ciph,
+			hio_lte_str_ciphersuite(ciph), ret);
+
+		int cid_status;
+		optlen = sizeof(cid_status);
+		ret = nrf_getsockopt(m_socket_fd, NRF_SOL_SECURE, NRF_SO_SEC_DTLS_CID_STATUS,
+				     &cid_status, &optlen);
+		LOG_INF("DTLS CID status: %d (ret %d)", cid_status, ret);
+	}
+	hio_lte_state_set_dtls_ciphersuite_used(ciph);
+
+	LOG_INF("Connected");
 	return 0;
+}
+
+int hio_lte_flow_open_socket(const struct hio_lte_socket_config *socket_config,
+			     bool load_dtls_session)
+{
+	return open_socket(socket_config, load_dtls_session);
+}
+
+static int close_socket(bool save_dtls_session)
+{
+	if (m_socket_fd < 0) {
+		LOG_DBG("Socket is closed");
+		return 0;
+	}
+	if (save_dtls_session) {
+		int store_dtls = 1;
+		int ret = nrf_setsockopt(m_socket_fd, NRF_SOL_SECURE, NRF_SO_SEC_DTLS_CONN_SAVE,
+					 &store_dtls, sizeof(store_dtls));
+		if (ret) {
+			LOG_WRN("Set SEC_DTLS_CONN_SAVE failed: %d", ret);
+		} else {
+			LOG_INF("DTLS session saved");
+			k_sleep(K_MSEC(1000));
+		}
+	}
+	// if (m_socket_fd >= 0) {
+	// 	nrf_close(m_socket_fd); /* this send close notify for DTLS */
+	// 	m_socket_fd = -1;
+	// }
+	return 0;
+}
+
+int hio_lte_flow_close_socket(bool save_dtls_session)
+{
+	return close_socket(save_dtls_session);
 }
 
 int hio_lte_flow_check(void)
@@ -826,7 +954,7 @@ int hio_lte_flow_send(const struct hio_lte_send_recv_param *param)
 		}
 	}
 
-	LOG_INF("Sent %d bytes", total_sentb);
+	LOG_INF("Sent %d bytes, rai: %d", total_sentb, param->rai);
 
 	return total_sentb;
 }
@@ -966,6 +1094,37 @@ int hio_lte_flow_xmodemtrace(int lvl)
 	return 0;
 }
 
+int hio_lte_flow_set_psk(const char *identity, const char *psk_hex)
+{
+	int ret;
+
+	ret = hio_lte_talk_at_cfun(4);
+	if (ret) {
+		LOG_ERR("Call `hio_lte_talk_at_cfun: 4` failed: %d", ret);
+		return ret;
+	}
+
+	/* Delete */
+	hio_lte_talk_at_cmng(3, SEC_TAG, 3, NULL);
+	hio_lte_talk_at_cmng(3, SEC_TAG, 4, NULL);
+
+	/* Set pre-shared key */
+	ret = hio_lte_talk_at_cmng(0, SEC_TAG, 3, psk_hex);
+	if (ret) {
+		LOG_ERR("Call `hio_lte_talk_at_cmng` psk failed: %d", ret);
+		return ret;
+	}
+
+	/* Set identity */
+	ret = hio_lte_talk_at_cmng(0, SEC_TAG, 4, identity);
+	if (ret) {
+		LOG_ERR("Call `hio_lte_talk_at_cmng` identity failed: %d", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
 struct hio_lte_attach_timeout hio_lte_flow_attach_policy_periodic(int attempt, k_timeout_t pause)
 {
 	switch (attempt % 3) {
@@ -1002,7 +1161,8 @@ struct hio_lte_attach_timeout hio_lte_flow_attach_policy_progressive(int attempt
 	default: {
 		/* 9+: attach alternates 5m (odd), 45m (even) */
 		k_timeout_t attach = (attempt & 1) ? K_MINUTES(5) : K_MINUTES(45);
-		// delay is determined by the NEXT attempt: for next=odd => 168h, otherwise 5m
+		// delay is determined by the NEXT attempt: for next=odd => 168h, otherwise
+		// 5m
 		k_timeout_t delay = ((attempt + 1) & 1) ? K_HOURS(168) : K_MINUTES(5);
 		return (struct hio_lte_attach_timeout){attach, delay};
 	}

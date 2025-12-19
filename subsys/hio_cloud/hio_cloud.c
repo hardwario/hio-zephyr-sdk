@@ -8,6 +8,7 @@
 #include "hio_cloud_transfer.h"
 #include "hio_cloud_process.h"
 #include "hio_cloud_util.h"
+#include "hio_cloud_config.h"
 
 /* HIO includes */
 #include <hio/hio_buf.h>
@@ -555,7 +556,7 @@ static void init_work_handler(struct k_work *work)
 			continue;
 		}
 
-		LOG_INF("Running UPLOAD ENCODER");
+		LOG_INF("Running UPLOAD DECODER");
 
 		ret = upload_decoder();
 		if (ret) {
@@ -608,6 +609,8 @@ int hio_cloud_init(struct hio_cloud_options *options)
 	}
 
 	m_options = options;
+
+	hio_cloud_config_init();
 
 	uint32_t serial_number;
 
