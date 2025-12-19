@@ -641,7 +641,7 @@ int hio_cloud_msg_dlconfig_get_next_line(struct hio_cloud_msg_dlconfig *config,
 		return -ENODATA;
 	}
 
-	if (tstr.len > hio_buf_get_free(line) - 1) {
+	if (tstr.len + 1 > hio_buf_get_free(line)) {
 		LOG_ERR("To big line: %u byte(s)", tstr.len);
 		return -ENOMEM;
 	}

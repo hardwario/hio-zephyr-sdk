@@ -212,8 +212,8 @@ static struct hio_config_item m_config_items[] = {
 			     "authentication protocol", HIO_LTE_CONFIG_AUTH_NONE),
 	HIO_CONFIG_ITEM_STRING("username", m_config_interim.username, "username", ""),
 	HIO_CONFIG_ITEM_STRING("password", m_config_interim.password, "password", ""),
-	HIO_CONFIG_ITEM_STRING("addr", m_config_interim.addr, "default IP address",
-			       CONFIG_HIO_LTE_DEFAULT_ADDR),
+	// HIO_CONFIG_ITEM_STRING("addr", m_config_interim.addr, "default IP address",
+	// 		       CONFIG_HIO_LTE_DEFAULT_ADDR), /* deprecated */
 	HIO_CONFIG_ITEM_ENUM("attach-policy", m_config_interim.attach_policy,
 			     m_enum_attach_policy_items, "attach policy",
 			     HIO_LTE_ATTACH_POLICY_PERIODIC_2H),

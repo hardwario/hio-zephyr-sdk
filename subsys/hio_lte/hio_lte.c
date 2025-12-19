@@ -59,8 +59,10 @@ struct fsm_state_desc {
 	int (*event_handler)(enum hio_lte_fsm_event event);
 };
 
+static struct hio_lte_socket_config m_socket_config = {0};
 int m_attach_retry_count = 0;
 enum fsm_state m_state;
+K_MUTEX_DEFINE(m_state_lock);
 struct k_work_delayable m_timeout_work;
 struct k_work m_event_dispatch_work;
 uint8_t m_event_buf[8];
@@ -76,6 +78,7 @@ static K_EVENT_DEFINE(m_states_event);
 #define FLAG_GNSS_ENABLE   BIT(1)
 #define FLAG_CFUN4         BIT(2)
 #define FLAG_NCELLMEAS_REQ BIT(3)
+#define FLAG_DTLS_SAVED    BIT(4)
 atomic_t m_flag = ATOMIC_INIT(0);
 
 K_MUTEX_DEFINE(m_send_recv_lock);
@@ -140,6 +143,80 @@ int hio_lte_get_curr_attach_info(int *attempt, int *attach_timeout_sec, int *ret
 	return 0;
 }
 
+int hio_lte_get_socket_mtu(size_t *mtu)
+{
+	*mtu = HIO_LTE_UDP_MAX_MTU;
+
+	if (m_socket_config.dtls_enabled) {
+		int cipher;
+		hio_lte_get_dtls_ciphersuite_used(&cipher);
+		if (cipher == 0xc0a8) { /* MBEDTLS_TLS_PSK_WITH_AES_128_CCM_8 */
+			*mtu -= (HIO_LTE_DTLS_HEADERS_SIZE + 16);
+		} else {
+			*mtu -= (HIO_LTE_DTLS_HEADERS_SIZE + 60); /* default overhead */
+		}
+	}
+
+	return 0;
+}
+
+static int set_psk(const char *identity, const char *psk_hex)
+{
+	if (!identity || !psk_hex) {
+		return -EINVAL;
+	}
+
+	if (strlen(identity) == 0) {
+		LOG_ERR("PSK identity is empty");
+		return -EINVAL;
+	}
+
+	size_t psk_len = strlen(psk_hex);
+	if (psk_len == 0 || (psk_len % 2) != 0) {
+		LOG_ERR("PSK hex string is invalid");
+		return -EINVAL;
+	}
+
+	for (size_t i = 0; i < psk_len; i++) {
+		char c = psk_hex[i];
+		if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+			LOG_ERR("PSK hex string contains non-hex character");
+			return -EINVAL;
+		}
+	}
+
+	int ret;
+	if (m_state == FSM_STATE_DISABLED) {
+		ret = hio_lte_flow_start();
+		if (ret < 0) {
+			LOG_ERR("Problem starting LTE flow failed: %d", ret);
+			return ret;
+		}
+	}
+
+	ret = hio_lte_flow_set_psk(identity, psk_hex);
+	if (ret < 0) {
+		LOG_ERR("Problem setting PSK failed: %d", ret);
+	}
+
+	if (m_state == FSM_STATE_DISABLED) {
+		int err = hio_lte_flow_stop();
+		if (err < 0) {
+			LOG_ERR("Problem stopping LTE flow: %d", err);
+		}
+	}
+
+	return ret;
+}
+
+int hio_lte_set_psk(const char *identity, const char *psk_hex)
+{
+	k_mutex_lock(&m_state_lock, K_FOREVER);
+	int ret = set_psk(identity, psk_hex);
+	k_mutex_unlock(&m_state_lock);
+	return ret;
+}
+
 const char *fsm_state_str(enum fsm_state state)
 {
 	switch (state) {
@@ -171,11 +248,6 @@ const char *fsm_state_str(enum fsm_state state)
 		return "ncellmeas";
 	}
 	return "unknown";
-}
-
-const char *hio_lte_get_state(void)
-{
-	return fsm_state_str(m_state);
 }
 
 static void start_timer(k_timeout_t timeout)
@@ -274,7 +346,9 @@ static void entering_state(struct fsm_state_desc *next_desc)
 {
 	LOG_INF("%s", fsm_state_str(next_desc->state));
 
+	k_mutex_lock(&m_state_lock, K_FOREVER);
 	m_state = next_desc->state;
+	k_mutex_unlock(&m_state_lock);
 	if (next_desc->on_enter) {
 		int ret = next_desc->on_enter();
 		if (ret < 0) {
@@ -289,7 +363,11 @@ static void entering_state(struct fsm_state_desc *next_desc)
 
 static void transition_state(enum fsm_state next)
 {
-	if (next == m_state) {
+	k_mutex_lock(&m_state_lock, K_FOREVER);
+	enum fsm_state current = m_state;
+	k_mutex_unlock(&m_state_lock);
+
+	if (next == current) {
 		LOG_INF("no-op: already in %s", fsm_state_str(next));
 		return;
 	}
@@ -300,13 +378,13 @@ static void transition_state(enum fsm_state next)
 		return;
 	}
 
-	if (next == FSM_STATE_ERROR && m_state == FSM_STATE_ERROR) {
+	if (next == FSM_STATE_ERROR && current == FSM_STATE_ERROR) {
 		LOG_WRN("Already in error state, ignoring");
 		return;
 	}
 
-	if (m_state == FSM_STATE_ERROR) {
-		m_error_ctx.prev_state = m_state; /* Save previous state before error */
+	if (current == FSM_STATE_ERROR) {
+		m_error_ctx.prev_state = current; /* Save previous state before error */
 	}
 
 	if (leaving_state(next) == 0) {
@@ -333,8 +411,12 @@ static void event_dispatch_work_handler(struct k_work *item)
 	}
 }
 
-int hio_lte_enable(void)
+int hio_lte_enable(const struct hio_lte_socket_config *socket_config)
 {
+	if (!socket_config) {
+		return -EINVAL;
+	}
+	memcpy(&m_socket_config, socket_config, sizeof(struct hio_lte_socket_config));
 	if (g_hio_lte_config.test) {
 		LOG_WRN("LTE Test mode enabled");
 		return -ENOTSUP;
@@ -350,7 +432,11 @@ int hio_lte_reconnect(void)
 		return -ENOTSUP;
 	}
 
-	if (m_state == FSM_STATE_DISABLED) {
+	k_mutex_lock(&m_state_lock, K_FOREVER);
+	enum fsm_state current = m_state;
+	k_mutex_unlock(&m_state_lock);
+
+	if (current == FSM_STATE_DISABLED) {
 		LOG_WRN("Cannot reconnect, LTE is disabled");
 		return -ENODEV;
 	}
@@ -463,7 +549,9 @@ int hio_lte_get_fsm_state(const char **state)
 	if (!state) {
 		return -EINVAL;
 	}
+	k_mutex_lock(&m_state_lock, K_FOREVER);
 	*state = fsm_state_str(m_state);
+	k_mutex_unlock(&m_state_lock);
 	return 0;
 }
 
@@ -510,7 +598,11 @@ int hio_lte_schedule_ncellmeas(void)
 		return -EALREADY;
 	}
 
-	if (m_state == FSM_STATE_SLEEP) {
+	k_mutex_lock(&m_state_lock, K_FOREVER);
+	enum fsm_state current = m_state;
+	k_mutex_unlock(&m_state_lock);
+
+	if (current == FSM_STATE_SLEEP) {
 		delegate_event(HIO_LTE_FSM_EVENT_READY);
 	}
 
@@ -541,6 +633,7 @@ static int on_leave_disabled(void)
 
 	atomic_clear_bit(&m_flag, FLAG_CSCON);
 	atomic_clear_bit(&m_flag, FLAG_CFUN4);
+	atomic_clear_bit(&m_flag, FLAG_DTLS_SAVED);
 	// atomic_clear_bit(&m_flag, FLAG_NCELLMEAS_REQ);
 	atomic_set_bit(&m_flag, FLAG_NCELLMEAS_REQ);
 
@@ -863,7 +956,7 @@ static int on_leave_attach(void)
 
 static int on_enter_open_socket(void)
 {
-	if (strcmp(g_hio_lte_config.addr, "127.0.0.1") == 0) {
+	if (strcmp(m_socket_config.addr, "127.0.0.1") == 0) {
 		LOG_WRN("Using loopback address, skipping socket open");
 
 		int ret = hio_lte_flow_coneval();
@@ -874,7 +967,9 @@ static int on_enter_open_socket(void)
 		return 0;
 	}
 
-	int ret = hio_lte_flow_open_socket();
+	bool dtls_saved = atomic_test_and_clear_bit(&m_flag, FLAG_DTLS_SAVED);
+
+	int ret = hio_lte_flow_open_socket(&m_socket_config, dtls_saved);
 	if (ret < 0) {
 		LOG_ERR("Call `hio_lte_flow_open_socket` failed: %d", ret);
 		return ret;
@@ -952,16 +1047,19 @@ static int ready_event_handler(enum hio_lte_fsm_event event)
 		}
 		hio_lte_state_get_cereg_param(&m_cereg_param);
 		if (m_cereg_param.active_time == -1) {
+			int ret = hio_lte_flow_close_socket(m_socket_config.dtls_enabled);
+			if (!ret && m_socket_config.dtls_enabled) {
+				atomic_set_bit(&m_flag, FLAG_DTLS_SAVED);
+			}
 			LOG_WRN("PSM is not supported, disabling LTE modem to save power");
-			int ret = hio_lte_flow_cfun(4);
+			ret = hio_lte_flow_cfun(4);
 			if (ret < 0) {
 				LOG_ERR("Call `hio_lte_flow_cfun` failed: %d", ret);
 				return ret;
 			}
 			atomic_set_bit(&m_flag, FLAG_CFUN4);
-			return 0;
 		}
-
+		return 0;
 	default:
 		break;
 	}
@@ -1067,6 +1165,9 @@ static int send_event_handler(enum hio_lte_fsm_event event)
 			if (m_send_recv_param->recv_buf) {
 				transition_state(FSM_STATE_RECEIVE);
 			} else {
+				if (m_send_recv_param->rai) {
+					k_sleep(K_MSEC(500));
+				}
 				m_send_recv_param = NULL;
 				k_event_post(&m_states_event, SEND_RECV_BIT);
 				transition_state(FSM_STATE_CONEVAL);

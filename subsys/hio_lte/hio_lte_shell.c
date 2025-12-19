@@ -168,9 +168,12 @@ static int cmd_state(const struct shell *shell, size_t argc, char **argv)
 		shell_print(shell, "earfcn: %d", conn_param.earfcn);
 	}
 
-	shell_print(shell, "fsm-state: %s", hio_lte_get_state());
+	const char *fsm_state = "not available";
+	hio_lte_get_fsm_state(&fsm_state);
 
-	if (strcmp(hio_lte_get_state(), "attach") == 0) {
+	shell_print(shell, "fsm-state: %s", fsm_state);
+
+	if (strcmp(fsm_state, "attach") == 0) {
 		int attempt, attach_timeout_sec, remaining_sec;
 		if (!hio_lte_get_curr_attach_info(&attempt, &attach_timeout_sec, NULL,
 						  &remaining_sec)) {
@@ -180,7 +183,7 @@ static int cmd_state(const struct shell *shell, size_t argc, char **argv)
 			shell_print(shell, "attach-remaining: %d:%02d", remaining_sec / 60,
 				    remaining_sec % 60);
 		}
-	} else if (strcmp(hio_lte_get_state(), "retry_delay") == 0) {
+	} else if (strcmp(fsm_state, "retry_delay") == 0) {
 		int attempt, retry_delay_sec, remaining_sec;
 		if (!hio_lte_get_curr_attach_info(&attempt, NULL, &retry_delay_sec,
 						  &remaining_sec)) {

@@ -56,7 +56,9 @@ int hio_lte_flow_prepare(void);
 int hio_lte_flow_cfun(int cfun);
 int hio_lte_flow_sim_info(void);
 int hio_lte_flow_sim_fplmn(void);
-int hio_lte_flow_open_socket(void);
+int hio_lte_flow_open_socket(const struct hio_lte_socket_config *socket_config,
+			     bool load_dtls_session);
+int hio_lte_flow_close_socket(bool save_dtls_session);
 
 int hio_lte_flow_check(void);
 int hio_lte_flow_send(const struct hio_lte_send_recv_param *param);
@@ -65,6 +67,8 @@ int hio_lte_flow_recv(const struct hio_lte_send_recv_param *param);
 int hio_lte_flow_coneval(void);
 int hio_lte_flow_cmd(const char *cmd);
 int hio_lte_flow_xmodemtrace(int lvl);
+
+int hio_lte_flow_set_psk(const char *identity, const char *psk_hex);
 
 struct hio_lte_attach_timeout hio_lte_flow_attach_policy_periodic(int attempt, k_timeout_t pause);
 struct hio_lte_attach_timeout hio_lte_flow_attach_policy_progressive(int attempt);

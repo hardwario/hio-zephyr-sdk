@@ -44,6 +44,7 @@ int hio_cloud_transfer_reset_metrics(void);
 int hio_cloud_transfer_get_metrics(struct hio_cloud_transfer_metrics *metrics);
 int hio_cloud_transfer_uplink(struct hio_buf *buf, bool *has_downlink);
 int hio_cloud_transfer_downlink(struct hio_buf *buf, bool *has_downlink);
+int hio_cloud_transfer_set_psk(const char *psk_hex);
 
 #ifdef __cplusplus
 }

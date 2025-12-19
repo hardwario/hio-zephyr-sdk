@@ -32,14 +32,6 @@ config HIO_LTE_DEFAULT_APN
 	help
 		original value: "hardwario"
 
-config HIO_LTE_DEFAULT_ADDR
-	string "HIO_LTE_DEFAULT_ADDR"
-	default "192.168.192.4"
-
-config HIO_LTE_PORT
-	int "HIO_LTE_PORT"
-	default 5002
-
 config HIO_LTE_INIT_PRIORITY
 	int "HIO_LTE_INIT_PRIORITY"
 	default 99

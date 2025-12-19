@@ -46,7 +46,7 @@ int hio_cloud_process_dlconfig(struct hio_cloud_msg_dlconfig *config)
 {
 	LOG_INF("Received config: num lines: %d", config->lines);
 
-	HIO_BUF_DEFINE(line, 0);
+	HIO_BUF_DEFINE(line, CONFIG_SHELL_CMD_BUFF_SIZE);
 
 	int ret;
 

@@ -18,14 +18,14 @@
 extern "C" {
 #endif
 
-#define HIO_CLOUD_PACKET_HASH_SIZE          8
-#define HIO_CLOUD_PACKET_SERIAL_NUMBER_SIZE 4
-#define HIO_CLOUD_PACKET_HEADER_SIZE        2
-#define HIO_CLOUD_PACKET_MIN_SIZE                                                                  \
-	(HIO_CLOUD_PACKET_HASH_SIZE + HIO_CLOUD_PACKET_SERIAL_NUMBER_SIZE +                        \
-	 HIO_CLOUD_PACKET_HEADER_SIZE)
-#define HIO_CLOUD_PACKET_MAX_SIZE 508
-#define HIO_CLOUD_DATA_MAX_SIZE   (HIO_CLOUD_PACKET_MAX_SIZE - HIO_CLOUD_PACKET_MIN_SIZE)
+#define HIO_CLOUD_PACKET_HEADER_SIZE 2
+
+#define HIO_CLOUD_PACKET_SIGNED_HASH_SIZE 8
+#define HIO_CLOUD_PACKET_SIGNED_SN_SIZE   4
+#define HIO_CLOUD_PACKET_SIGNED_HEADER_SIZE                                                        \
+	(HIO_CLOUD_PACKET_SIGNED_HASH_SIZE + HIO_CLOUD_PACKET_SIGNED_SN_SIZE)
+#define HIO_CLOUD_PACKET_SIGNED_MIN_SIZE                                                           \
+	(HIO_CLOUD_PACKET_SIGNED_HEADER_SIZE + HIO_CLOUD_PACKET_HEADER_SIZE)
 
 #define HIO_CLOUD_PACKET_FLAG_FIRST 0x08
 #define HIO_CLOUD_PACKET_FLAG_LAST  0x04
@@ -33,18 +33,21 @@ extern "C" {
 #define HIO_CLOUD_PACKET_FLAG_POLL  0x01
 
 struct hio_cloud_packet {
-	uint32_t serial_number;
 	uint16_t sequence;
 	uint8_t flags;
 	uint8_t *data;
 	size_t data_len;
 };
 
-int hio_cloud_packet_pack(struct hio_cloud_packet *pck, uint8_t claim_token[16],
-			  struct hio_buf *buf);
+int hio_cloud_packet_pack(struct hio_cloud_packet *pck, struct hio_buf *buf);
 
-int hio_cloud_packet_unpack(struct hio_cloud_packet *pck, uint8_t claim_token[16],
-			    struct hio_buf *buf);
+int hio_cloud_packet_unpack(struct hio_cloud_packet *pck, struct hio_buf *buf);
+
+int hio_cloud_packet_signed_pack(struct hio_cloud_packet *pck, uint32_t serial_number,
+				 uint8_t claim_token[16], struct hio_buf *buf);
+
+int hio_cloud_packet_signed_unpack(struct hio_cloud_packet *pck, uint32_t *serial_number,
+				   uint8_t claim_token[16], struct hio_buf *buf);
 
 const char *hio_cloud_packet_flags_to_str(uint8_t flags);
 

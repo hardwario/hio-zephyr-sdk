@@ -8,6 +8,7 @@
 
 /* HIO includes */
 #include <hio/hio_cloud.h>
+#include <hio/hio_config.h>
 
 /* Zephyr includes */
 #include <zephyr/kernel.h>
@@ -128,6 +129,27 @@ static int cmd_poll(const struct shell *shell, size_t argc, char **argv)
 	return 0;
 }
 
+static int cmd_psk_set(const struct shell *shell, size_t argc, char **argv)
+{
+	int ret;
+
+	if (argc != 2) {
+		shell_error(shell, "missing psk_hex");
+		shell_help(shell);
+		return -EINVAL;
+	}
+
+	ret = hio_cloud_transfer_set_psk(argv[1]);
+	if (ret) {
+		shell_error(shell, "hio_cloud_transfer_set_psk failed: %d", ret);
+		return ret;
+	}
+
+	shell_print(shell, "command succeeded");
+
+	return 0;
+}
+
 static int print_help(const struct shell *shell, size_t argc, char **argv)
 {
 	if (argc > 1) {
@@ -141,20 +163,45 @@ static int print_help(const struct shell *shell, size_t argc, char **argv)
 	return 0;
 }
 
-SHELL_STATIC_SUBCMD_SET_CREATE(sub_cloud_firmware,
+SHELL_STATIC_SUBCMD_SET_CREATE(
 
-			       SHELL_CMD_ARG(download, NULL,
-					     "Download firmware. (format: <fw-id>).",
-					     cmd_firmware_download, 2, 0),
+	sub_cloud_firmware,
 
-			       SHELL_SUBCMD_SET_END);
+	SHELL_CMD_ARG(download, NULL, "Download firmware. (format: <fw-id>).",
+		      cmd_firmware_download, 2, 0),
+
+	SHELL_SUBCMD_SET_END
+
+);
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
 
-	sub_cloud, SHELL_CMD_ARG(state, NULL, "Get CLOUD state.", cmd_state, 1, 0),
+	psk,
+
+	SHELL_CMD_ARG(set, NULL, "Set DTLS PSK. (format: <psk_hex>).", cmd_psk_set, 2, 0),
+
+	SHELL_SUBCMD_SET_END
+
+);
+
+SHELL_STATIC_SUBCMD_SET_CREATE(
+
+	sub_cloud,
+
+	HIO_CONFIG_SHELL_CMD_ARG,
+
+	SHELL_CMD_ARG(state, NULL, "Get CLOUD state.", cmd_state, 1, 0),
+
 	SHELL_CMD_ARG(metrics, NULL, "Get CLOUD metrics.", cmd_metrics, 1, 0),
+
 	SHELL_CMD_ARG(poll, NULL, "Poll CLOUD.", cmd_poll, 1, 0),
+
+	SHELL_CMD_ARG(psk, &psk, "DTLS PSK commands.", print_help, 1, 0),
+
 	SHELL_CMD_ARG(firmware, &sub_cloud_firmware, "Firmware commands.", print_help, 1, 0),
-	SHELL_SUBCMD_SET_END);
+
+	SHELL_SUBCMD_SET_END
+
+);
 
 SHELL_CMD_REGISTER(cloud, &sub_cloud, "CLOUD commands.", print_help);
