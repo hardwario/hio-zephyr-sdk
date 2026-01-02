@@ -30,18 +30,14 @@ DEFAULT_CONSOLE_FILE = os.path.expanduser(f"~/.serial_console_console")
 DEFAULT_MODEM_TRACE_FILE = os.path.expanduser(f"~/.serial_console.mtrace")
 
 
-class SerialConnector(Connector):
+class BaseConsoleConnector(Connector):
+    """Base class for console connectors with shared logic."""
 
-    def __init__(self, port: str, baudrate: int = 115200, timeout: float = 0.2) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self.port = port
-        self.baudrate = baudrate
-        self.timeout = timeout
-        self.ser = None
         self._thread_read = None
         self._thread_line = None
         self.is_running = False
-        self._cache = ''
         self.lines = queue.Queue()
         self.modem_trace_fd = None
 
@@ -53,20 +49,16 @@ class SerialConnector(Connector):
         logger.info(f"Modem trace file set to: {modem_trace_file}")
         self.modem_trace_fd = open(modem_trace_file, 'wb')
 
-    def open(self):
-        logger.info(f"Opening serial port {self.port} at {self.baudrate} baud")
-        self.ser = serial.Serial(self.port, self.baudrate, timeout=self.timeout)
+    def _start_threads(self):
+        """Start the read and line processing threads."""
         self.is_running = True
         self._thread_read = threading.Thread(target=self._read_task, daemon=True)
         self._thread_read.start()
         self._thread_line = threading.Thread(target=self._line_task, daemon=True)
         self._thread_line.start()
 
-        self._emit(Event(EventType.OPEN, ''))
-        logger.info("Serial connection opened")
-
     def close(self):
-        logger.info("Closing serial port")
+        logger.info("Closing connection")
         if not self.is_running:
             return
         self.is_running = False
@@ -74,12 +66,64 @@ class SerialConnector(Connector):
             self._thread_read.join()
         if self._thread_line:
             self._thread_line.join()
-        if self.ser and self.ser.is_open:
-            self.ser.close()
+        self._close_resources()
         if self.modem_trace_fd:
             self.modem_trace_fd.close()
         self._emit(Event(EventType.CLOSE, ''))
-        logger.info("Serial connection closed")
+        logger.info("Connection closed")
+
+    def _close_resources(self):
+        """Override to close specific resources (serial port, file, etc.)."""
+        pass
+
+    def _read_task(self):
+        """Override to implement specific read logic."""
+        raise NotImplementedError
+
+    def _line_task(self):
+        while self.is_running:
+            try:
+                line = self.lines.get(timeout=1)
+
+                if line.startswith("@MT: "):
+                    # Format: @MT: <remaining_bytes>,"<base64_data>"
+                    if self.modem_trace_fd:
+                        index = line.find(',')
+                        b64text = line[index + 2:-1]  # skip ',"' prefix and '"' suffix
+                        if b64text:
+                            data = base64.b64decode(b64text)
+                            self.modem_trace_fd.write(data)
+                elif line.startswith("@LOG: "):
+                    # Format: @LOG: "<message>"
+                    self._emit(Event(EventType.LOG, line[7:-1].encode('utf-8').decode('unicode_escape')))
+                else:
+                    self._emit(Event(EventType.OUT, line.encode('utf-8').decode('unicode_escape')))
+            except queue.Empty:
+                continue
+            except Exception as e:
+                logger.error(f"Error processing line: {e}")
+
+
+class SerialConnector(BaseConsoleConnector):
+
+    def __init__(self, port: str, baudrate: int = 115200, timeout: float = 0.2) -> None:
+        super().__init__()
+        self.port = port
+        self.baudrate = baudrate
+        self.timeout = timeout
+        self.ser = None
+        self._cache = ''
+
+    def open(self):
+        logger.info(f"Opening serial port {self.port} at {self.baudrate} baud")
+        self.ser = serial.Serial(self.port, self.baudrate, timeout=self.timeout)
+        self._start_threads()
+        self._emit(Event(EventType.OPEN, ''))
+        logger.info("Serial connection opened")
+
+    def _close_resources(self):
+        if self.ser and self.ser.is_open:
+            self.ser.close()
 
     def handle(self, event: Event):
         logger.info(f'handle: {event.type} {event.data}')
@@ -115,28 +159,51 @@ class SerialConnector(Connector):
             except Exception as e:
                 logger.warning(f"Serial read error: {e}")
 
-    def _line_task(self):
-        while self.is_running:
-            try:
-                line = self.lines.get(timeout=1)
 
-                if line.startswith("@MT: "):
-                    # Format: @MT: <remaining_bytes>,"<base64_data>"
-                    if self.modem_trace_fd:
-                        index = line.find(',')
-                        b64text = line[index + 2:-1]  # skip ',"' prefix and '"' suffix
-                        if b64text:
-                            data = base64.b64decode(b64text)
-                            self.modem_trace_fd.write(data)
-                elif line.startswith("@LOG: "):
-                    # Format: @LOG: "<message>"
-                    self._emit(Event(EventType.LOG, line[7:-1].encode('utf-8').decode('unicode_escape')))
-                else:
-                    self._emit(Event(EventType.OUT, line.encode('utf-8').decode('unicode_escape')))
-            except queue.Empty:
-                continue
-            except Exception as e:
-                logger.error(f"Error processing modem trace: {e}")
+class FileConnector(BaseConsoleConnector):
+
+    def __init__(self, filename: str) -> None:
+        super().__init__()
+        self.filename = filename
+
+    def open(self):
+        logger.info(f"Opening file {self.filename}")
+        if not os.path.exists(self.filename):
+            logger.error(f"File {self.filename} does not exist")
+            return
+        self._start_threads()
+        self._emit(Event(EventType.OPEN, ''))
+
+    def handle(self, event: Event):
+        logger.info(f'handle: {event.type} {event.data}')
+        self._emit(event)
+
+    def _read_task(self):
+        linetmp = ''
+        with open(self.filename, 'r', encoding='utf-8') as file:
+            while self.is_running:
+                try:
+                    line = file.readline()
+                    if not line:
+                        time.sleep(0.1)
+                        continue
+                    line = line.rstrip('\r\n')
+                    if linetmp:
+                        line = linetmp + line
+                        linetmp = ''
+
+                    if len(line) > 10 and line[-9] == '\t':
+                        line = line[:-9]  # remove CRC
+
+                    if line.startswith("@MT: ") and not line.endswith('"'):
+                        linetmp = line
+                        continue
+
+                    self.lines.put(line)
+
+                except Exception as e:
+                    logger.warning(f"File read error: {e}")
+                    break
 
 
 def input_task(connector: Connector, arg: str):
@@ -190,7 +257,7 @@ class SerialConsole(WestCommand):
                                          help=self.help,
                                          description=self.description)
         parser.add_argument('--port', type=str, default='/dev/ttyUSB0',
-                            help='Serial port to connect to')
+                            help='Serial port to connect to, or file:PATH to read from a file')
         parser.add_argument('--baudrate', type=int, default=1000000,  # 115200,
                             help='Baud rate for the serial connection')
         parser.add_argument('--history-file', type=str, default=DEFAULT_HISTORY_FILE,
@@ -206,15 +273,23 @@ class SerialConsole(WestCommand):
     def do_run(self, args, unknown_args):
         logger.remove()
 
-        connector = SerialConnector(port=args.port, baudrate=args.baudrate)
-        connector.set_modem_trace_file(args.modem_trace_file)
+        port = args.port
 
-        if args.input:
-            input_task(connector, args.input)
+        if port.startswith('file:'):
+            port = os.path.expanduser(port[5:])  # remove 'file:' prefix and expand ~
+            connector = FileConnector(filename=port)
+            connector.set_modem_trace_file(args.modem_trace_file)
+            source_text = f'File: {port}'
+        else:
+            connector = SerialConnector(port=port, baudrate=args.baudrate)
+            connector.set_modem_trace_file(args.modem_trace_file)
+            source_text = f'Device: {port}'
+
+            if args.input:
+                input_task(connector, args.input)
 
         if args.console_file:
-            text = f'Device: {args.port}'
-            connector = FileLogConnector(connector, args.console_file, text=text)
+            connector = FileLogConnector(connector, args.console_file, text=source_text)
 
         console = Console(connector=connector, history_file=args.history_file)
         console.run()
