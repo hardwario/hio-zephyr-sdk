@@ -1,18 +1,29 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
 import serial
 import threading
 import time
 import os
 import base64
 import queue
-
-from west import log
-from west.commands import WestCommand
-
 from loguru import logger
 from rttt.console import Console
 from rttt.connectors import FileLogConnector
 from rttt.connectors.base import Connector
 from rttt.event import Event, EventType
+
+try:
+    from west.commands import WestCommand
+except ImportError:
+    if __name__ == '__main__':
+        class WestCommand:
+            def __init__(self, name, help, description):
+                self.name = name
+                self.help = help
+                self.description = description
+    else:
+        raise
 
 DEFAULT_HISTORY_FILE = os.path.expanduser(f"~/.serial_console_history")
 DEFAULT_CONSOLE_FILE = os.path.expanduser(f"~/.serial_console_console")
@@ -73,7 +84,7 @@ class SerialConnector(Connector):
     def handle(self, event: Event):
         logger.info(f'handle: {event.type} {event.data}')
         if event.type == EventType.IN:
-            data = f'{event.data}\n'.encode('utf-8')
+            data = f'\x1b{event.data}\n'.encode('utf-8')
             self.ser.write(data)
         self._emit(event)
 
@@ -97,7 +108,7 @@ class SerialConnector(Connector):
                             text = text[newline_index + 1:]
 
                             if len(line) > 10 and line[-9] == '\t':
-                                line = line[:-9] # remove CRC
+                                line = line[:-9]  # remove CRC
 
                             self.lines.put(line)
 
@@ -110,16 +121,18 @@ class SerialConnector(Connector):
                 line = self.lines.get(timeout=1)
 
                 if line.startswith("@MT: "):
+                    # Format: @MT: <remaining_bytes>,"<base64_data>"
                     if self.modem_trace_fd:
                         index = line.find(',')
-                        b64text = line[index + 2:-1]
+                        b64text = line[index + 2:-1]  # skip ',"' prefix and '"' suffix
                         if b64text:
                             data = base64.b64decode(b64text)
                             self.modem_trace_fd.write(data)
                 elif line.startswith("@LOG: "):
+                    # Format: @LOG: "<message>"
                     self._emit(Event(EventType.LOG, line[7:-1].encode('utf-8').decode('unicode_escape')))
                 else:
-                    self._emit(Event(EventType.OUT, line))
+                    self._emit(Event(EventType.OUT, line.encode('utf-8').decode('unicode_escape')))
             except queue.Empty:
                 continue
             except Exception as e:
@@ -178,7 +191,7 @@ class SerialConsole(WestCommand):
                                          description=self.description)
         parser.add_argument('--port', type=str, default='/dev/ttyUSB0',
                             help='Serial port to connect to')
-        parser.add_argument('--baudrate', type=int, default=1000000,# 115200,
+        parser.add_argument('--baudrate', type=int, default=1000000,  # 115200,
                             help='Baud rate for the serial connection')
         parser.add_argument('--history-file', type=str, default=DEFAULT_HISTORY_FILE,
                             help='File to store command history')
@@ -205,3 +218,24 @@ class SerialConsole(WestCommand):
 
         console = Console(connector=connector, history_file=args.history_file)
         console.run()
+
+
+def main():
+    """Standalone entry point for running without west."""
+    import argparse
+
+    cmd = SerialConsole()
+
+    # Create a mock parser_adder that returns ArgumentParser directly
+    class ParserAdder:
+        def add_parser(self, name, help, description):
+            return argparse.ArgumentParser(prog=name, description=description)
+
+    parser = cmd.do_add_parser(ParserAdder())
+    args = parser.parse_args()
+
+    cmd.do_run(args, [])
+
+
+if __name__ == '__main__':
+    main()
