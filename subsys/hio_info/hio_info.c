@@ -8,6 +8,8 @@
 #include <hio/hio_info.h>
 
 /* Nordic includes */
+#include <ncs_version.h>
+
 #if defined(CONFIG_SOC_NRF52X)
 #include <nrf52.h>
 #elif defined(CONFIG_SOC_NRF9151_LACA)
@@ -15,7 +17,9 @@
 #include <tfm_ns_interface.h>
 #include <tfm_ioctl_api.h>
 #elif defined(CONFIG_SOC_SERIES_NRF54LX)
+#if NCS_VERSION_NUMBER < 0x30201
 #include <nrf54l15.h>
+#endif
 #else
 #warning "Unsupported SoC series"
 #endif
