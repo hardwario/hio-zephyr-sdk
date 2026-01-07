@@ -99,8 +99,8 @@ static int mode_parse_cb(const struct hio_config_item *item, char *argv, const c
 
 static bool is_supported_band(uint8_t band)
 {
-	static const uint8_t support_bands[] = {1,  2,  3,  4,  5,  8,  12, 13,
-						17, 18, 19, 20, 25, 26, 28, 66};
+	static const uint8_t support_bands[] = {1,  2,  3,  4,  5,  8,  12, 13, 17, 18,
+						19, 20, 25, 26, 28, 65, 66, 85, 106};
 	for (size_t i = 0; i < ARRAY_SIZE(support_bands); i++) {
 		if (band == support_bands[i]) {
 			return true;
@@ -197,9 +197,9 @@ static struct hio_config_item m_config_items[] = {
 		"bands", m_config_interim.bands,
 		"supported bands (\"\" means no bands lock or listed with comma separator): \n"
 		"                     - LTE-M:  "
-		"1,2,3,4,5,8,12,13,18,19,20,25,26,28,66\n"
+		"1,2,3,4,5,8,12,13,18,19,20,25,26,28,66,85,106\n"
 		"                     - NB-IoT: "
-		"1,2,3,4,5,8,12,13,17,19,20,25,26,28,66",
+		"1,2,3,4,5,8,12,13,17,19,20,25,26,28,65,66,85,106",
 		CONFIG_HIO_LTE_DEFAULT_BANDS, bands_parse_cb),
 
 	HIO_CONFIG_ITEM_STRING_PARSE_CB(
