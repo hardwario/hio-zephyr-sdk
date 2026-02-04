@@ -11,7 +11,11 @@
 #include <zephyr/shell/shell.h>
 #include <zephyr/sys/timeutil.h>
 
+#if defined(CONFIG_SOC_SERIES_NRF54LX)
+#include <nrfx_grtc.h>
+#else
 #include <nrfx_rtc.h>
+#endif
 
 /* Standard includes */
 #include <ctype.h>
@@ -24,7 +28,17 @@
 
 LOG_MODULE_REGISTER(hio_rtc, CONFIG_HIO_RTC_LOG_LEVEL);
 
+#if defined(CONFIG_SOC_SERIES_NRF54LX)
+/* NRF54 uses GRTC peripheral */
+#define RTC_IRQn        GRTC_0_IRQn
+#define RTC_IRQ_HANDLER nrfx_grtc_irq_handler
+static uint8_t m_grtc_channel;
+#else
+/* NRF52 uses RTC peripheral */
+#define RTC_IRQn        RTC0_IRQn
+#define RTC_IRQ_HANDLER nrfx_rtc_0_irq_handler
 static const nrfx_rtc_t m_rtc = NRFX_RTC_INSTANCE(0);
+#endif
 
 static struct onoff_client m_lfclk_cli;
 
@@ -69,7 +83,7 @@ static int get_day_of_week(int year, int month, int day)
 
 int hio_rtc_get_tm(struct hio_rtc_tm *tm)
 {
-	irq_disable(RTC0_IRQn);
+	irq_disable(RTC_IRQn);
 
 	tm->year = m_year;
 	tm->month = m_month;
@@ -79,7 +93,7 @@ int hio_rtc_get_tm(struct hio_rtc_tm *tm)
 	tm->minutes = m_minutes;
 	tm->seconds = m_seconds;
 
-	irq_enable(RTC0_IRQn);
+	irq_enable(RTC_IRQn);
 
 	return 0;
 }
@@ -110,7 +124,7 @@ int hio_rtc_set_tm(const struct hio_rtc_tm *tm)
 		return -EINVAL;
 	}
 
-	irq_disable(RTC0_IRQn);
+	irq_disable(RTC_IRQn);
 
 	m_year = tm->year;
 	m_month = tm->month;
@@ -120,7 +134,7 @@ int hio_rtc_set_tm(const struct hio_rtc_tm *tm)
 	m_minutes = tm->minutes;
 	m_seconds = tm->seconds;
 
-	irq_enable(RTC0_IRQn);
+	irq_enable(RTC_IRQn);
 
 	return 0;
 }
@@ -129,7 +143,7 @@ int hio_rtc_get_ts(int64_t *ts)
 {
 	struct tm tm = {0};
 
-	irq_disable(RTC0_IRQn);
+	irq_disable(RTC_IRQn);
 
 	tm.tm_year = m_year - 1900;
 	tm.tm_mon = m_month - 1;
@@ -139,7 +153,7 @@ int hio_rtc_get_ts(int64_t *ts)
 	tm.tm_sec = m_seconds;
 	tm.tm_isdst = -1;
 
-	irq_enable(RTC0_IRQn);
+	irq_enable(RTC_IRQn);
 
 	*ts = timeutil_timegm64(&tm);
 
@@ -193,6 +207,26 @@ int hio_rtc_get_utc_string(char *out_str, size_t out_str_size)
 	return 0;
 }
 
+#if defined(CONFIG_SOC_SERIES_NRF54LX)
+static void rtc_handler(int32_t channel, uint64_t cc_value, void *p_context)
+{
+	ARG_UNUSED(channel);
+	ARG_UNUSED(cc_value);
+	ARG_UNUSED(p_context);
+
+	static int prescaler = 0;
+
+	if (++prescaler % 8 != 0) {
+		/* Re-arm the timer for next tick */
+		nrfx_grtc_syscounter_cc_rel_set(m_grtc_channel, 4096, NRFX_GRTC_CC_RELATIVE_SYSCOUNTER);
+		return;
+	}
+
+	prescaler = 0;
+
+	/* Re-arm the timer for next tick */
+	nrfx_grtc_syscounter_cc_rel_set(m_grtc_channel, 4096, NRFX_GRTC_CC_RELATIVE_SYSCOUNTER);
+#else
 static void rtc_handler(nrfx_rtc_int_type_t int_type)
 {
 	if (int_type != NRFX_RTC_INT_TICK) {
@@ -206,6 +240,7 @@ static void rtc_handler(nrfx_rtc_int_type_t int_type)
 	}
 
 	prescaler = 0;
+#endif
 
 	if (++m_seconds < 60) {
 		return;
@@ -402,6 +437,33 @@ static int init(void)
 		return ret;
 	}
 
+#if defined(CONFIG_SOC_SERIES_NRF54LX)
+	/* NRF54 GRTC initialization */
+	ret = nrfx_grtc_init(0);
+	if (ret != NRFX_SUCCESS) {
+		LOG_ERR("Call `nrfx_grtc_init` failed: %d", ret);
+		return -EIO;
+	}
+
+	/* Allocate GRTC channel */
+	ret = nrfx_grtc_channel_alloc(&m_grtc_channel);
+	if (ret != NRFX_SUCCESS) {
+		LOG_ERR("Call `nrfx_grtc_channel_alloc` failed: %d", ret);
+		return -EIO;
+	}
+
+	/* Set up callback for the channel */
+	nrfx_grtc_channel_callback_set(m_grtc_channel, rtc_handler, NULL);
+
+	/* Set up initial compare event at ~125ms intervals (32768 Hz / 4096 = 8 Hz) */
+	uint64_t compare_value = nrfx_grtc_syscounter_get() + 4096;
+	nrfx_grtc_syscounter_cc_abs_set(m_grtc_channel, compare_value, false);
+
+	/* Enable the IRQ for GRTC */
+	IRQ_CONNECT(RTC_IRQn, 0, RTC_IRQ_HANDLER, NULL, 0);
+	irq_enable(RTC_IRQn);
+#else
+	/* NRF52 RTC initialization */
 	nrfx_rtc_config_t config = NRFX_RTC_DEFAULT_CONFIG;
 	config.prescaler = 4095;
 	nrfx_err_t err = nrfx_rtc_init(&m_rtc, &config, rtc_handler);
@@ -413,8 +475,10 @@ static int init(void)
 	nrfx_rtc_tick_enable(&m_rtc, true);
 	nrfx_rtc_enable(&m_rtc);
 
-	IRQ_CONNECT(RTC0_IRQn, 0, nrfx_rtc_0_irq_handler, NULL, 0);
-	irq_enable(RTC0_IRQn);
+	/* Enable the IRQ for RTC */
+	IRQ_CONNECT(RTC_IRQn, 0, RTC_IRQ_HANDLER, NULL, 0);
+	irq_enable(RTC_IRQn);
+#endif
 
 	return 0;
 }
