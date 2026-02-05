@@ -194,6 +194,7 @@ int hio_config_save_without_reboot(void)
 	return save();
 }
 
+#if !defined(CONFIG_SETTINGS_FILE)
 static int delete_item_cb(const struct hio_config *module, const struct hio_config_item *item,
 			  void *user_data)
 {
@@ -218,6 +219,7 @@ static int delete_item_cb(const struct hio_config *module, const struct hio_conf
 
 	return 0;
 }
+#endif /* !defined(CONFIG_SETTINGS_FILE) */
 
 static int reset(void)
 {
