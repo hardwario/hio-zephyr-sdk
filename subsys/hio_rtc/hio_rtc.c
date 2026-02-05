@@ -2,6 +2,7 @@
 #include <hio/hio_rtc.h>
 
 /* Zephyr includes */
+#include <zephyr/device.h>
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/clock_control/nrf_clock_control.h>
 #include <zephyr/init.h>
@@ -10,6 +11,10 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/sys/timeutil.h>
+
+#if DT_HAS_ALIAS(rtc_retention)
+#include <zephyr/retention/retention.h>
+#endif
 
 #if defined(CONFIG_SOC_SERIES_NRF54LX)
 #include <nrfx_grtc.h>
@@ -42,13 +47,21 @@ static const nrfx_rtc_t m_rtc = NRFX_RTC_INSTANCE(0);
 
 static struct onoff_client m_lfclk_cli;
 
-static int m_year = 1970;
-static int m_month = 1;
-static int m_day = 1;
-static int m_wday = 4;
-static int m_hours = 0;
-static int m_minutes = 0;
-static int m_seconds = 0;
+#if DT_HAS_ALIAS(rtc_retention)
+/* Retention device for persisting RTC across reboots */
+static const struct device *retention_rtc = DEVICE_DT_GET(DT_ALIAS(rtc_retention));
+#endif
+
+/* RTC time storage - persisted to retention if available */
+struct hio_rtc_tm m_tm = {
+	.year = 1970,
+	.month = 1,
+	.day = 1,
+	.wday = 4,
+	.hours = 0,
+	.minutes = 0,
+	.seconds = 0,
+};
 
 static int get_days_in_month(int year, int month)
 {
@@ -85,13 +98,13 @@ int hio_rtc_get_tm(struct hio_rtc_tm *tm)
 {
 	irq_disable(RTC_IRQn);
 
-	tm->year = m_year;
-	tm->month = m_month;
-	tm->day = m_day;
-	tm->wday = m_wday;
-	tm->hours = m_hours;
-	tm->minutes = m_minutes;
-	tm->seconds = m_seconds;
+	tm->year = m_tm.year;
+	tm->month = m_tm.month;
+	tm->day = m_tm.day;
+	tm->wday = m_tm.wday;
+	tm->hours = m_tm.hours;
+	tm->minutes = m_tm.minutes;
+	tm->seconds = m_tm.seconds;
 
 	irq_enable(RTC_IRQn);
 
@@ -126,13 +139,13 @@ int hio_rtc_set_tm(const struct hio_rtc_tm *tm)
 
 	irq_disable(RTC_IRQn);
 
-	m_year = tm->year;
-	m_month = tm->month;
-	m_day = tm->day;
-	m_wday = get_day_of_week(m_year, m_month, m_day);
-	m_hours = tm->hours;
-	m_minutes = tm->minutes;
-	m_seconds = tm->seconds;
+	m_tm.year = tm->year;
+	m_tm.month = tm->month;
+	m_tm.day = tm->day;
+	m_tm.wday = get_day_of_week(m_tm.year, m_tm.month, m_tm.day);
+	m_tm.hours = tm->hours;
+	m_tm.minutes = tm->minutes;
+	m_tm.seconds = tm->seconds;
 
 	irq_enable(RTC_IRQn);
 
@@ -145,12 +158,12 @@ int hio_rtc_get_ts(int64_t *ts)
 
 	irq_disable(RTC_IRQn);
 
-	tm.tm_year = m_year - 1900;
-	tm.tm_mon = m_month - 1;
-	tm.tm_mday = m_day;
-	tm.tm_hour = m_hours;
-	tm.tm_min = m_minutes;
-	tm.tm_sec = m_seconds;
+	tm.tm_year = m_tm.year - 1900;
+	tm.tm_mon = m_tm.month - 1;
+	tm.tm_mday = m_tm.day;
+	tm.tm_hour = m_tm.hours;
+	tm.tm_min = m_tm.minutes;
+	tm.tm_sec = m_tm.seconds;
 	tm.tm_isdst = -1;
 
 	irq_enable(RTC_IRQn);
@@ -214,18 +227,10 @@ static void rtc_handler(int32_t channel, uint64_t cc_value, void *p_context)
 	ARG_UNUSED(cc_value);
 	ARG_UNUSED(p_context);
 
-	static int prescaler = 0;
+	/* Re-arm the timer for next tick (1 second) - use COMPARE reference to avoid drift */
+	/* GRTC syscounter runs at 1 MHz, so 1,000,000 ticks = 1 second */
+	nrfx_grtc_syscounter_cc_rel_set(m_grtc_channel, 1000000, NRFX_GRTC_CC_RELATIVE_COMPARE);
 
-	if (++prescaler % 8 != 0) {
-		/* Re-arm the timer for next tick */
-		nrfx_grtc_syscounter_cc_rel_set(m_grtc_channel, 4096, NRFX_GRTC_CC_RELATIVE_SYSCOUNTER);
-		return;
-	}
-
-	prescaler = 0;
-
-	/* Re-arm the timer for next tick */
-	nrfx_grtc_syscounter_cc_rel_set(m_grtc_channel, 4096, NRFX_GRTC_CC_RELATIVE_SYSCOUNTER);
 #else
 static void rtc_handler(nrfx_rtc_int_type_t int_type)
 {
@@ -242,39 +247,49 @@ static void rtc_handler(nrfx_rtc_int_type_t int_type)
 	prescaler = 0;
 #endif
 
-	if (++m_seconds < 60) {
-		return;
+	if (++m_tm.seconds < 60) {
+		goto retention;
 	}
 
-	m_seconds = 0;
+	m_tm.seconds = 0;
 
-	if (++m_minutes < 60) {
-		return;
+	if (++m_tm.minutes < 60) {
+		goto retention;
 	}
 
-	m_minutes = 0;
+	m_tm.minutes = 0;
 
-	if (++m_hours < 24) {
-		return;
+	if (++m_tm.hours < 24) {
+		goto retention;
 	}
 
-	m_hours = 0;
+	m_tm.hours = 0;
 
-	if (++m_wday >= 8) {
-		m_wday = 1;
+	if (++m_tm.wday >= 8) {
+		m_tm.wday = 1;
 	}
 
-	if (++m_day <= get_days_in_month(m_year, m_month)) {
-		return;
+	if (++m_tm.day <= get_days_in_month(m_tm.year, m_tm.month)) {
+		goto retention;
 	}
 
-	m_day = 1;
+	m_tm.day = 1;
 
-	if (++m_month > 12) {
-		m_month = 1;
+	if (++m_tm.month > 12) {
+		m_tm.month = 1;
 
-		++m_year;
+		++m_tm.year;
 	}
+
+retention:
+#if DT_HAS_ALIAS(rtc_retention)
+	/* Save RTC state to retention memory - direct struct copy */
+	int ret = retention_write(retention_rtc, 0, (uint8_t *)&m_tm, sizeof(m_tm));
+	if (ret) {
+		LOG_ERR("Call `retention_write` failed: %d", ret);
+	}
+#endif
+	return;
 }
 
 static int request_lfclk(void)
@@ -431,6 +446,23 @@ static int init(void)
 
 	LOG_INF("System initialization");
 
+#if DT_HAS_ALIAS(rtc_retention)
+	/* Try to restore RTC state from retention memory */
+	if (retention_is_valid(retention_rtc)) {
+		LOG_INF("Retention valid - restoring RTC state");
+		ret = retention_read(retention_rtc, 0, (uint8_t *)&m_tm, sizeof(m_tm));
+		if (ret == 0) {
+			LOG_INF("Restored: %04d/%02d/%02d %02d:%02d:%02d",
+				m_tm.year, m_tm.month, m_tm.day,
+				m_tm.hours, m_tm.minutes, m_tm.seconds);
+		} else {
+			LOG_WRN("Retention read failed: %d", ret);
+		}
+	} else {
+		LOG_INF("Retention not valid - using default time");
+	}
+#endif
+
 	ret = request_lfclk();
 	if (ret) {
 		LOG_ERR("Call `request_lfclk` failed: %d", ret);
@@ -440,14 +472,18 @@ static int init(void)
 #if defined(CONFIG_SOC_SERIES_NRF54LX)
 	/* NRF54 GRTC initialization */
 	ret = nrfx_grtc_init(0);
-	if (ret != NRFX_SUCCESS) {
+	if (ret != 0 && ret != -EALREADY) {
 		LOG_ERR("Call `nrfx_grtc_init` failed: %d", ret);
 		return -EIO;
 	}
 
+	if (ret == -EALREADY) {
+		LOG_INF("GRTC already initialized");
+	}
+
 	/* Allocate GRTC channel */
 	ret = nrfx_grtc_channel_alloc(&m_grtc_channel);
-	if (ret != NRFX_SUCCESS) {
+	if (ret) {
 		LOG_ERR("Call `nrfx_grtc_channel_alloc` failed: %d", ret);
 		return -EIO;
 	}
@@ -455,13 +491,15 @@ static int init(void)
 	/* Set up callback for the channel */
 	nrfx_grtc_channel_callback_set(m_grtc_channel, rtc_handler, NULL);
 
-	/* Set up initial compare event at ~125ms intervals (32768 Hz / 4096 = 8 Hz) */
-	uint64_t compare_value = nrfx_grtc_syscounter_get() + 4096;
-	nrfx_grtc_syscounter_cc_abs_set(m_grtc_channel, compare_value, false);
-
 	/* Enable the IRQ for GRTC */
 	IRQ_CONNECT(RTC_IRQn, 0, RTC_IRQ_HANDLER, NULL, 0);
 	irq_enable(RTC_IRQn);
+
+	/* Set up initial compare event for 1 second intervals (GRTC runs at 1 MHz) */
+	/* Enable interrupt for this channel (third parameter = true) */
+	uint64_t compare_value = nrfx_grtc_syscounter_get() + 1000000;
+	nrfx_grtc_syscounter_cc_abs_set(m_grtc_channel, compare_value, true);
+
 #else
 	/* NRF52 RTC initialization */
 	nrfx_rtc_config_t config = NRFX_RTC_DEFAULT_CONFIG;
