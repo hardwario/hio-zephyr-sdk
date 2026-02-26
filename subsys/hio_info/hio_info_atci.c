@@ -87,19 +87,20 @@ HIO_ATCI_CMD_REGISTER(cgsn, "+CGSN", 0, at_cgsn_action, NULL, NULL, NULL,
 
 struct info_item {
 	const char *name;
+	const char *label;
 	int (*getter)(const char **value);
 };
 
 static const struct info_item info_items[] = {
-	{"vendor-name", hio_info_get_vendor_name},
-	{"product-name", hio_info_get_product_name},
-	{"hardware-variant", hio_info_get_hw_variant},
-	{"hardware-revision", hio_info_get_hw_revision},
-	{"firmware-bundle", hio_info_get_fw_bundle},
-	{"firmware-name", hio_info_get_fw_name},
-	{"firmware-version", hio_info_get_fw_version},
-	{"serial-number", hio_info_get_serial_number},
-	{"claim-token", hio_info_get_claim_token},
+	{"vendor-name", "Vendor", hio_info_get_vendor_name},
+	{"product-name", "Product", hio_info_get_product_name},
+	{"hardware-variant", "HW Variant", hio_info_get_hw_variant},
+	{"hardware-revision", "HW Revision", hio_info_get_hw_revision},
+	{"firmware-bundle", "FW Bundle", hio_info_get_fw_bundle},
+	{"firmware-name", "FW Name", hio_info_get_fw_name},
+	{"firmware-version", "FW Version", hio_info_get_fw_version},
+	{"serial-number", "Serial Number", hio_info_get_serial_number},
+	{"claim-token", "Claim Token", hio_info_get_claim_token},
 };
 
 static void info_item_print(const struct hio_atci *atci, const struct info_item *item)
@@ -145,5 +146,17 @@ static int at_info_read(const struct hio_atci *atci)
 	return 0;
 }
 
-HIO_ATCI_CMD_REGISTER(info, "$INFO", 0, NULL, at_info_set, at_info_read, NULL,
+static int at_info_test(const struct hio_atci *atci)
+{
+	hio_atci_printfln(atci, "$INFO: \"key\",\"type\",\"label\"");
+
+	for (int i = 0; i < ARRAY_SIZE(info_items); i++) {
+		hio_atci_printfln(atci, "$INFO: \"%s\",\"string\",\"%s\"",
+				  info_items[i].name, info_items[i].label);
+	}
+
+	return 0;
+}
+
+HIO_ATCI_CMD_REGISTER(info, "$INFO", 0, NULL, at_info_set, at_info_read, at_info_test,
 		      "Request device information");
