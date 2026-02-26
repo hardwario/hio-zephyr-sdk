@@ -7,6 +7,7 @@
 /* HARDWARIO includes */
 #include <hio/hio_info.h>
 #include <hio/hio_atci.h>
+#include <hio/hio_tok.h>
 
 /* Zephyr includes */
 #include <zephyr/kernel.h>
@@ -14,6 +15,19 @@
 /* Standard includes */
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
+
+// Vendor name: KSB
+// Product name: KSB Guard CLM
+// Hardware variant:
+// Hardware revision: R1.0
+// Firmware bundle: aaa.bbb.ccc.ddd
+// Firmware name: KSB Guard CLM
+// Firmware version: 1.0.0
+// Serial number: 3186622466
+
+// Claim token: 3d723252154482ccc9ebfecbd7b7f13c
+// BLE passkey: 123456
 
 static int at_i_action(const struct hio_atci *atci)
 {
@@ -70,3 +84,66 @@ static int at_cgsn_action(const struct hio_atci *atci)
 }
 HIO_ATCI_CMD_REGISTER(cgsn, "+CGSN", 0, at_cgsn_action, NULL, NULL, NULL,
 		      "Request product serial number");
+
+struct info_item {
+	const char *name;
+	int (*getter)(const char **value);
+};
+
+static const struct info_item info_items[] = {
+	{"vendor-name", hio_info_get_vendor_name},
+	{"product-name", hio_info_get_product_name},
+	{"hardware-variant", hio_info_get_hw_variant},
+	{"hardware-revision", hio_info_get_hw_revision},
+	{"firmware-bundle", hio_info_get_fw_bundle},
+	{"firmware-name", hio_info_get_fw_name},
+	{"firmware-version", hio_info_get_fw_version},
+	{"serial-number", hio_info_get_serial_number},
+	{"claim-token", hio_info_get_claim_token},
+};
+
+static void info_item_print(const struct hio_atci *atci, const struct info_item *item)
+{
+	const char *value;
+	item->getter(&value);
+	hio_atci_printfln(atci, "$INFO: \"%s\",\"%s\"", item->name, value);
+}
+
+static int at_info_set(const struct hio_atci *atci, char *argv)
+{
+	char *tmp;
+	size_t tmp_len;
+	hio_atci_get_tmp_buff(atci, &tmp, &tmp_len);
+	const char *p = argv;
+	bool def = false;
+
+	if (!(p = hio_tok_str(p, &def, tmp, tmp_len)) || !def) {
+		return -EINVAL;
+	}
+
+	if (!hio_tok_end(p)) {
+		return -EINVAL;
+	}
+
+	for (int i = 0; i < ARRAY_SIZE(info_items); i++) {
+		if (strcmp(tmp, info_items[i].name) == 0) {
+			info_item_print(atci, &info_items[i]);
+			return 0;
+		}
+	}
+
+	hio_atci_error(atci, "\"Item not found\"");
+	return -ENOENT;
+}
+
+static int at_info_read(const struct hio_atci *atci)
+{
+	for (int i = 0; i < ARRAY_SIZE(info_items); i++) {
+		info_item_print(atci, &info_items[i]);
+	}
+
+	return 0;
+}
+
+HIO_ATCI_CMD_REGISTER(info, "$INFO", 0, NULL, at_info_set, at_info_read, NULL,
+		      "Request device information");
