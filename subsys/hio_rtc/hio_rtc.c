@@ -3,6 +3,7 @@
 
 /* Zephyr includes */
 #include <zephyr/device.h>
+#include <zephyr/devicetree.h>
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/clock_control/nrf_clock_control.h>
 #include <zephyr/init.h>
@@ -12,7 +13,7 @@
 #include <zephyr/shell/shell.h>
 #include <zephyr/sys/timeutil.h>
 
-#if DT_HAS_ALIAS(rtc_retention)
+#if DT_NODE_EXISTS(DT_ALIAS(rtc_retention))
 #include <zephyr/retention/retention.h>
 #endif
 
@@ -47,7 +48,7 @@ static const nrfx_rtc_t m_rtc = NRFX_RTC_INSTANCE(0);
 
 static struct onoff_client m_lfclk_cli;
 
-#if DT_HAS_ALIAS(rtc_retention)
+#if DT_NODE_EXISTS(DT_ALIAS(rtc_retention))
 /* Retention device for persisting RTC across reboots */
 static const struct device *retention_rtc = DEVICE_DT_GET(DT_ALIAS(rtc_retention));
 #endif
@@ -282,7 +283,7 @@ static void rtc_handler(nrfx_rtc_int_type_t int_type)
 	}
 
 retention:
-#if DT_HAS_ALIAS(rtc_retention)
+#if DT_NODE_EXISTS(DT_ALIAS(rtc_retention))
 	/* Save RTC state to retention memory - direct struct copy */
 	int ret = retention_write(retention_rtc, 0, (uint8_t *)&m_tm, sizeof(m_tm));
 	if (ret) {
@@ -446,15 +447,14 @@ static int init(void)
 
 	LOG_INF("System initialization");
 
-#if DT_HAS_ALIAS(rtc_retention)
+#if DT_NODE_EXISTS(DT_ALIAS(rtc_retention))
 	/* Try to restore RTC state from retention memory */
 	if (retention_is_valid(retention_rtc)) {
 		LOG_INF("Retention valid - restoring RTC state");
 		ret = retention_read(retention_rtc, 0, (uint8_t *)&m_tm, sizeof(m_tm));
 		if (ret == 0) {
-			LOG_INF("Restored: %04d/%02d/%02d %02d:%02d:%02d",
-				m_tm.year, m_tm.month, m_tm.day,
-				m_tm.hours, m_tm.minutes, m_tm.seconds);
+			LOG_INF("Restored: %04d/%02d/%02d %02d:%02d:%02d", m_tm.year, m_tm.month,
+				m_tm.day, m_tm.hours, m_tm.minutes, m_tm.seconds);
 		} else {
 			LOG_WRN("Retention read failed: %d", ret);
 		}
