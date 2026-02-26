@@ -19,6 +19,7 @@
 /* Standard includes */
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 
 LOG_MODULE_DECLARE(hio_config);
 
@@ -200,9 +201,114 @@ static int at_write_action(const struct hio_atci *atci)
 	return ret;
 }
 
+static const char *item_type_str(enum hio_config_item_type type)
+{
+	switch (type) {
+	case HIO_CONFIG_TYPE_INT:
+		return "int";
+	case HIO_CONFIG_TYPE_FLOAT:
+		return "float";
+	case HIO_CONFIG_TYPE_BOOL:
+		return "bool";
+	case HIO_CONFIG_TYPE_ENUM:
+		return "enum";
+	case HIO_CONFIG_TYPE_STRING:
+		return "string";
+	case HIO_CONFIG_TYPE_HEX:
+		return "hex";
+	default:
+		return "unknown";
+	}
+}
+
+static void sanitize_help(const char *help, char *buf, size_t buf_size)
+{
+	size_t j = 0;
+
+	for (size_t i = 0; help[i] != '\0' && help[i] != '\n' && j < buf_size - 2; i++) {
+		if (help[i] == '"') {
+			if (j + 2 > buf_size - 1) {
+				break;
+			}
+			buf[j++] = '\\';
+		}
+		buf[j++] = help[i];
+	}
+
+	buf[j] = '\0';
+}
+
+static int test_item_cb(const struct hio_config *module, const struct hio_config_item *item,
+			void *user_data)
+{
+	const struct hio_atci *atci = (const struct hio_atci *)user_data;
+	const char *type = item_type_str(item->type);
+	char help_buf[128];
+	sanitize_help(item->help, help_buf, sizeof(help_buf));
+
+	switch (item->type) {
+	case HIO_CONFIG_TYPE_INT:
+		hio_atci_printfln(atci, "$CONFIG: \"%s\",\"%s\",\"%s\",%d,%d,,%d,\"%s\"",
+				  module->name, item->name, type, item->min, item->max,
+				  item->default_int, help_buf);
+		break;
+
+	case HIO_CONFIG_TYPE_FLOAT:
+		hio_atci_printfln(atci, "$CONFIG: \"%s\",\"%s\",\"%s\",%.2f,%.2f,,%.2f,\"%s\"",
+				  module->name, item->name, type, (double)item->min,
+				  (double)item->max, (double)item->default_float, help_buf);
+		break;
+
+	case HIO_CONFIG_TYPE_BOOL:
+		hio_atci_printfln(atci, "$CONFIG: \"%s\",\"%s\",\"%s\",,,,,%s,\"%s\"",
+				  module->name, item->name, type,
+				  item->default_bool ? "true" : "false", help_buf);
+		break;
+
+	case HIO_CONFIG_TYPE_ENUM: {
+		hio_atci_printf(atci, "$CONFIG: \"%s\",\"%s\",\"%s\",,,\"",
+				module->name, item->name, type);
+		for (int i = 0; i < item->max; i++) {
+			hio_atci_printf(atci, "%s%s", i > 0 ? "," : "", item->enums[i]);
+		}
+		hio_atci_printfln(atci, "\",\"%s\",\"%s\"",
+				  item->enums[item->default_enum], help_buf);
+		break;
+	}
+
+	case HIO_CONFIG_TYPE_STRING:
+		hio_atci_printfln(atci, "$CONFIG: \"%s\",\"%s\",\"%s\",,,,\"%s\",\"%s\"",
+				  module->name, item->name, type,
+				  item->default_string ? item->default_string : "",
+				  help_buf);
+		break;
+
+	case HIO_CONFIG_TYPE_HEX: {
+		hio_atci_printf(atci, "$CONFIG: \"%s\",\"%s\",\"%s\",,,,,\"",
+				module->name, item->name, type);
+		if (item->default_hex) {
+			for (int i = 0; i < item->size; i++) {
+				hio_atci_printf(atci, "%02x", item->default_hex[i]);
+			}
+		}
+		hio_atci_printfln(atci, "\",\"%s\"", help_buf);
+		break;
+	}
+	}
+
+	return 0;
+}
+
+static int at_config_test(const struct hio_atci *atci)
+{
+	hio_atci_printfln(atci, "$CONFIG: \"module\",\"key\",\"type\",\"min\",\"max\","
+			       "\"values\",\"default\",\"description\"");
+	return hio_config_iter_items(NULL, test_item_cb, (void *)atci);
+}
+
 HIO_ATCI_CMD_REGISTER(config_f, "&F", 0, at_reset_action, NULL, NULL, NULL,
 		      "Reset all configuration.");
 HIO_ATCI_CMD_REGISTER(config_w, "&W", 0, at_write_action, NULL, NULL, NULL,
 		      "Save all configuration.");
-HIO_ATCI_CMD_REGISTER(config, "$CONFIG", 0, NULL, at_config_set, at_config_read, NULL,
+HIO_ATCI_CMD_REGISTER(config, "$CONFIG", 0, NULL, at_config_set, at_config_read, at_config_test,
 		      "Configuration parameters.");
