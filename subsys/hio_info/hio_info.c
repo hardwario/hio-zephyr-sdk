@@ -6,6 +6,7 @@
 
 /* HARDWARIO includes */
 #include <hio/hio_info.h>
+#include <hio/hio_config.h>
 
 /* Nordic includes */
 #include <ncs_version.h>
@@ -86,26 +87,70 @@ LOG_MODULE_REGISTER(hio_info, CONFIG_HIO_INFO_LOG_LEVEL);
 #define CRC_OFFSET 0x77
 #define CRC_LENGTH 4
 
-static bool m_pib_valid;
+static int m_state = -EAGAIN;
 
-static uint32_t m_signature;
-static uint8_t m_version;
-static uint8_t m_size;
-static char m_vendor_name[VENDOR_NAME_LENGTH];
-static char m_product_name[PRODUCT_NAME_LENGTH];
-static char m_hw_variant[HW_VARIANT_LENGTH];
-static char m_hw_revision[HW_REVISION_LENGTH];
-static char m_serial_number[SERIAL_NUMBER_LENGTH];
-static uint32_t m_serial_number_uint32;
-static char m_claim_token[CLAIM_TOKEN_LENGTH];
-static char m_ble_passkey[BLE_PASSKEY_LENGTH];
-static uint32_t m_crc;
+struct hio_info_data {
+	char vendor_name[VENDOR_NAME_LENGTH];
+	char product_name[PRODUCT_NAME_LENGTH];
+	char hw_variant[HW_VARIANT_LENGTH];
+	char hw_revision[HW_REVISION_LENGTH];
+	char serial_number[SERIAL_NUMBER_LENGTH];
+	char claim_token[CLAIM_TOKEN_LENGTH];
+	char ble_passkey[BLE_PASSKEY_LENGTH];
+};
+
+static struct hio_info_data m_data = {
+	.vendor_name = CONFIG_HIO_INFO_DEFAULT_VENDOR_NAME,
+	.product_name = CONFIG_HIO_INFO_DEFAULT_PRODUCT_NAME,
+	.hw_variant = CONFIG_HIO_INFO_DEFAULT_HW_VARIANT,
+	.hw_revision = CONFIG_HIO_INFO_DEFAULT_HW_REVISION,
+	.serial_number = CONFIG_HIO_INFO_DEFAULT_SERIAL_NUMBER,
+	.claim_token = CONFIG_HIO_INFO_DEFAULT_CLAIM_TOKEN,
+	.ble_passkey = CONFIG_HIO_INFO_DEFAULT_BLE_PASSKEY,
+};
+static uint32_t m_serial_number_uint32 = 0;
 
 #if defined(APP_VERSION_STRING)
 const char m_app_version[] = APP_VERSION_STRING;
 #else
 const char m_app_version[] = "(unset)";
 #endif
+
+#if IS_ENABLED(CONFIG_HIO_INFO_DEV_MODE)
+
+#define SETTINGS_PFX "info"
+
+static struct hio_info_data m_data_interim;
+
+/* clang-format off */
+
+static struct hio_config_item m_config_items[] = {
+	HIO_CONFIG_ITEM_STRING("vendor-name",   m_data_interim.vendor_name,  "vendor name",       CONFIG_HIO_INFO_DEFAULT_VENDOR_NAME),
+	HIO_CONFIG_ITEM_STRING("product-name",  m_data_interim.product_name, "product name",      CONFIG_HIO_INFO_DEFAULT_PRODUCT_NAME),
+	HIO_CONFIG_ITEM_STRING("hw-variant",    m_data_interim.hw_variant,   "hardware variant",  CONFIG_HIO_INFO_DEFAULT_HW_VARIANT),
+	HIO_CONFIG_ITEM_STRING("hw-revision",   m_data_interim.hw_revision,  "hardware revision", CONFIG_HIO_INFO_DEFAULT_HW_REVISION),
+	HIO_CONFIG_ITEM_STRING("serial-number", m_data_interim.serial_number,"serial number",     CONFIG_HIO_INFO_DEFAULT_SERIAL_NUMBER),
+	HIO_CONFIG_ITEM_STRING("claim-token",   m_data_interim.claim_token,  "claim token",       CONFIG_HIO_INFO_DEFAULT_CLAIM_TOKEN),
+	HIO_CONFIG_ITEM_STRING("ble-passkey",   m_data_interim.ble_passkey,  "BLE passkey",       CONFIG_HIO_INFO_DEFAULT_BLE_PASSKEY),
+};
+
+/* clang-format on */
+
+static int dev_config_init(void)
+{
+	static struct hio_config config = {
+		.name = SETTINGS_PFX,
+		.items = m_config_items,
+		.nitems = ARRAY_SIZE(m_config_items),
+		.interim = &m_data_interim,
+		.final = &m_data,
+		.size = sizeof(m_data),
+	};
+
+	return hio_config_register(&config);
+}
+
+#endif /* CONFIG_HIO_INFO_DEV_MODE */
 
 static int load_pib(void)
 {
@@ -118,7 +163,7 @@ static int load_pib(void)
 	plt_err = tfm_platform_mem_read(pib, uicr_otp_start, sizeof(pib), &err);
 	if (plt_err != TFM_PLATFORM_ERR_SUCCESS || err != 0) {
 		LOG_ERR("tfm_platform_mem_read failed: %d", err);
-		return -1;
+		return -EIO;
 	}
 #elif defined(CONFIG_SOC_SERIES_NRF52X)
 	for (int i = 0; i < (ARRAY_SIZE(pib) / 4); i++) {
@@ -130,115 +175,91 @@ static int load_pib(void)
 	}
 #else
 	LOG_ERR("Unsupported SoC series");
+	m_state = -ENOTSUP;
 	return -ENOTSUP;
 #endif
 
 	LOG_HEXDUMP_DBG(pib, sizeof(pib), "PIB dump:");
 
 	/* Load signature */
-	m_signature = sys_get_be32(pib + SIGNATURE_OFFSET);
-	if (m_signature != SIGNATURE_VALUE) {
-		LOG_WRN("Invalid signature: 0x%08x", m_signature);
+	uint32_t signature = sys_get_be32(pib + SIGNATURE_OFFSET);
+	if (signature != SIGNATURE_VALUE) {
+		LOG_WRN("Invalid signature: 0x%08x", signature);
 		return -EINVAL;
 	}
 
 	/* Load version */
-	m_version = pib[VERSION_OFFSET];
-	if (m_version != VERSION_VALUE) {
-		LOG_WRN("Incompatible version: 0x%02x", m_version);
+	uint8_t version = pib[VERSION_OFFSET];
+	if (version != VERSION_VALUE) {
+		LOG_WRN("Incompatible version: 0x%02x", version);
 		return -EINVAL;
 	}
 
 	/* Load size */
-	m_size = pib[SIZE_OFFSET];
-	if (m_size != SIZE_VALUE) {
-		LOG_WRN("Unexpected size: 0x%02x", m_size);
+	uint8_t size = pib[SIZE_OFFSET];
+	if (size != SIZE_VALUE) {
+		LOG_WRN("Unexpected size: 0x%02x", size);
 		return -EINVAL;
 	}
 
 	/* Load CRC */
-	m_crc = sys_get_be32(pib + CRC_OFFSET);
+	uint32_t crc_stored = sys_get_be32(pib + CRC_OFFSET);
 
 	/* Calculate CRC */
-	uint32_t crc = crc32_ieee(pib, m_size - CRC_LENGTH);
-	if (m_crc != crc) {
-		LOG_WRN("CRC mismatch: 0x%08x (read) 0x%08x (calculated)", m_crc, crc);
+	uint32_t crc = crc32_ieee(pib, size - CRC_LENGTH);
+	if (crc_stored != crc) {
+		LOG_WRN("CRC mismatch: 0x%08x (read) 0x%08x (calculated)", crc_stored, crc);
 		return -EINVAL;
 	}
 
 	/* Load vendor name */
-	memcpy(m_vendor_name, pib + VENDOR_NAME_OFFSET, sizeof(m_vendor_name));
+	memcpy(m_data.vendor_name, pib + VENDOR_NAME_OFFSET, sizeof(m_data.vendor_name));
 
 	/* Load product name */
-	memcpy(m_product_name, pib + PRODUCT_NAME_OFFSET, sizeof(m_product_name));
+	memcpy(m_data.product_name, pib + PRODUCT_NAME_OFFSET, sizeof(m_data.product_name));
 
 	/* Load hardware variant */
-	memcpy(m_hw_variant, pib + HW_VARIANT_OFFSET, sizeof(m_hw_variant));
+	memcpy(m_data.hw_variant, pib + HW_VARIANT_OFFSET, sizeof(m_data.hw_variant));
 
 	/* Load hardware revision */
-	memcpy(m_hw_revision, pib + HW_REVISION_OFFSET, sizeof(m_hw_revision));
+	memcpy(m_data.hw_revision, pib + HW_REVISION_OFFSET, sizeof(m_data.hw_revision));
 
 	/* Load serial number */
-	memcpy(m_serial_number, pib + SERIAL_NUMBER_OFFSET, sizeof(m_serial_number));
-	m_serial_number_uint32 = strtoul(m_serial_number, NULL, 10);
+	memcpy(m_data.serial_number, pib + SERIAL_NUMBER_OFFSET, sizeof(m_data.serial_number));
 
 	/* Load claim token */
-	memcpy(m_claim_token, pib + CLAIM_TOKEN_OFFSET, sizeof(m_claim_token));
+	memcpy(m_data.claim_token, pib + CLAIM_TOKEN_OFFSET, sizeof(m_data.claim_token));
 
 	/* Load BLE passkey */
-	memcpy(m_ble_passkey, pib + BLE_PASSKEY_OFFSET, sizeof(m_ble_passkey));
+	memcpy(m_data.ble_passkey, pib + BLE_PASSKEY_OFFSET, sizeof(m_data.ble_passkey));
 
-	m_pib_valid = true;
+	m_state = 0;
 
 	return 0;
 }
 
 int hio_info_get_vendor_name(const char **vendor_name)
 {
-	if (!m_pib_valid) {
-		*vendor_name = "(unset)";
-		return -EIO;
-	}
-
-	*vendor_name = m_vendor_name;
-
-	return 0;
+	*vendor_name = m_data.vendor_name;
+	return m_state;
 }
 
 int hio_info_get_product_name(const char **product_name)
 {
-	if (!m_pib_valid) {
-		*product_name = "(unset)";
-		return -EIO;
-	}
-
-	*product_name = m_product_name;
-
-	return 0;
+	*product_name = m_data.product_name;
+	return m_state;
 }
 
 int hio_info_get_hw_variant(const char **hw_variant)
 {
-	if (!m_pib_valid) {
-		*hw_variant = "(unset)";
-		return -EIO;
-	}
-
-	*hw_variant = m_hw_variant;
-
-	return 0;
+	*hw_variant = m_data.hw_variant;
+	return m_state;
 }
 
 int hio_info_get_hw_revision(const char **hw_revision)
 {
-	if (!m_pib_valid) {
-		*hw_revision = "(unset)";
-		return -EIO;
-	}
-
-	*hw_revision = m_hw_revision;
-
-	return 0;
+	*hw_revision = m_data.hw_revision;
+	return m_state;
 }
 
 int hio_info_get_fw_bundle(const char **fw_bundle)
@@ -285,38 +306,29 @@ int hio_info_get_fw_version(const char **fw_version)
 
 int hio_info_get_serial_number(const char **serial_number)
 {
-	if (!m_pib_valid) {
-		*serial_number = "(unset)";
-		return -EIO;
-	}
-
-	*serial_number = m_serial_number;
-
-	return 0;
+	*serial_number = m_data.serial_number;
+	return m_state;
 }
 
 int hio_info_get_serial_number_uint32(uint32_t *serial_number)
 {
-	if (!m_pib_valid) {
-		*serial_number = 0;
-		return -EIO;
+	*serial_number = m_serial_number_uint32;
+
+	if (m_state) {
+		return m_state;
 	}
 
-	*serial_number = m_serial_number_uint32;
+	if (m_serial_number_uint32 == 0) {
+		return -EINVAL;
+	}
 
 	return 0;
 }
 
 int hio_info_get_claim_token(const char **claim_token)
 {
-	if (!m_pib_valid) {
-		*claim_token = "(unset)";
-		return -EIO;
-	}
-
-	*claim_token = m_claim_token;
-
-	return 0;
+	*claim_token = m_data.claim_token;
+	return m_state;
 }
 
 int hio_info_get_ble_devaddr(const char **ble_devaddr)
@@ -363,23 +375,17 @@ int hio_info_get_ble_devaddr_uint64(uint64_t *ble_devaddr)
 
 int hio_info_get_ble_passkey(const char **ble_passkey)
 {
-	if (!m_pib_valid) {
-		*ble_passkey = "(unset)";
-		return -EIO;
-	}
-
-	*ble_passkey = m_ble_passkey;
-
-	return 0;
+	*ble_passkey = m_data.ble_passkey;
+	return m_state;
 }
 
 int hio_info_get_product_family(uint8_t *product_family)
 {
-	if (!m_pib_valid) {
-		return -EIO;
+	if (m_state) {
+		return m_state;
 	}
 
-	if ((m_serial_number_uint32 & 0x80000000) == 0) {
+	if ((m_serial_number_uint32 & 0x80000000U) == 0) {
 		return -EFAULT;
 	}
 
@@ -392,9 +398,34 @@ static int init(void)
 {
 	LOG_INF("System initialization");
 
-	load_pib();
+#if IS_ENABLED(CONFIG_HIO_INFO_DEV_MODE)
+	LOG_WRN("Using development credentials from config");
+
+	int ret = dev_config_init();
+	if (ret < 0) {
+		LOG_ERR("Call `dev_config_init` failed: %d", ret);
+		return ret;
+	}
+
+	m_state = 0;
+#else
+	m_state = load_pib();
+#endif
+
+	if (m_state == 0) {
+		char *endptr;
+		m_serial_number_uint32 = strtoul(m_data.serial_number, &endptr, 10);
+		if (endptr == m_data.serial_number || *endptr != '\0') {
+			LOG_WRN("Invalid serial number: %s", m_data.serial_number);
+			m_serial_number_uint32 = 0;
+		}
+	}
 
 	return 0;
 }
 
+#if IS_ENABLED(CONFIG_HIO_INFO_DEV_MODE)
+SYS_INIT(init, APPLICATION, 1);
+#else
 SYS_INIT(init, POST_KERNEL, CONFIG_HIO_INFO_INIT_PRIORITY);
+#endif

@@ -6,6 +6,7 @@
 
 /* HARDWARIO includes */
 #include <hio/hio_info.h>
+#include <hio/hio_config.h>
 
 /* Zephyr includes */
 #include <zephyr/kernel.h>
@@ -190,6 +191,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(ble-passkey, NULL,
 	              "Get BLE passkey.",
 	              cmd_ble_passkey, 1, 0),
+#endif
+#if IS_ENABLED(CONFIG_HIO_INFO_DEV_MODE)
+	HIO_CONFIG_SHELL_CMD_ARG,
 #endif
 	SHELL_SUBCMD_SET_END
 );

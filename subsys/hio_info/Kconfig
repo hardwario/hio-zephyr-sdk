@@ -26,6 +26,38 @@ config HIO_INFO_BLE
 	bool "HIO_INFO_BLE"
 	default y if BT && SOC_SERIES_NRF52X
 
+config HIO_INFO_DEV_MODE
+	bool "Development mode (use settings instead of UICR/PIB)"
+	select HIO_CONFIG
+
+config HIO_INFO_DEFAULT_VENDOR_NAME
+	string "Default vendor name"
+	default "HARDWARIO"
+
+config HIO_INFO_DEFAULT_PRODUCT_NAME
+	string "Default product name"
+	default "(unset)"
+
+config HIO_INFO_DEFAULT_HW_VARIANT
+	string "Default hardware variant"
+	default "(unset)"
+
+config HIO_INFO_DEFAULT_HW_REVISION
+	string "Default hardware revision"
+	default "(unset)"
+
+config HIO_INFO_DEFAULT_SERIAL_NUMBER
+	string "Default serial number"
+	default "(unset)"
+
+config HIO_INFO_DEFAULT_CLAIM_TOKEN
+	string "Default claim token"
+	default "(unset)"
+
+config HIO_INFO_DEFAULT_BLE_PASSKEY
+	string "Default BLE passkey"
+	default "(unset)"
+
 config HIO_INFO_INIT_PRIORITY
 	int "Initialization priority"
 	default 0
