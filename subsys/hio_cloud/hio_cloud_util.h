@@ -21,7 +21,9 @@
 extern "C" {
 #endif
 
-int hio_cloud_calculate_hash(uint8_t hash[8], const uint8_t *buf, size_t len);
+int hio_cloud_calculate_hash(uint8_t hash[8],
+			     const uint8_t *buf1, size_t len1,
+			     const uint8_t *buf2, size_t len2);
 
 int hio_cloud_util_shell_cmd(const char *cmd, struct hio_buf *buf);
 

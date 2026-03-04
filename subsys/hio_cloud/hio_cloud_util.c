@@ -27,15 +27,52 @@
 #include <zephyr/sys/byteorder.h>
 
 /* HIO includes */
+#include <zephyr/version.h>
+#if KERNEL_VERSION_MAJOR >= 4
+#include <psa/crypto.h>
+#else
 #include <tinycrypt/constants.h>
 #include <tinycrypt/sha256.h>
+#endif
 
 LOG_MODULE_REGISTER(cloud_util, CONFIG_HIO_CLOUD_LOG_LEVEL);
 
-int hio_cloud_calculate_hash(uint8_t hash[8], const uint8_t *buf, size_t len)
+int hio_cloud_calculate_hash(uint8_t hash[8],
+			     const uint8_t *buf1, size_t len1,
+			     const uint8_t *buf2, size_t len2)
 {
-	int ret;
+	uint8_t digest[32];
 
+#if KERNEL_VERSION_MAJOR >= 4
+	psa_hash_operation_t op = PSA_HASH_OPERATION_INIT;
+	size_t olen;
+	psa_status_t status;
+	status = psa_hash_setup(&op, PSA_ALG_SHA_256);
+	if (status != PSA_SUCCESS) {
+		LOG_ERR("Call `psa_hash_setup` failed: %d", (int)status);
+		return -EINVAL;
+	}
+	status = psa_hash_update(&op, buf1, len1);
+	if (status != PSA_SUCCESS) {
+		LOG_ERR("Call `psa_hash_update` failed: %d", (int)status);
+		psa_hash_abort(&op);
+		return -EINVAL;
+	}
+	if (buf2 != NULL && len2 > 0) {
+		status = psa_hash_update(&op, buf2, len2);
+		if (status != PSA_SUCCESS) {
+			LOG_ERR("Call `psa_hash_update` (buf2) failed: %d", (int)status);
+			psa_hash_abort(&op);
+			return -EINVAL;
+		}
+	}
+	status = psa_hash_finish(&op, digest, sizeof(digest), &olen);
+	if (status != PSA_SUCCESS) {
+		LOG_ERR("Call `psa_hash_finish` failed: %d", (int)status);
+		return -EINVAL;
+	}
+#else
+	int ret;
 	struct tc_sha256_state_struct s;
 	ret = tc_sha256_init(&s);
 	if (ret != TC_CRYPTO_SUCCESS) {
@@ -43,18 +80,26 @@ int hio_cloud_calculate_hash(uint8_t hash[8], const uint8_t *buf, size_t len)
 		return ret;
 	}
 
-	ret = tc_sha256_update(&s, buf, len);
+	ret = tc_sha256_update(&s, buf1, len1);
 	if (ret != TC_CRYPTO_SUCCESS) {
 		LOG_ERR("Call `tc_sha256_update` failed: %d", ret);
 		return ret;
 	}
 
-	uint8_t digest[32];
+	if (buf2 != NULL && len2 > 0) {
+		ret = tc_sha256_update(&s, buf2, len2);
+		if (ret != TC_CRYPTO_SUCCESS) {
+			LOG_ERR("Call `tc_sha256_update` (buf2) failed: %d", ret);
+			return ret;
+		}
+	}
+
 	ret = tc_sha256_final(digest, &s);
 	if (ret != TC_CRYPTO_SUCCESS) {
 		LOG_ERR("Call `tc_sha256_final` failed: %d", ret);
 		return ret;
 	}
+#endif
 
 	for (int i = 0; i < 8; i++) {
 		hash[i] = digest[i] ^ digest[8 + i] ^ digest[16 + i] ^ digest[24 + i];

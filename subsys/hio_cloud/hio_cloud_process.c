@@ -37,8 +37,6 @@
 #include <hio/hio_sys.h>
 
 /* Standard includes */
-#include <tinycrypt/constants.h>
-#include <tinycrypt/sha256.h>
 
 LOG_MODULE_REGISTER(cloud_process, CONFIG_HIO_CLOUD_LOG_LEVEL);
 

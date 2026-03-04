@@ -5,6 +5,7 @@
  */
 
 #include "hio_cloud_packet.h"
+#include "hio_cloud_util.h"
 
 /* HIO includes */
 #include <hio/hio_buf.h>
@@ -14,9 +15,6 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/byteorder.h>
 #include <zephyr/sys/util.h>
-
-#include <tinycrypt/constants.h>
-#include <tinycrypt/sha256.h>
 
 /* Standard includes */
 #include <errno.h>
@@ -79,53 +77,6 @@ int hio_cloud_packet_unpack(struct hio_cloud_packet *pck, struct hio_buf *buf)
 	return 0;
 }
 
-static int calculate_packet_hash(uint8_t packet_hash[8], uint8_t claim_token[16],
-				 const uint8_t *buf, size_t len)
-{
-	int ret;
-
-	struct tc_sha256_state_struct s;
-	ret = tc_sha256_init(&s);
-	if (ret != TC_CRYPTO_SUCCESS) {
-		LOG_ERR("Call `tc_sha256_init` failed: %d", ret);
-		return ret;
-	}
-
-	ret = tc_sha256_update(&s, claim_token, 16);
-	if (ret != TC_CRYPTO_SUCCESS) {
-		LOG_ERR("Call `tc_sha256_update` failed: %d", ret);
-		return ret;
-	}
-
-	ret = tc_sha256_update(&s, buf, len);
-	if (ret != TC_CRYPTO_SUCCESS) {
-		LOG_ERR("Call `tc_sha256_update` failed: %d", ret);
-		return ret;
-	}
-
-	uint8_t digest[32];
-	ret = tc_sha256_final(digest, &s);
-	if (ret != TC_CRYPTO_SUCCESS) {
-		LOG_ERR("Call `tc_sha256_final` failed: %d", ret);
-		return ret;
-	}
-
-	for (int i = 0; i < 8; i++) {
-		packet_hash[i] = digest[i] ^ digest[8 + i] ^ digest[16 + i] ^ digest[24 + i];
-	}
-
-#if 0
-	LOG_HEXDUMP_INF(claim_token, 16, "Claim token:");
-	LOG_HEXDUMP_INF(buf, len, "Buffer:");
-	LOG_HEXDUMP_INF(&digest[0], 8, "Digest 1:");
-	LOG_HEXDUMP_INF(&digest[8], 8, "Digest 2:");
-	LOG_HEXDUMP_INF(&digest[16], 8, "Digest 3:");
-	LOG_HEXDUMP_INF(&digest[24], 8, "Digest 4:");
-	LOG_HEXDUMP_INF(packet_hash, 8, "Packet hash:");
-#endif
-
-	return 0;
-}
 
 int hio_cloud_packet_signed_pack(struct hio_cloud_packet *pck, uint32_t serial_number,
 				 uint8_t claim_token[16], struct hio_buf *buf)
@@ -171,9 +122,9 @@ int hio_cloud_packet_signed_pack(struct hio_cloud_packet *pck, uint32_t serial_n
 	}
 
 	uint8_t packet_hash[8];
-	ret = calculate_packet_hash(packet_hash, claim_token, hio_buf_get_mem(buf) + 8, used - 8);
+	ret = hio_cloud_calculate_hash(packet_hash, claim_token, 16, hio_buf_get_mem(buf) + 8, used - 8);
 	if (ret) {
-		LOG_ERR("Call `calculate_packet_hash` failed: %d", ret);
+		LOG_ERR("Call `hio_cloud_calculate_hash` failed: %d", ret);
 		return ret;
 	}
 
@@ -209,10 +160,10 @@ int hio_cloud_packet_signed_unpack(struct hio_cloud_packet *pck, uint32_t *seria
 	}
 
 	uint8_t packet_hash[8];
-	ret = calculate_packet_hash(packet_hash, claim_token, hio_buf_get_mem(buf) + 8,
-				    hio_buf_get_used(buf) - 8);
+	ret = hio_cloud_calculate_hash(packet_hash, claim_token, 16,
+				       hio_buf_get_mem(buf) + 8, hio_buf_get_used(buf) - 8);
 	if (ret) {
-		LOG_ERR("Call `calculate_packet_hash` failed: %d", ret);
+		LOG_ERR("Call `hio_cloud_calculate_hash` failed: %d", ret);
 		return ret;
 	}
 

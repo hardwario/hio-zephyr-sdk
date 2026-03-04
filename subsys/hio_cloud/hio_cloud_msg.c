@@ -499,7 +499,7 @@ int hio_cloud_msg_pack_config(struct hio_buf *buf)
 	}
 
 	uint8_t hash[8];
-	hio_cloud_calculate_hash(hash, outp, size);
+	hio_cloud_calculate_hash(hash, outp, size, NULL, 0);
 
 	ret = hio_buf_append_mem(buf, hash, sizeof(hash));
 	if (ret) {
