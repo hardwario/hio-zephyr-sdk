@@ -2,6 +2,7 @@ config HIO_LTE
 	bool "HIO_LTE"
 	select HIO_CONFIG
 	select HIO_BUF
+	select HIO_RTC
 	select AT_MONITOR
 	select EVENTS
 	select NRF_MODEM_LIB
