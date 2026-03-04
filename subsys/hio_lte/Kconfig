@@ -15,7 +15,7 @@ if HIO_LTE
 
 config HIO_LTE_DEFAULT_MODE
 	string "HIO_LTE_DEFAULT_MODE"
-	default "nb-iot"
+	default "nb-lte-m,nb-iot"
 
 config HIO_LTE_DEFAULT_BANDS
 	string "HIO_LTE_DEFAULT_BANDS"
