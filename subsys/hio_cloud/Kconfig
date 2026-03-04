@@ -6,14 +6,37 @@ config HIO_CLOUD
 	select HIO_RTC
 	select HIO_SYS
 	select EVENTS
-	select TINYCRYPT_SHA256
-	select TINYCRYPT
 	select ZCBOR
 	select ZCBOR_STOP_ON_ERROR
 	select SHELL
 	select SHELL_BACKEND_DUMMY
 
 if HIO_CLOUD
+
+choice HIO_CLOUD_HASH
+	prompt "Hash crypto backend"
+	default HIO_CLOUD_HASH_TINYCRYPT if ZEPHYR_VERSION_MAJOR < 3
+	default HIO_CLOUD_HASH_MBEDTLS if ZEPHYR_VERSION_MAJOR >= 3
+
+config HIO_CLOUD_HASH_MBEDTLS
+	bool "mbedTLS"
+	select NRF_SECURITY
+	select MBEDTLS_LEGACY_CRYPTO_C
+	select MBEDTLS_SHA256_C
+	select MBEDTLS_ENABLE_HEAP
+
+config HIO_CLOUD_HASH_TINYCRYPT
+	bool "TinyCrypt"
+	select TINYCRYPT
+	select TINYCRYPT_SHA256
+
+config HIO_CLOUD_HASH_PSA
+	bool "PSA Crypto"
+	select NRF_SECURITY
+	select MBEDTLS_PSA_CRYPTO_C
+	select PSA_WANT_ALG_SHA_256
+
+endchoice
 
 config HIO_CLOUD_DEFAULT_ADDR
 	string "HIO_CLOUD_DEFAULT_ADDR"

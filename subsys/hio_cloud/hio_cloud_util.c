@@ -26,9 +26,10 @@
 #include <zephyr/shell/shell_dummy.h>
 #include <zephyr/sys/byteorder.h>
 
-/* HIO includes */
-#include <zephyr/version.h>
-#if KERNEL_VERSION_MAJOR >= 4
+/* Crypto includes */
+#if IS_ENABLED(CONFIG_HIO_CLOUD_HASH_MBEDTLS)
+#include <mbedtls/sha256.h>
+#elif IS_ENABLED(CONFIG_HIO_CLOUD_HASH_PSA)
 #include <psa/crypto.h>
 #else
 #include <tinycrypt/constants.h>
@@ -43,32 +44,64 @@ int hio_cloud_calculate_hash(uint8_t hash[8],
 {
 	uint8_t digest[32];
 
-#if KERNEL_VERSION_MAJOR >= 4
-	psa_hash_operation_t op = PSA_HASH_OPERATION_INIT;
-	size_t olen;
+#if IS_ENABLED(CONFIG_HIO_CLOUD_HASH_MBEDTLS)
+	int ret;
+	mbedtls_sha256_context ctx;
+	mbedtls_sha256_init(&ctx);
+	ret = mbedtls_sha256_starts(&ctx, 0);
+	if (ret) {
+		LOG_ERR("Call `mbedtls_sha256_starts` failed: %d", ret);
+		mbedtls_sha256_free(&ctx);
+		return -EINVAL;
+	}
+	ret = mbedtls_sha256_update(&ctx, buf1, len1);
+	if (ret) {
+		LOG_ERR("Call `mbedtls_sha256_update` failed: %d", ret);
+		mbedtls_sha256_free(&ctx);
+		return -EINVAL;
+	}
+	if (buf2 != NULL && len2 > 0) {
+		ret = mbedtls_sha256_update(&ctx, buf2, len2);
+		if (ret) {
+			LOG_ERR("Call `mbedtls_sha256_update` (buf2) failed: %d", ret);
+			mbedtls_sha256_free(&ctx);
+			return -EINVAL;
+		}
+	}
+	ret = mbedtls_sha256_finish(&ctx, digest);
+	if (ret) {
+		LOG_ERR("Call `mbedtls_sha256_finish` failed: %d", ret);
+		mbedtls_sha256_free(&ctx);
+		return -EINVAL;
+	}
+	mbedtls_sha256_free(&ctx);
+#elif IS_ENABLED(CONFIG_HIO_CLOUD_HASH_PSA)
 	psa_status_t status;
+	psa_hash_operation_t op = PSA_HASH_OPERATION_INIT;
 	status = psa_hash_setup(&op, PSA_ALG_SHA_256);
 	if (status != PSA_SUCCESS) {
-		LOG_ERR("Call `psa_hash_setup` failed: %d", (int)status);
+		LOG_ERR("Call `psa_hash_setup` failed: %d", status);
 		return -EINVAL;
 	}
 	status = psa_hash_update(&op, buf1, len1);
 	if (status != PSA_SUCCESS) {
-		LOG_ERR("Call `psa_hash_update` failed: %d", (int)status);
+		LOG_ERR("Call `psa_hash_update` failed: %d", status);
 		psa_hash_abort(&op);
 		return -EINVAL;
 	}
 	if (buf2 != NULL && len2 > 0) {
 		status = psa_hash_update(&op, buf2, len2);
 		if (status != PSA_SUCCESS) {
-			LOG_ERR("Call `psa_hash_update` (buf2) failed: %d", (int)status);
+			LOG_ERR("Call `psa_hash_update` (buf2) failed: %d", status);
 			psa_hash_abort(&op);
 			return -EINVAL;
 		}
 	}
-	status = psa_hash_finish(&op, digest, sizeof(digest), &olen);
+	size_t hash_len;
+	status = psa_hash_finish(&op, digest, sizeof(digest), &hash_len);
 	if (status != PSA_SUCCESS) {
-		LOG_ERR("Call `psa_hash_finish` failed: %d", (int)status);
+		LOG_ERR("Call `psa_hash_finish` failed: %d", status);
+		psa_hash_abort(&op);
 		return -EINVAL;
 	}
 #else
