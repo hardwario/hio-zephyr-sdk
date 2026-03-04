@@ -40,7 +40,7 @@ LOG_MODULE_REGISTER(hio_rtc, CONFIG_HIO_RTC_LOG_LEVEL);
 #define RTC_IRQ_HANDLER nrfx_grtc_irq_handler
 static uint8_t m_grtc_channel;
 #else
-/* NRF52 uses RTC peripheral */
+/* NRF52/NRF91 use RTC peripheral */
 #define RTC_IRQn        RTC0_IRQn
 #define RTC_IRQ_HANDLER nrfx_rtc_0_irq_handler
 static const nrfx_rtc_t m_rtc = NRFX_RTC_INSTANCE(0);
@@ -504,9 +504,9 @@ static int init(void)
 	/* NRF52 RTC initialization */
 	nrfx_rtc_config_t config = NRFX_RTC_DEFAULT_CONFIG;
 	config.prescaler = 4095;
-	nrfx_err_t err = nrfx_rtc_init(&m_rtc, &config, rtc_handler);
-	if (err != NRFX_SUCCESS) {
-		LOG_ERR("Call `nrfx_rtc_init` failed: %d", (int)err);
+	(void)nrfx_rtc_init(&m_rtc, &config, rtc_handler);
+	if (!nrfx_rtc_init_check(&m_rtc)) {
+		LOG_ERR("Call `nrfx_rtc_init` failed");
 		return -EIO;
 	}
 
