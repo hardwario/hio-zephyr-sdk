@@ -10,12 +10,11 @@
 /* Nordic includes */
 #include <ncs_version.h>
 
-#if defined(CONFIG_SOC_NRF52X)
-#include <nrf52.h>
-#elif defined(CONFIG_SOC_NRF9151_LACA)
-#include <nrf9120.h>
+#if defined(CONFIG_BUILD_WITH_TFM)
 #include <tfm_ns_interface.h>
 #include <tfm_ioctl_api.h>
+#elif defined(CONFIG_SOC_SERIES_NRF52X)
+#include <nrf52.h>
 #elif defined(CONFIG_SOC_SERIES_NRF54LX)
 #if NCS_VERSION_NUMBER < 0x30201
 #include <nrf54l15.h>
@@ -112,15 +111,7 @@ static int load_pib(void)
 {
 	uint8_t pib[128];
 
-#if defined(CONFIG_SOC_SERIES_NRF52X)
-	for (int i = 0; i < (ARRAY_SIZE(pib) / 4); i++) {
-		((uint32_t *)pib)[i] = NRF_UICR->CUSTOMER[i];
-	}
-#elif defined(CONFIG_SOC_SERIES_NRF54LX)
-	for (int i = 0; i < (ARRAY_SIZE(pib) / 4); i++) {
-		((uint32_t *)pib)[i] = NRF_UICR->OTP[i];
-	}
-#else
+#if defined(CONFIG_BUILD_WITH_TFM)
 	uint32_t err = 0;
 	enum tfm_platform_err_t plt_err;
 	const uint32_t uicr_otp_start = NRF_UICR_S_BASE + offsetof(NRF_UICR_Type, OTP);
@@ -129,6 +120,17 @@ static int load_pib(void)
 		LOG_ERR("tfm_platform_mem_read failed: %d", err);
 		return -1;
 	}
+#elif defined(CONFIG_SOC_SERIES_NRF52X)
+	for (int i = 0; i < (ARRAY_SIZE(pib) / 4); i++) {
+		((uint32_t *)pib)[i] = NRF_UICR->CUSTOMER[i];
+	}
+#elif defined(CONFIG_SOC_SERIES_NRF54LX)
+	for (int i = 0; i < (ARRAY_SIZE(pib) / 4); i++) {
+		((uint32_t *)pib)[i] = NRF_UICR->OTP[i];
+	}
+#else
+	LOG_ERR("Unsupported SoC series");
+	return -ENOTSUP;
 #endif
 
 	LOG_HEXDUMP_DBG(pib, sizeof(pib), "PIB dump:");
