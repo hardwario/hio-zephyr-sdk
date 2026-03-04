@@ -81,9 +81,9 @@ static void async_callback(const struct device *dev, struct uart_event *evt, voi
 	case UART_RX_RDY:
 		if (evt->data.rx.buf == NULL || evt->data.rx.len == 0) {
 			LOG_ERR("RX_RDY with NULL buffer or zero length");
-		} else {
-			uart_async_rx_on_rdy(&uart->async_rx, evt->data.rx.buf, evt->data.rx.len);
+			break;
 		}
+		uart_async_rx_on_rdy(&uart->async_rx, evt->data.rx.buf, evt->data.rx.len);
 		uart->handler(HIO_ATCI_BACKEND_EVT_RX_RDY, uart->handler_ctx);
 		break;
 	case UART_RX_BUF_REQUEST: {
@@ -110,7 +110,26 @@ static void async_callback(const struct device *dev, struct uart_event *evt, voi
 		break;
 	case UART_RX_DISABLED:
 		LOG_INF("RX disabled");
-		k_sem_give(&uart->disable_sem);
+		if (uart->enabled) {
+			/* RX was disabled unexpectedly (e.g. buffer starvation during
+			 * heavy TX). Re-enable RX to restore communication. */
+			uart_async_rx_reset(&uart->async_rx);
+			uint8_t *buf = uart_async_rx_buf_req(&uart->async_rx);
+			if (buf) {
+				size_t len = uart_async_rx_get_buf_len(&uart->async_rx);
+				uart->pending_rx_req = 0;
+				int ret = uart_rx_enable(dev, buf, len, RX_TIMEOUT);
+				if (ret < 0) {
+					LOG_ERR("Failed to re-enable RX: %d", ret);
+				} else {
+					LOG_INF("RX re-enabled after buffer starvation");
+				}
+			} else {
+				LOG_ERR("No buffer available for RX re-enable");
+			}
+		} else {
+			k_sem_give(&uart->disable_sem);
+		}
 		break;
 	default:
 		break;

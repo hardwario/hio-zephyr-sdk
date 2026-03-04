@@ -46,7 +46,7 @@ config HIO_ATCI_BACKEND_UART_ASYNC_RX_BUFFER_COUNT
 
 config HIO_ATCI_BACKEND_UART_ASYNC_RX_BUFFER_SIZE
 	int "Size of the RX buffer"
-	default 8
+	default 32
 	help
 	  Size of a single RX buffer. Together with buffer count it defines the
 	  space that can hold RX data. It may be decreased if atci input is
