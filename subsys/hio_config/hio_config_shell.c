@@ -43,8 +43,8 @@ static int item_print_value(const struct shell *shell, const struct hio_config *
 		memcpy(&val, item->variable, item->size);
 
 		if (val < 0 || val >= item->max) {
-			shell_print(shell, "%s config %s <invalid: %d>", module->name,
-				    item->name, val);
+			shell_print(shell, "%s config %s <invalid: %d>", module->name, item->name,
+				    val);
 		} else {
 			shell_print(shell, "%s config %s \"%s\"", module->name, item->name,
 				    item->enums[val]);
@@ -139,6 +139,14 @@ int hio_config_shell_cmd(const struct shell *shell, size_t argc, char **argv)
 			return 0;
 		}
 
+		if (strcmp(argv[1], "reset") == 0) {
+			ret = hio_config_module_reset(module);
+			if (ret) {
+				shell_error(shell, "module reset failed: %d", ret);
+			}
+			return ret;
+		}
+
 		struct hio_config_item *item;
 		for (int i = 0; i < module->nitems; i++) {
 			item = &module->items[i];
@@ -189,9 +197,16 @@ int hio_config_shell_cmd(const struct shell *shell, size_t argc, char **argv)
 	}
 
 	/* No parameter name, print help */
+	shell_print(shell, "Subcommands:");
 	for (int i = 0; i < module->nitems; i++) {
 		item_print_help(shell, &module->items[i]);
 	}
+	shell_print(shell, "Usage:");
+	shell_print(shell, "  %s config show              Show all values.", module_name);
+	shell_print(shell, "  %s config reset             Reset to defaults.", module_name);
+	shell_print(shell, "  %s config <param>           Read value.", module_name);
+	shell_print(shell, "  %s config <param> <value>   Set value.", module_name);
+	shell_print(shell, "  %s config <param*>          Wildcard match.", module_name);
 	return 0;
 }
 

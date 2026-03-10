@@ -21,7 +21,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-
 LOG_MODULE_REGISTER(hio_config, CONFIG_HIO_CONFIG_LOG_LEVEL);
 
 #define CONFIG_EVENT_READY BIT(0)
@@ -42,8 +41,8 @@ static int item_init(const struct hio_config_item *item)
 		return 0;
 	case HIO_CONFIG_TYPE_ENUM:
 		if (item->default_enum < 0 || item->default_enum >= item->max) {
-			LOG_ERR("Enum default %d out of range [0, %d) for '%s'",
-				item->default_enum, item->max, item->name);
+			LOG_ERR("Enum default %d out of range [0, %d) for '%s'", item->default_enum,
+				item->max, item->name);
 			return -EINVAL;
 		}
 		memcpy(item->variable, &item->default_enum, item->size);
@@ -279,6 +278,65 @@ int hio_config_reset_without_reboot(void)
 	return reset();
 }
 
+int hio_config_module_iter_items(struct hio_config *module, hio_config_item_cb_t cb,
+				 void *user_data)
+{
+	if (module == NULL || cb == NULL) {
+		return -EINVAL;
+	}
+
+	if (module->items != NULL && module->nitems > 0) {
+		for (int i = 0; i < module->nitems; i++) {
+			int ret = cb(module, &module->items[i], user_data);
+			if (ret) {
+				return ret;
+			}
+		}
+	}
+
+	return 0;
+}
+
+static int module_reset(struct hio_config *module)
+{
+	if (module == NULL) {
+		return -EINVAL;
+	}
+
+	hio_config_module_iter_items(module, delete_item_cb, NULL);
+
+	for (int i = 0; i < module->nitems; i++) {
+		item_init(&module->items[i]);
+	}
+
+	int ret = commit(module);
+	if (ret) {
+		LOG_ERR("Commit failed for module '%s': %d", module->name, ret);
+		return ret;
+	}
+
+	LOG_INF("Module '%s' reset to defaults", module->name);
+
+	return 0;
+}
+
+int hio_config_module_reset(struct hio_config *module)
+{
+	int ret = module_reset(module);
+	if (ret) {
+		return ret;
+	}
+
+	hio_sys_reboot("Module config reset");
+
+	return 0;
+}
+
+int hio_config_module_reset_without_reboot(struct hio_config *module)
+{
+	return module_reset(module);
+}
+
 int hio_config_iter_modules(hio_config_module_cb_t cb, void *user_data)
 {
 	struct hio_config *module;
@@ -293,36 +351,31 @@ int hio_config_iter_modules(hio_config_module_cb_t cb, void *user_data)
 	return 0;
 }
 
+static int iter_items_cb(const struct hio_config *module, void *user_data)
+{
+	void **args = user_data;
+	hio_config_item_cb_t cb = args[0];
+
+	return hio_config_module_iter_items((struct hio_config *)module, cb, args[1]);
+}
+
 int hio_config_iter_items(const char *filter_module, hio_config_item_cb_t cb, void *user_data)
 {
 	if (cb == NULL) {
 		return -EINVAL;
 	}
 
-	struct hio_config *module;
-
-	SYS_SLIST_FOR_EACH_CONTAINER(&m_list, module, node) {
-		if (filter_module && filter_module[0] != '\0') {
-			if (strcmp(module->name, filter_module) != 0) {
-				continue;
-			}
+	if (filter_module && filter_module[0] != '\0') {
+		struct hio_config *module;
+		int ret = hio_config_find_module(filter_module, &module);
+		if (ret) {
+			return ret;
 		}
-
-		if (module->items != NULL && module->nitems > 0) {
-			for (int i = 0; i < module->nitems; i++) {
-				int ret = cb(module, &module->items[i], user_data);
-				if (ret) {
-					return ret;
-				}
-			}
-		}
-
-		if (filter_module && filter_module[0] != '\0') {
-			break; /* if found */
-		}
+		return hio_config_module_iter_items(module, cb, user_data);
 	}
 
-	return 0;
+	void *args[] = {cb, user_data};
+	return hio_config_iter_modules(iter_items_cb, args);
 }
 
 int hio_config_find_module(const char *name, struct hio_config **module)

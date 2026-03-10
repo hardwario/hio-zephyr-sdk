@@ -225,6 +225,38 @@ typedef int (*hio_config_item_cb_t)(const struct hio_config *module,
 int hio_config_iter_items(const char *filter_module, hio_config_item_cb_t cb, void *user_data);
 
 /**
+ * @brief Iterate over configuration items within a specific module.
+ *
+ * @param module    Pointer to the configuration module.
+ * @param cb        Callback called for each item.
+ * @param user_data User context pointer.
+ *
+ * @return 0 on success or first non-zero value returned by callback.
+ */
+int hio_config_module_iter_items(struct hio_config *module, hio_config_item_cb_t cb,
+				 void *user_data);
+
+/**
+ * @brief Reset a single module's configuration to defaults.
+ *
+ * Deletes stored settings, re-initializes items to defaults, commits, and saves.
+ *
+ * @param module Pointer to the configuration module to reset.
+ *
+ * @return 0 on success, negative error code on failure.
+ */
+int hio_config_module_reset(struct hio_config *module);
+
+/**
+ * @brief Reset a single module's configuration to defaults without rebooting.
+ *
+ * @param module Pointer to the configuration module to reset.
+ *
+ * @return 0 on success, negative error code on failure.
+ */
+int hio_config_module_reset_without_reboot(struct hio_config *module);
+
+/**
  * @brief Find a module by name.
  *
  * Searches for a registered module by its name.
