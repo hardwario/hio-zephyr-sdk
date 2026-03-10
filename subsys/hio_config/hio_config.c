@@ -21,7 +21,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-#define SETTINGS_PFX ""
 
 LOG_MODULE_REGISTER(hio_config, CONFIG_HIO_CONFIG_LOG_LEVEL);
 
@@ -42,10 +41,16 @@ static int item_init(const struct hio_config_item *item)
 		*(bool *)item->variable = item->default_bool;
 		return 0;
 	case HIO_CONFIG_TYPE_ENUM:
+		if (item->default_enum < 0 || item->default_enum >= item->max) {
+			LOG_ERR("Enum default %d out of range [0, %d) for '%s'",
+				item->default_enum, item->max, item->name);
+			return -EINVAL;
+		}
 		memcpy(item->variable, &item->default_enum, item->size);
 		return 0;
 	case HIO_CONFIG_TYPE_STRING:
-		strcpy(item->variable, item->default_string);
+		strncpy(item->variable, item->default_string, item->size - 1);
+		((char *)item->variable)[item->size - 1] = '\0';
 		return 0;
 	case HIO_CONFIG_TYPE_HEX:
 		memcpy(item->variable, item->default_hex, item->size);
@@ -61,7 +66,7 @@ static int load_direct_cb(const char *key, size_t len, settings_read_cb read_cb,
 {
 	struct hio_config *module = (struct hio_config *)param;
 
-	LOG_DBG("moudule: %s key: %s", module->name, key);
+	LOG_DBG("module: %s key: %s", module->name, key);
 
 	int ret;
 	const char *next;
@@ -203,11 +208,11 @@ static int delete_item_cb(const struct hio_config *module, const struct hio_conf
 	}
 
 	if (item->name == NULL) {
-		LOG_ERR("Item '%s' has no name", item->name);
+		LOG_ERR("Item has no name");
 		return -EINVAL;
 	}
 
-	char settings_key[50];
+	char settings_key[CONFIG_HIO_CONFIG_SETTINGS_KEY_MAX];
 	snprintf(settings_key, sizeof(settings_key), "%s/%s",
 		 module->storage_name ? module->storage_name : module->name, item->name);
 
@@ -400,11 +405,10 @@ static int parse_int(const struct hio_config_item *item, char *argv, const char 
 
 static int parse_float(const struct hio_config_item *item, char *argv, const char **err_msg)
 {
-	float value;
-	int ret = sscanf(argv, "%f", &value);
-
-	if (ret != 1) {
-		*err_msg = "Invalid value";
+	char *endptr;
+	float value = strtof(argv, &endptr);
+	if (*endptr != '\0') {
+		*err_msg = "Invalid format";
 		return -EINVAL;
 	}
 
@@ -462,7 +466,8 @@ static int parse_string(const struct hio_config_item *item, char *argv, const ch
 		return -EINVAL;
 	}
 
-	strcpy(item->variable, argv);
+	strncpy(item->variable, argv, item->size - 1);
+	((char *)item->variable)[item->size - 1] = '\0';
 
 	return 0;
 }
@@ -522,7 +527,7 @@ static int h_commit(void)
 static int h_export_cb(const struct hio_config *module, const struct hio_config_item *item,
 		       void *user_data)
 {
-	char name_concat[64];
+	char name_concat[CONFIG_HIO_CONFIG_SETTINGS_KEY_MAX];
 	const char *subtree = module->storage_name ? module->storage_name : module->name;
 
 	snprintf(name_concat, sizeof(name_concat), "%s/%s", subtree, item->name);

@@ -46,8 +46,13 @@ static int item_print_value(const struct hio_atci *atci, const struct hio_config
 	case HIO_CONFIG_TYPE_ENUM: {
 		int32_t val = 0;
 		memcpy(&val, item->variable, item->size);
-		hio_atci_printfln(atci, "$CONFIG: \"%s\",\"%s\",\"%s\"", module->name, item->name,
-				  item->enums[val]);
+		if (val < 0 || val >= item->max) {
+			hio_atci_printfln(atci, "$CONFIG: \"%s\",\"%s\",<invalid: %d>",
+					  module->name, item->name, val);
+		} else {
+			hio_atci_printfln(atci, "$CONFIG: \"%s\",\"%s\",\"%s\"", module->name,
+					  item->name, item->enums[val]);
+		}
 		break;
 	}
 	case HIO_CONFIG_TYPE_STRING:
@@ -136,6 +141,7 @@ static int at_config_set(const struct hio_atci *atci, char *argv)
 			return -EINVAL;
 		}
 		strncpy(tmp, p, tmp_len - 1);
+		tmp[tmp_len - 1] = '\0';
 	}
 
 	const char *err_msg = NULL;

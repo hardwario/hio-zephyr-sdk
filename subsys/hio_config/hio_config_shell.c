@@ -42,8 +42,13 @@ static int item_print_value(const struct shell *shell, const struct hio_config *
 		int32_t val = 0;
 		memcpy(&val, item->variable, item->size);
 
-		shell_print(shell, "%s config %s \"%s\"", module->name, item->name,
-			    item->enums[val]);
+		if (val < 0 || val >= item->max) {
+			shell_print(shell, "%s config %s <invalid: %d>", module->name,
+				    item->name, val);
+		} else {
+			shell_print(shell, "%s config %s \"%s\"", module->name, item->name,
+				    item->enums[val]);
+		}
 		break;
 	}
 	case HIO_CONFIG_TYPE_STRING:
