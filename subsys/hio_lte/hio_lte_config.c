@@ -186,26 +186,29 @@ static int network_parse_cb(const struct hio_config_item *item, char *argv, cons
 
 static struct hio_config_item m_config_items[] = {
 	HIO_CONFIG_ITEM_BOOL("test", m_config_interim.test, "LTE test", false),
-	HIO_CONFIG_ITEM_STRING_PARSE_CB("mode", m_config_interim.mode,
-					"supported modes, ordered by priority\n"
-					"                     - lte-m,nb-iot\n"
-					"                     - nb-iot,lte-m\n"
-					"                     - lte-m\n"
-					"                     - nb-iot",
-					CONFIG_HIO_LTE_DEFAULT_MODE, mode_parse_cb),
-	HIO_CONFIG_ITEM_STRING_PARSE_CB(
+	HIO_CONFIG_ITEM_STRING("mode", m_config_interim.mode,
+				"supported modes, ordered by priority\n"
+				"                     - lte-m,nb-iot\n"
+				"                     - nb-iot,lte-m\n"
+				"                     - lte-m\n"
+				"                     - nb-iot",
+				CONFIG_HIO_LTE_DEFAULT_MODE,
+				.parse_cb = mode_parse_cb,),
+	HIO_CONFIG_ITEM_STRING(
 		"bands", m_config_interim.bands,
 		"supported bands (\"\" means no bands lock or listed with comma separator): \n"
 		"                     - LTE-M:  "
 		"1,2,3,4,5,8,12,13,18,19,20,25,26,28,66,85,106\n"
 		"                     - NB-IoT: "
 		"1,2,3,4,5,8,12,13,17,19,20,25,26,28,65,66,85,106",
-		CONFIG_HIO_LTE_DEFAULT_BANDS, bands_parse_cb),
+		CONFIG_HIO_LTE_DEFAULT_BANDS,
+		.parse_cb = bands_parse_cb,),
 
-	HIO_CONFIG_ITEM_STRING_PARSE_CB(
+	HIO_CONFIG_ITEM_STRING(
 		"network", m_config_interim.network,
 		"network (\"\" means automatic network selection or PLMN ID (format: 5-6 digits)",
-		CONFIG_HIO_LTE_DEFAULT_NETWORK, network_parse_cb),
+		CONFIG_HIO_LTE_DEFAULT_NETWORK,
+		.parse_cb = network_parse_cb,),
 	HIO_CONFIG_ITEM_STRING("apn", m_config_interim.apn, "network APN",
 			       CONFIG_HIO_LTE_DEFAULT_APN),
 	HIO_CONFIG_ITEM_ENUM("auth", m_config_interim.auth, m_enum_auth_items,

@@ -514,7 +514,19 @@ static int parse_enum(const struct hio_config_item *item, char *argv, const char
 
 static int parse_string(const struct hio_config_item *item, char *argv, const char **err_msg)
 {
-	if (strlen(argv) + 1 > item->size) {
+	size_t len = strlen(argv);
+
+	if (item->min > 0 && (int)len < item->min) {
+		*err_msg = "Value too short";
+		return -EINVAL;
+	}
+
+	if (item->max > 0 && (int)len > item->max) {
+		*err_msg = "Value too long";
+		return -EINVAL;
+	}
+
+	if (len + 1 > item->size) {
 		*err_msg = "Value too long";
 		return -EINVAL;
 	}

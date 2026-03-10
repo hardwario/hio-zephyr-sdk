@@ -26,7 +26,7 @@ enum hio_config_item_type {
 	HIO_CONFIG_TYPE_HEX,
 };
 
-#define HIO_CONFIG_ITEM_INT(_name_d, _var, _min, _max, _help, _default)                            \
+#define HIO_CONFIG_ITEM_INT(_name_d, _var, _min, _max, _help, _default, ...)                      \
 	{                                                                                          \
 		.name = _name_d,                                                                   \
 		.type = HIO_CONFIG_TYPE_INT,                                                       \
@@ -36,9 +36,10 @@ enum hio_config_item_type {
 		.max = _max,                                                                       \
 		.help = _help,                                                                     \
 		.default_int = _default,                                                           \
+		__VA_ARGS__                                                                        \
 	}
 
-#define HIO_CONFIG_ITEM_FLOAT(_name_d, _var, _min, _max, _help, _default)                          \
+#define HIO_CONFIG_ITEM_FLOAT(_name_d, _var, _min, _max, _help, _default, ...)                    \
 	{                                                                                          \
 		.name = _name_d,                                                                   \
 		.type = HIO_CONFIG_TYPE_FLOAT,                                                     \
@@ -48,9 +49,10 @@ enum hio_config_item_type {
 		.max = _max,                                                                       \
 		.help = _help,                                                                     \
 		.default_float = _default,                                                         \
+		__VA_ARGS__                                                                        \
 	}
 
-#define HIO_CONFIG_ITEM_BOOL(_name_d, _var, _help, _default)                                       \
+#define HIO_CONFIG_ITEM_BOOL(_name_d, _var, _help, _default, ...)                                 \
 	{                                                                                          \
 		.name = _name_d,                                                                   \
 		.type = HIO_CONFIG_TYPE_BOOL,                                                      \
@@ -58,9 +60,10 @@ enum hio_config_item_type {
 		.size = sizeof(_var),                                                              \
 		.help = _help,                                                                     \
 		.default_bool = _default,                                                          \
+		__VA_ARGS__                                                                        \
 	}
 
-#define HIO_CONFIG_ITEM_ENUM(_name_d, _var, _items_str, _help, _default)                           \
+#define HIO_CONFIG_ITEM_ENUM(_name_d, _var, _items_str, _help, _default, ...)                     \
 	{                                                                                          \
 		.name = _name_d,                                                                   \
 		.type = HIO_CONFIG_TYPE_ENUM,                                                      \
@@ -71,9 +74,10 @@ enum hio_config_item_type {
 		.help = _help,                                                                     \
 		.enums = _items_str,                                                               \
 		.default_enum = _default,                                                          \
+		__VA_ARGS__                                                                        \
 	}
 
-#define HIO_CONFIG_ITEM_STRING(_name_d, _var, _help, _default)                                     \
+#define HIO_CONFIG_ITEM_STRING(_name_d, _var, _help, _default, ...)                               \
 	{                                                                                          \
 		.name = _name_d,                                                                   \
 		.type = HIO_CONFIG_TYPE_STRING,                                                    \
@@ -81,20 +85,10 @@ enum hio_config_item_type {
 		.size = ARRAY_SIZE(_var),                                                          \
 		.help = _help,                                                                     \
 		.default_string = _default,                                                        \
+		__VA_ARGS__                                                                        \
 	}
 
-#define HIO_CONFIG_ITEM_STRING_PARSE_CB(_name_d, _var, _help, _default, _cb)                       \
-	{                                                                                          \
-		.name = _name_d,                                                                   \
-		.type = HIO_CONFIG_TYPE_STRING,                                                    \
-		.variable = _var,                                                                  \
-		.size = ARRAY_SIZE(_var),                                                          \
-		.help = _help,                                                                     \
-		.default_string = _default,                                                        \
-		.parse_cb = _cb,                                                                   \
-	}
-
-#define HIO_CONFIG_ITEM_HEX(_name_d, _var, _help, _default)                                        \
+#define HIO_CONFIG_ITEM_HEX(_name_d, _var, _help, _default, ...)                                  \
 	{                                                                                          \
 		.name = _name_d,                                                                   \
 		.type = HIO_CONFIG_TYPE_HEX,                                                       \
@@ -102,6 +96,7 @@ enum hio_config_item_type {
 		.size = ARRAY_SIZE(_var),                                                          \
 		.help = _help,                                                                     \
 		.default_hex = _default,                                                           \
+		__VA_ARGS__                                                                        \
 	}
 
 struct hio_config_item;
@@ -110,14 +105,14 @@ typedef int (*hio_config_parse_cb)(const struct hio_config_item *item, char *arg
 				   const char **err_msg);
 
 struct hio_config_item {
-	const char *name;
-	enum hio_config_item_type type;
-	void *variable;
-	size_t size;
-	int min;
-	int max;
-	const char *help;
-	const char **enums;
+	const char *name;              /**< Item name (used as settings key) */
+	enum hio_config_item_type type; /**< Value type */
+	void *variable;                /**< Pointer to the backing variable */
+	size_t size;                   /**< Size of the variable in bytes */
+	int min;                       /**< Minimum value (INT/FLOAT range, STRING min length, 0=no limit) */
+	int max;                       /**< Maximum value (INT/FLOAT range, ENUM count, STRING max length, 0=no limit) */
+	const char *help;              /**< Help text for shell/ATCI */
+	const char **enums;            /**< Enum string labels (ENUM type only) */
 	union {
 		int default_int;
 		float default_float;
@@ -126,7 +121,7 @@ struct hio_config_item {
 		const char *default_string;
 		const uint8_t *default_hex;
 	};
-	hio_config_parse_cb parse_cb;
+	hio_config_parse_cb parse_cb;  /**< Optional custom parse callback */
 };
 struct hio_config {
 	const char *name;              /**< Module name (used as prefix for settings) */
