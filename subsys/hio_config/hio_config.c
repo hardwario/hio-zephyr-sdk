@@ -26,6 +26,17 @@ LOG_MODULE_REGISTER(hio_config, CONFIG_HIO_CONFIG_LOG_LEVEL);
 #define CONFIG_EVENT_READY BIT(0)
 static K_EVENT_DEFINE(m_event);
 static sys_slist_t m_list = SYS_SLIST_STATIC_INIT(&m_list);
+static hio_config_access_cb m_access_cb;
+
+int hio_config_item_access(const struct hio_config *module, const struct hio_config_item *item)
+{
+	return m_access_cb ? m_access_cb(module, item) : HIO_CONFIG_ACCESS_RW;
+}
+
+void hio_config_set_access_cb(hio_config_access_cb cb)
+{
+	m_access_cb = cb;
+}
 
 static int item_init(const struct hio_config_item *item)
 {
@@ -287,6 +298,9 @@ int hio_config_module_iter_items(struct hio_config *module, hio_config_item_cb_t
 
 	if (module->items != NULL && module->nitems > 0) {
 		for (int i = 0; i < module->nitems; i++) {
+			if (!(hio_config_item_access(module, &module->items[i]) & HIO_CONFIG_ACCESS_SHOW)) {
+				continue;
+			}
 			int ret = cb(module, &module->items[i], user_data);
 			if (ret) {
 				return ret;
@@ -303,9 +317,11 @@ static int module_reset(struct hio_config *module)
 		return -EINVAL;
 	}
 
-	hio_config_module_iter_items(module, delete_item_cb, NULL);
-
 	for (int i = 0; i < module->nitems; i++) {
+		if (!(hio_config_item_access(module, &module->items[i]) & HIO_CONFIG_ACCESS_WRITE)) {
+			continue;
+		}
+		delete_item_cb(module, &module->items[i], NULL);
 		item_init(&module->items[i]);
 	}
 
@@ -549,8 +565,14 @@ static int parse_hex(const struct hio_config_item *item, char *argv, const char 
 	return 0;
 }
 
-int hio_config_item_parse(const struct hio_config_item *item, char *argv, const char **err_msg)
+int hio_config_module_item_set_value(const struct hio_config *module, const struct hio_config_item *item,
+			   char *argv, const char **err_msg)
 {
+	if (!(hio_config_item_access(module, item) & HIO_CONFIG_ACCESS_WRITE)) {
+		*err_msg = "Read-only";
+		return -EPERM;
+	}
+
 	if (item->parse_cb != NULL) {
 		return item->parse_cb(item, argv, err_msg);
 	}

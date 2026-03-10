@@ -134,6 +134,9 @@ int hio_config_shell_cmd(const struct shell *shell, size_t argc, char **argv)
 
 		if (strcmp(argv[1], "show") == 0) {
 			for (int i = 0; i < module->nitems; i++) {
+				if (!(hio_config_item_access(module, &module->items[i]) & HIO_CONFIG_ACCESS_SHOW)) {
+					continue;
+				}
 				item_print_value(shell, module, &module->items[i]);
 			}
 			return 0;
@@ -150,6 +153,10 @@ int hio_config_shell_cmd(const struct shell *shell, size_t argc, char **argv)
 		struct hio_config_item *item;
 		for (int i = 0; i < module->nitems; i++) {
 			item = &module->items[i];
+
+			if (!(hio_config_item_access(module, item) & HIO_CONFIG_ACCESS_READ)) {
+				continue;
+			}
 
 			if ((!has_wildcard && strcmp(argv[1], item->name) == 0) ||
 			    (has_wildcard &&
@@ -177,7 +184,7 @@ int hio_config_shell_cmd(const struct shell *shell, size_t argc, char **argv)
 			    (has_wildcard &&
 			     strncmp(argv[1], item->name, strlen(argv[1]) - 1) == 0)) {
 				const char *err_msg = NULL;
-				ret = hio_config_item_parse(item, argv[2], &err_msg);
+				ret = hio_config_module_item_set_value(module, item, argv[2], &err_msg);
 				if (ret) {
 					if (err_msg) {
 						shell_error(shell, "%s", err_msg);
@@ -199,6 +206,9 @@ int hio_config_shell_cmd(const struct shell *shell, size_t argc, char **argv)
 	/* No parameter name, print help */
 	shell_print(shell, "Subcommands:");
 	for (int i = 0; i < module->nitems; i++) {
+		if (!(hio_config_item_access(module, &module->items[i]) & HIO_CONFIG_ACCESS_SHOW)) {
+			continue;
+		}
 		item_print_help(shell, &module->items[i]);
 	}
 	shell_print(shell, "Usage:");

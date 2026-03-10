@@ -94,6 +94,10 @@ static int at_config_set(const struct hio_atci *atci, char *argv)
 
 	if (hio_tok_end(p)) {
 		for (int i = 0; i < module->nitems; i++) {
+			if (!(hio_config_item_access(module, &module->items[i]) &
+			      HIO_CONFIG_ACCESS_SHOW)) {
+				continue;
+			}
 			item_print_value(atci, module, &module->items[i]);
 		}
 		return 0;
@@ -113,6 +117,11 @@ static int at_config_set(const struct hio_atci *atci, char *argv)
 	if (ret) {
 		hio_atci_error(atci, "\"Item not found\"");
 		return ret;
+	}
+
+	if (!(hio_config_item_access(module, item) & HIO_CONFIG_ACCESS_READ)) {
+		hio_atci_error(atci, "\"Item not found\"");
+		return -ENOENT;
 	}
 
 	if (hio_tok_end(p)) {
@@ -145,7 +154,7 @@ static int at_config_set(const struct hio_atci *atci, char *argv)
 	}
 
 	const char *err_msg = NULL;
-	ret = hio_config_item_parse(item, tmp, &err_msg);
+	ret = hio_config_module_item_set_value(module, item, tmp, &err_msg);
 	if (ret) {
 		if (err_msg) {
 			hio_atci_errorf(atci, "\"%s\"", err_msg);

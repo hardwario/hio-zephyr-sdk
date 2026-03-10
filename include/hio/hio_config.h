@@ -17,6 +17,17 @@ extern "C" {
  * @{
  */
 
+/* Access control flags (returned by hio_config_access_cb) */
+#define HIO_CONFIG_ACCESS_READ  BIT(0)
+#define HIO_CONFIG_ACCESS_WRITE BIT(1)
+#define HIO_CONFIG_ACCESS_SHOW  BIT(2)
+
+#define HIO_CONFIG_ACCESS_NONE      0
+#define HIO_CONFIG_ACCESS_RW        (HIO_CONFIG_ACCESS_READ | HIO_CONFIG_ACCESS_WRITE | HIO_CONFIG_ACCESS_SHOW)
+#define HIO_CONFIG_ACCESS_RO        (HIO_CONFIG_ACCESS_READ | HIO_CONFIG_ACCESS_SHOW)
+#define HIO_CONFIG_ACCESS_HIDDEN_RW (HIO_CONFIG_ACCESS_READ | HIO_CONFIG_ACCESS_WRITE)
+#define HIO_CONFIG_ACCESS_HIDDEN_RO (HIO_CONFIG_ACCESS_READ)
+
 enum hio_config_item_type {
 	HIO_CONFIG_TYPE_INT,
 	HIO_CONFIG_TYPE_FLOAT,
@@ -26,77 +37,43 @@ enum hio_config_item_type {
 	HIO_CONFIG_TYPE_HEX,
 };
 
-#define HIO_CONFIG_ITEM_INT(_name_d, _var, _min, _max, _help, _default, ...)                      \
+#define HIO_CONFIG_ITEM_INT(_name_d, _var, _min, _max, _help, _default, ...)                       \
 	{                                                                                          \
-		.name = _name_d,                                                                   \
-		.type = HIO_CONFIG_TYPE_INT,                                                       \
-		.variable = &_var,                                                                 \
-		.size = sizeof(_var),                                                              \
-		.min = _min,                                                                       \
-		.max = _max,                                                                       \
-		.help = _help,                                                                     \
-		.default_int = _default,                                                           \
-		__VA_ARGS__                                                                        \
+		.name = _name_d, .type = HIO_CONFIG_TYPE_INT, .variable = &_var,                   \
+		.size = sizeof(_var), .min = _min, .max = _max, .help = _help,                     \
+		.default_int = _default, __VA_ARGS__                                               \
 	}
 
-#define HIO_CONFIG_ITEM_FLOAT(_name_d, _var, _min, _max, _help, _default, ...)                    \
+#define HIO_CONFIG_ITEM_FLOAT(_name_d, _var, _min, _max, _help, _default, ...)                     \
 	{                                                                                          \
-		.name = _name_d,                                                                   \
-		.type = HIO_CONFIG_TYPE_FLOAT,                                                     \
-		.variable = &_var,                                                                 \
-		.size = sizeof(_var),                                                              \
-		.min = _min,                                                                       \
-		.max = _max,                                                                       \
-		.help = _help,                                                                     \
-		.default_float = _default,                                                         \
-		__VA_ARGS__                                                                        \
+		.name = _name_d, .type = HIO_CONFIG_TYPE_FLOAT, .variable = &_var,                 \
+		.size = sizeof(_var), .min = _min, .max = _max, .help = _help,                     \
+		.default_float = _default, __VA_ARGS__                                             \
 	}
 
-#define HIO_CONFIG_ITEM_BOOL(_name_d, _var, _help, _default, ...)                                 \
+#define HIO_CONFIG_ITEM_BOOL(_name_d, _var, _help, _default, ...)                                  \
 	{                                                                                          \
-		.name = _name_d,                                                                   \
-		.type = HIO_CONFIG_TYPE_BOOL,                                                      \
-		.variable = &_var,                                                                 \
-		.size = sizeof(_var),                                                              \
-		.help = _help,                                                                     \
-		.default_bool = _default,                                                          \
-		__VA_ARGS__                                                                        \
+		.name = _name_d, .type = HIO_CONFIG_TYPE_BOOL, .variable = &_var,                  \
+		.size = sizeof(_var), .help = _help, .default_bool = _default, __VA_ARGS__         \
 	}
 
-#define HIO_CONFIG_ITEM_ENUM(_name_d, _var, _items_str, _help, _default, ...)                     \
+#define HIO_CONFIG_ITEM_ENUM(_name_d, _var, _items_str, _help, _default, ...)                      \
 	{                                                                                          \
-		.name = _name_d,                                                                   \
-		.type = HIO_CONFIG_TYPE_ENUM,                                                      \
-		.variable = &_var,                                                                 \
-		.size = sizeof(_var),                                                              \
-		.min = 0,                                                                          \
-		.max = ARRAY_SIZE(_items_str),                                                     \
-		.help = _help,                                                                     \
-		.enums = _items_str,                                                               \
-		.default_enum = _default,                                                          \
-		__VA_ARGS__                                                                        \
+		.name = _name_d, .type = HIO_CONFIG_TYPE_ENUM, .variable = &_var,                  \
+		.size = sizeof(_var), .min = 0, .max = ARRAY_SIZE(_items_str), .help = _help,      \
+		.enums = _items_str, .default_enum = _default, __VA_ARGS__                         \
 	}
 
-#define HIO_CONFIG_ITEM_STRING(_name_d, _var, _help, _default, ...)                               \
+#define HIO_CONFIG_ITEM_STRING(_name_d, _var, _help, _default, ...)                                \
 	{                                                                                          \
-		.name = _name_d,                                                                   \
-		.type = HIO_CONFIG_TYPE_STRING,                                                    \
-		.variable = _var,                                                                  \
-		.size = ARRAY_SIZE(_var),                                                          \
-		.help = _help,                                                                     \
-		.default_string = _default,                                                        \
-		__VA_ARGS__                                                                        \
+		.name = _name_d, .type = HIO_CONFIG_TYPE_STRING, .variable = _var,                 \
+		.size = ARRAY_SIZE(_var), .help = _help, .default_string = _default, __VA_ARGS__   \
 	}
 
-#define HIO_CONFIG_ITEM_HEX(_name_d, _var, _help, _default, ...)                                  \
+#define HIO_CONFIG_ITEM_HEX(_name_d, _var, _help, _default, ...)                                   \
 	{                                                                                          \
-		.name = _name_d,                                                                   \
-		.type = HIO_CONFIG_TYPE_HEX,                                                       \
-		.variable = _var,                                                                  \
-		.size = ARRAY_SIZE(_var),                                                          \
-		.help = _help,                                                                     \
-		.default_hex = _default,                                                           \
-		__VA_ARGS__                                                                        \
+		.name = _name_d, .type = HIO_CONFIG_TYPE_HEX, .variable = _var,                    \
+		.size = ARRAY_SIZE(_var), .help = _help, .default_hex = _default, __VA_ARGS__      \
 	}
 
 struct hio_config_item;
@@ -105,14 +82,14 @@ typedef int (*hio_config_parse_cb)(const struct hio_config_item *item, char *arg
 				   const char **err_msg);
 
 struct hio_config_item {
-	const char *name;              /**< Item name (used as settings key) */
+	const char *name;               /**< Item name (used as settings key) */
 	enum hio_config_item_type type; /**< Value type */
-	void *variable;                /**< Pointer to the backing variable */
-	size_t size;                   /**< Size of the variable in bytes */
-	int min;                       /**< Minimum value (INT/FLOAT range, STRING min length, 0=no limit) */
-	int max;                       /**< Maximum value (INT/FLOAT range, ENUM count, STRING max length, 0=no limit) */
-	const char *help;              /**< Help text for shell/ATCI */
-	const char **enums;            /**< Enum string labels (ENUM type only) */
+	void *variable;                 /**< Pointer to the backing variable */
+	size_t size;                    /**< Size of the variable in bytes */
+	int min; /**< Minimum value (INT/FLOAT range, STRING min length, 0=no limit) */
+	int max; /**< Maximum value (INT/FLOAT range, ENUM count, STRING max length, 0=no limit) */
+	const char *help;   /**< Help text for shell/ATCI */
+	const char **enums; /**< Enum string labels (ENUM type only) */
 	union {
 		int default_int;
 		float default_float;
@@ -121,8 +98,9 @@ struct hio_config_item {
 		const char *default_string;
 		const uint8_t *default_hex;
 	};
-	hio_config_parse_cb parse_cb;  /**< Optional custom parse callback */
+	hio_config_parse_cb parse_cb; /**< Optional custom parse callback */
 };
+
 struct hio_config {
 	const char *name;              /**< Module name (used as prefix for settings) */
 	const char *storage_name;      /**< Optional name used as prefix for settings storage */
@@ -138,6 +116,44 @@ struct hio_config {
 
 	sys_snode_t node;
 };
+
+/**
+ * @brief Access control callback type.
+ *
+ * Called to determine access rights for a config item. Returns a bitmask
+ * of HIO_CONFIG_ACCESS_* flags.
+ *
+ * @param module Pointer to the configuration module.
+ * @param item   Pointer to the configuration item.
+ *
+ * @return Bitmask of HIO_CONFIG_ACCESS_READ, HIO_CONFIG_ACCESS_WRITE,
+ *         HIO_CONFIG_ACCESS_SHOW flags. Use HIO_CONFIG_ACCESS_RW for full access.
+ */
+typedef int (*hio_config_access_cb)(const struct hio_config *module,
+				    const struct hio_config_item *item);
+
+/**
+ * @brief Set a global access control callback.
+ *
+ * When set, this callback is consulted before listing, reading, or writing
+ * any config item. If not set, all items have full read-write access.
+ *
+ * @param cb Access control callback, or NULL to disable.
+ */
+void hio_config_set_access_cb(hio_config_access_cb cb);
+
+/**
+ * @brief Get access flags for a config item.
+ *
+ * Queries the global access callback. Returns HIO_CONFIG_ACCESS_RW if no
+ * callback is set.
+ *
+ * @param module Pointer to the configuration module.
+ * @param item   Pointer to the configuration item.
+ *
+ * @return Bitmask of HIO_CONFIG_ACCESS_* flags.
+ */
+int hio_config_item_access(const struct hio_config *module, const struct hio_config_item *item);
 
 /**
  * @brief Register a configuration module.
@@ -296,14 +312,18 @@ int hio_config_module_find_item(struct hio_config *module, const char *name,
  * @brief  Parse a configuration item.
  *
  * Parses the value of a configuration item from a string.
+ * Checks write access via the global access callback before parsing.
  *
+ * @param module Pointer to the configuration module.
  * @param item Pointer to the configuration item.
  * @param argv Pointer to the string containing the value.
  * @param err_msg Pointer to store error message if parsing fails.
  *
- * @return 0 on success, negative error code on failure.
+ * @return 0 on success, -EPERM if write denied, negative error code on failure.
  */
-int hio_config_item_parse(const struct hio_config_item *item, char *argv, const char **err_msg);
+int hio_config_module_item_set_value(const struct hio_config *module,
+				     const struct hio_config_item *item, char *argv,
+				     const char **err_msg);
 
 #define HIO_CONFIG_SHELL_CMD_ARG                                                                   \
 	SHELL_CMD_ARG(config, NULL, "Configuration commands.", hio_config_shell_cmd, 1, 3)
