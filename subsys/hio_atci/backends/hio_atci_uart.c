@@ -57,11 +57,13 @@ struct hio_atci_uart_async {
 	struct uart_async_rx_config async_rx_config;
 	atomic_t pending_rx_req;
 	uint8_t rx_data[ASYNC_RX_BUF_SIZE];
-	// GPIO + debounce
-	struct gpio_dt_spec enable_gpio;
+	// Detect GPIO (input) + debounce
+	struct gpio_dt_spec detect_gpio;
 	struct gpio_callback gpio_cb;
 	struct k_work_delayable debounce_work;
 	bool gpio_prev_state;
+	// Enable GPIO (output)
+	struct gpio_dt_spec enable_gpio;
 	const struct hio_atci_backend *backend;
 };
 
@@ -140,11 +142,11 @@ static void gpio_update_current(const struct hio_atci_backend *backend)
 {
 	struct hio_atci_uart_async *uart = (struct hio_atci_uart_async *)backend->ctx;
 
-	if (uart->enable_gpio.port == NULL) {
+	if (uart->detect_gpio.port == NULL) {
 		return;
 	}
 
-	bool current = gpio_pin_get_dt(&uart->enable_gpio);
+	bool current = gpio_pin_get_dt(&uart->detect_gpio);
 	if (current != uart->gpio_prev_state) {
 		LOG_INF("Backend %s", current ? "ENABLED" : "DISABLED");
 
@@ -173,6 +175,32 @@ static void gpio_callback_handler(const struct device *port, struct gpio_callbac
 	k_work_schedule(&ctx->debounce_work, K_MSEC(50));
 }
 
+static int detect_gpio_init(struct hio_atci_uart_async *uart)
+{
+	if (!device_is_ready(uart->detect_gpio.port)) {
+		LOG_ERR("Detect GPIO port not ready");
+		return -ENODEV;
+	}
+
+	int ret = gpio_pin_configure_dt(&uart->detect_gpio, GPIO_INPUT);
+	if (ret < 0) {
+		return ret;
+	}
+
+	ret = gpio_pin_interrupt_configure_dt(&uart->detect_gpio, GPIO_INT_EDGE_BOTH);
+	if (ret < 0) {
+		return ret;
+	}
+
+	gpio_init_callback(&uart->gpio_cb, gpio_callback_handler, BIT(uart->detect_gpio.pin));
+	gpio_add_callback(uart->detect_gpio.port, &uart->gpio_cb);
+
+	uart->gpio_prev_state = gpio_pin_get_dt(&uart->detect_gpio);
+	k_work_init_delayable(&uart->debounce_work, debounce_work_handler);
+
+	return 0;
+}
+
 static int enable_gpio_init(struct hio_atci_uart_async *uart)
 {
 	if (!device_is_ready(uart->enable_gpio.port)) {
@@ -180,23 +208,7 @@ static int enable_gpio_init(struct hio_atci_uart_async *uart)
 		return -ENODEV;
 	}
 
-	int ret = gpio_pin_configure_dt(&uart->enable_gpio, GPIO_INPUT);
-	if (ret < 0) {
-		return ret;
-	}
-
-	ret = gpio_pin_interrupt_configure_dt(&uart->enable_gpio, GPIO_INT_EDGE_BOTH);
-	if (ret < 0) {
-		return ret;
-	}
-
-	gpio_init_callback(&uart->gpio_cb, gpio_callback_handler, BIT(uart->enable_gpio.pin));
-	gpio_add_callback(uart->enable_gpio.port, &uart->gpio_cb);
-
-	uart->gpio_prev_state = gpio_pin_get_dt(&uart->enable_gpio);
-	k_work_init_delayable(&uart->debounce_work, debounce_work_handler);
-
-	return 0;
+	return gpio_pin_configure_dt(&uart->enable_gpio, GPIO_OUTPUT_INACTIVE);
 }
 
 static int init(const struct hio_atci_backend *backend, const void *config,
@@ -228,6 +240,14 @@ static int init(const struct hio_atci_backend *backend, const void *config,
 		return ret;
 	}
 
+	if (uart->detect_gpio.port != NULL) {
+		int ret = detect_gpio_init(uart);
+		if (ret < 0) {
+			LOG_ERR("Failed to init detect pin: %d", ret);
+			return ret;
+		}
+	}
+
 	if (uart->enable_gpio.port != NULL) {
 		int ret = enable_gpio_init(uart);
 		if (ret < 0) {
@@ -252,12 +272,20 @@ static int enable(const struct hio_atci_backend *backend)
 		return 0;
 	}
 
-	if (uart->enable_gpio.port != NULL) { /* Because enable is call if atci task started */
-		if (!gpio_pin_get_dt(&uart->enable_gpio)) {
+	if (uart->detect_gpio.port != NULL) { /* Because enable is called if atci task started */
+		if (!gpio_pin_get_dt(&uart->detect_gpio)) {
 			pm_device_action_run(uart->dev, PM_DEVICE_ACTION_SUSPEND);
+			if (uart->enable_gpio.port != NULL) {
+				k_sleep(K_MSEC(CONFIG_HIO_ATCI_BACKEND_UART_ENABLE_GPIO_DELAY));
+				gpio_pin_set_dt(&uart->enable_gpio, 0);
+			}
 			k_mutex_unlock(&uart->mtx);
 			return 0;
 		}
+	}
+
+	if (uart->enable_gpio.port != NULL) {
+		gpio_pin_set_dt(&uart->enable_gpio, 1);
 	}
 
 	int ret;
@@ -319,6 +347,11 @@ static int disable(const struct hio_atci_backend *backend)
 	ret = pm_device_action_run(uart->dev, PM_DEVICE_ACTION_SUSPEND);
 	if (ret < 0) {
 		LOG_ERR("Failed to suspend UART device: %d", ret);
+	}
+
+	if (uart->enable_gpio.port != NULL) {
+		k_sleep(K_MSEC(10));
+		gpio_pin_set_dt(&uart->enable_gpio, 0);
 	}
 
 	LOG_INF("UART backend disabled");
@@ -400,6 +433,8 @@ static const struct hio_atci_backend_api hio_atci_uart_backend_api = {
 		.dev = NULL,                                                                       \
 		.handler = NULL,                                                                   \
 		.handler_ctx = NULL,                                                               \
+		.detect_gpio =                                                                     \
+			GPIO_DT_SPEC_GET_OR(DT_INST(inst, hio_atci_uart), detect_gpios, {0}),      \
 		.enable_gpio =                                                                     \
 			GPIO_DT_SPEC_GET_OR(DT_INST(inst, hio_atci_uart), enable_gpios, {0}),      \
 	};                                                                                         \

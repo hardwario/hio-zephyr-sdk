@@ -53,6 +53,13 @@ config HIO_ATCI_BACKEND_UART_ASYNC_RX_BUFFER_SIZE
 	  slow and may need to be increased if long messages are pasted directly
 	  to the atci prompt.
 
+config HIO_ATCI_BACKEND_UART_ENABLE_GPIO_DELAY
+	int "Delay after UART suspend before disabling enable GPIO (in milliseconds)"
+	default 10
+	help
+	  Delay between UART suspend and deasserting the enable GPIO output.
+	  This prevents glitches on galvanically isolated UART lines.
+
 config HIO_ATCI_BACKEND_UART_LOG_QUEUE_SIZE
 	int "Log message queue size"
 	default 1024

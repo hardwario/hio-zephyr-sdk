@@ -13,11 +13,12 @@
 		compatible = "hio,atci-uart";
 		status = "okay";
 		uart = <&uart0>;
-		enable-gpios = <&gpio0 8 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+		detect-gpios = <&gpio0 8 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;
+		// enable-gpios = <&gpio0 0 GPIO_ACTIVE_HIGH>;
 		wakeup-source;
 	};
 
-	// Sample for UART1 without eneble/disable GPIO
+	// Sample for UART1 without detect/enable GPIO
 	// atci_uart1: atci_uart1 {
 	// 	compatible = "hio,atci-uart";
 	// 	status = "okay";
