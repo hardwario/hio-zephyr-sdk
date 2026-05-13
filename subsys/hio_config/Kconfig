@@ -35,6 +35,15 @@ config HIO_CONFIG_ATCI
 	default y if HIO_ATCI
 	select HIO_TOK
 
+config HIO_CONFIG_ATCI_CMD_AUTH_FLAGS
+	int "HIO_CONFIG ATCI commands authentication flags"
+	depends on HIO_CONFIG_ATCI
+	default 0
+	help
+	  Authentication flags applied to all HIO_CONFIG ATCI commands
+	  (&F, &W, $CONFIG). Used to restrict access via the ATCI auth
+	  check callback.
+
 module = HIO_CONFIG
 module-str = HIO Configuration Subsystem
 source "subsys/logging/Kconfig.template.log_config"

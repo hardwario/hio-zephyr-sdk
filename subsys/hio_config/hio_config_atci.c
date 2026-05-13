@@ -321,9 +321,9 @@ static int at_config_test(const struct hio_atci *atci)
 	return hio_config_iter_items(NULL, test_item_cb, (void *)atci);
 }
 
-HIO_ATCI_CMD_REGISTER(config_f, "&F", 0, at_reset_action, NULL, NULL, NULL,
-		      "Reset all configuration.");
-HIO_ATCI_CMD_REGISTER(config_w, "&W", 0, at_write_action, NULL, NULL, NULL,
-		      "Save all configuration.");
-HIO_ATCI_CMD_REGISTER(config, "$CONFIG", 0, NULL, at_config_set, at_config_read, at_config_test,
-		      "Configuration parameters.");
+HIO_ATCI_CMD_REGISTER(config_f, "&F", CONFIG_HIO_CONFIG_ATCI_CMD_AUTH_FLAGS, at_reset_action, NULL,
+		      NULL, NULL, "Reset all configuration.");
+HIO_ATCI_CMD_REGISTER(config_w, "&W", CONFIG_HIO_CONFIG_ATCI_CMD_AUTH_FLAGS, at_write_action, NULL,
+		      NULL, NULL, "Save all configuration.");
+HIO_ATCI_CMD_REGISTER(config, "$CONFIG", CONFIG_HIO_CONFIG_ATCI_CMD_AUTH_FLAGS, NULL, at_config_set,
+		      at_config_read, at_config_test, "Configuration parameters.");
