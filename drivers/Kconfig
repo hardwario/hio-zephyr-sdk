@@ -5,4 +5,5 @@
 #
 
 rsource "Kconfig.adc_ads122c04"
+rsource "Kconfig.tmp112"
 

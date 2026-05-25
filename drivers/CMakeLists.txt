@@ -1,1 +1,2 @@
 zephyr_library_sources(adc_ads122c04ex.c)
+zephyr_library_sources_ifdef(CONFIG_TMP112 tmp112.c)
