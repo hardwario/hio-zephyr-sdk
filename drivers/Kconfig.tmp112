@@ -11,7 +11,11 @@ config TMP112
 	select I2C
 	help
 	  Enable the driver for Texas Instruments TMP112 High-Accuracy Digital
-	  Temperature Sensors (HARDWARIO variant, compatible "hardwario,tmp112").
+	  Temperature Sensors.
+
+	  This HARDWARIO variant adds shutdown / one-shot operation: when the
+	  conversion-rate device-tree property is set to 0, the sensor stays in
+	  shutdown and a one-shot conversion is triggered on each sample_fetch.
 
 	  The TMP102 is compatible with the TMP112 but is less accurate and has
 	  been successfully tested with this driver.
@@ -30,6 +34,7 @@ config TMP112_SAMPLING_FREQUENCY_RUNTIME
 	default y
 	help
 	  When set conversion rate can be set at runtime using sensor_attr_set
-	  with SENSOR_ATTR_SAMPLING_FREQUENCY
+	  with SENSOR_ATTR_SAMPLING_FREQUENCY. Setting the rate to 0 Hz at
+	  runtime puts the sensor into shutdown / one-shot mode.
 
 endif # TMP112
