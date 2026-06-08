@@ -25,6 +25,7 @@ config HIO_ATCI_CMD_SHELL
 
 config HIO_ATCI_CMD_SHELL_AUTH_FLAGS
 	int "ATCI command shell authentication flags"
+	default 1 if HIO_ATCI_LOGIN
 	default 0
 
 config HIO_ATCI_CMD_REBOOT
@@ -36,10 +37,53 @@ config HIO_ATCI_CMD_REBOOT
 
 config HIO_ATCI_CMD_REBOOT_AUTH_FLAGS
 	int "ATCI command reboot authentication flags"
+	default 1 if HIO_ATCI_LOGIN
 	default 0
 	help
 	  Authentication flags for ATCI command reboot.
 	  It is used to restrict access to the reboot command.
+
+config HIO_ATCI_LOGIN
+	bool "ATCI login authentication"
+	select HIO_CONFIG
+	help
+	  Enable ATCI login authentication. Registers a hio_config module with
+	  a "key" item (SHA-256 hash hex string), the AT$LOGIN/AT$LOGOUT
+	  commands, and an ATCI auth-check callback that gates commands with
+	  non-zero auth flags behind an authenticated session.
+
+config HIO_ATCI_LOGIN_INIT_PRIORITY
+	int "ATCI login init priority"
+	depends on HIO_ATCI_LOGIN
+	default 99
+	help
+	  Initialization priority for registering the ATCI login configuration
+	  module. Must run after the HIO_CONFIG subsystem is initialized.
+
+choice HIO_ATCI_LOGIN_HASH
+	prompt "Login password hash backend"
+	depends on HIO_ATCI_LOGIN
+	default HIO_ATCI_LOGIN_HASH_MBEDTLS
+
+config HIO_ATCI_LOGIN_HASH_MBEDTLS
+	bool "mbedTLS"
+	select NRF_SECURITY
+	select MBEDTLS_LEGACY_CRYPTO_C
+	select MBEDTLS_SHA256_C
+	select MBEDTLS_ENABLE_HEAP
+
+config HIO_ATCI_LOGIN_HASH_TINYCRYPT
+	bool "TinyCrypt"
+	select TINYCRYPT
+	select TINYCRYPT_SHA256
+
+config HIO_ATCI_LOGIN_HASH_PSA
+	bool "PSA Crypto"
+	select NRF_SECURITY
+	select MBEDTLS_PSA_CRYPTO_C
+	select PSA_WANT_ALG_SHA_256
+
+endchoice
 
 config HIO_ATCI_CMD_BUFF_SIZE
 	int "ATCI command buffer size"
@@ -112,6 +156,7 @@ config HIO_ATCI_CMD_FW
 
 config HIO_ATCI_CMD_FW_AUTH_FLAGS
 	int "HIO ATCI DFU authentication flags"
+	default 1 if HIO_ATCI_LOGIN
 	default 0
 	help
 	  Authentication flags for HIO ATCI DFU command.

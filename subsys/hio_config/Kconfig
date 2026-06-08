@@ -38,6 +38,7 @@ config HIO_CONFIG_ATCI
 config HIO_CONFIG_ATCI_CMD_AUTH_FLAGS
 	int "HIO_CONFIG ATCI commands authentication flags"
 	depends on HIO_CONFIG_ATCI
+	default 1 if HIO_ATCI_LOGIN
 	default 0
 	help
 	  Authentication flags applied to all HIO_CONFIG ATCI commands
