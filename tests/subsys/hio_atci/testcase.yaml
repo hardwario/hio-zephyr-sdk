@@ -1,0 +1,13 @@
+tests:
+  hio_atci.core:
+    platform_allow: native_posix
+    integration_platforms:
+      - native_posix
+    tags: hio hio_atci
+  hio_atci.no_log_backend:
+    platform_allow: native_posix
+    integration_platforms:
+      - native_posix
+    extra_configs:
+      - CONFIG_HIO_ATCI_LOG_BACKEND=n
+    tags: hio hio_atci
