@@ -6,6 +6,7 @@
 
 config HIO_ATCI
 	bool "HIO_ATCI"
+	select CRC
 
 if HIO_ATCI
 
@@ -48,9 +49,51 @@ config HIO_ATCI_LOGIN
 	select HIO_CONFIG
 	help
 	  Enable ATCI login authentication. Registers a hio_config module with
-	  a "key" item (SHA-256 hash hex string), the AT$LOGIN/AT$LOGOUT
-	  commands, and an ATCI auth-check callback that gates commands with
-	  non-zero auth flags behind an authenticated session.
+	  a "passphrase-hash" item (SHA-256 hash hex string), the
+	  AT$LOGIN/AT$LOGOUT commands, and an ATCI auth-check callback that
+	  gates commands with non-zero auth flags behind an authenticated
+	  session.
+
+config HIO_ATCI_LOGIN_DEFAULT_PASSPHRASE_HASH
+	string "Default passphrase hash (SHA-256 hex)"
+	depends on HIO_ATCI_LOGIN
+	default ""
+	help
+	  Compile-time default for the "passphrase-hash" config item: a SHA-256
+	  hash of the passphrase as a 64-character lowercase hex string. When a
+	  device has no stored passphrase, this value is used.
+
+	  Intended for development builds (a known passphrase baked into the
+	  firmware). Leave empty for production and provision the hash at
+	  runtime via the shell or ATCI. A passphrase set at runtime overrides
+	  this default.
+
+	  Example (passphrase "hardwario"):
+	    printf '%s' hardwario | sha256sum
+
+config HIO_ATCI_LOGIN_BOOT_DELAY
+	int "Login boot delay (seconds)"
+	depends on HIO_ATCI_LOGIN
+	default 5
+	help
+	  Authentication attempts are rejected for this many seconds after
+	  boot. Prevents brute-force attacks combined with device resets.
+
+config HIO_ATCI_LOGIN_MAX_ATTEMPTS
+	int "Failed login attempts before cooldown"
+	depends on HIO_ATCI_LOGIN
+	default 5
+	help
+	  Number of consecutive failed authentication attempts after which
+	  the login cooldown is activated.
+
+config HIO_ATCI_LOGIN_COOLDOWN
+	int "Login cooldown duration (seconds)"
+	depends on HIO_ATCI_LOGIN
+	default 300
+	help
+	  Authentication attempts are rejected for this many seconds after
+	  too many consecutive failed attempts.
 
 config HIO_ATCI_LOGIN_INIT_PRIORITY
 	int "ATCI login init priority"
@@ -99,6 +142,15 @@ config HIO_ATCI_PRINTF_BUFF_SIZE
 	  Maximum text buffer size for fprintf function.
 	  It is working like stdio buffering in Linux systems
 	  to limit number of peripheral access calls.
+
+config HIO_ATCI_URC_BUFF_SIZE
+	int "ATCI deferred URC buffer size"
+	default 128
+	help
+	  Buffer used to defer URC (broadcast) messages emitted while a command
+	  is being processed on the same instance. Deferred messages are
+	  flushed right after the command response is finished. Messages that
+	  do not fit into the buffer are dropped.
 
 choice
 	prompt "ATCI CRC mode"

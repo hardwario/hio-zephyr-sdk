@@ -22,6 +22,7 @@
 #include <errno.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <ctype.h>
 #include <stdlib.h>
@@ -40,6 +41,8 @@ LOG_MODULE_REGISTER(hio_atci, CONFIG_HIO_ATCI_LOG_LEVEL);
 #define CRC_MODE_DISABLED 0
 #define CRC_MODE_ENABLED  1
 #define CRC_MODE_OPTIONAL 2
+
+#define WRITE_LITERAL(atci, s) hio_atci_io_write(atci, s, sizeof(s) - 1)
 
 static int default_acl_check_cb(const struct hio_atci *atci, const struct hio_atci_cmd *cmd,
 				enum hio_atci_cmd_type type, void *user_data)
@@ -73,6 +76,14 @@ static void backend_evt_handler(enum hio_atci_backend_evt evt, void *ctx)
 	case HIO_ATCI_BACKEND_EVT_TX_RDY:
 		k_event_post(&((struct hio_atci_ctx *)ctx)->event, EVENT_TXDONE);
 		break;
+	case HIO_ATCI_BACKEND_EVT_DISABLED: {
+		struct hio_atci_ctx *atci_ctx = (struct hio_atci_ctx *)ctx;
+		/* Session ended: drop authentication and any partial input. */
+		atci_ctx->authenticated = false;
+		atci_ctx->cmd_buff_len = 0;
+		atci_ctx->cmd_buff[0] = '\0';
+		break;
+	}
 	default:
 		LOG_ERR("Unknown event %d", evt);
 		break;
@@ -87,7 +98,7 @@ static void pending_on_txdone(const struct hio_atci *atci)
 void hio_atci_io_write(const struct hio_atci *atci, const void *data, size_t length)
 {
 	size_t offset = 0;
-	size_t tmp_cnt;
+	size_t tmp_cnt = 0;
 	int ret;
 
 	if (atci->ctx->crc_mode) {
@@ -97,10 +108,10 @@ void hio_atci_io_write(const struct hio_atci *atci, const void *data, size_t len
 	while (length) {
 		ret = atci->backend->api->write(atci->backend, &((const uint8_t *)data)[offset],
 						length, &tmp_cnt);
-		if (length >= tmp_cnt) {
+		if (ret < 0) {
+			LOG_ERR("Backend write failed: %d", ret);
 			return;
 		}
-
 		offset += tmp_cnt;
 		length -= tmp_cnt;
 		if (tmp_cnt == 0) {
@@ -293,6 +304,62 @@ static int execute(const struct hio_atci *atci)
 	return ret;
 }
 
+/* Defer a URC emitted while a command is being processed on this instance.
+ * Stored as NUL-separated strings, flushed by urc_flush() after the response. */
+static bool urc_defer(const struct hio_atci *atci, const char *str)
+{
+	struct hio_atci_ctx *ctx = atci->ctx;
+	size_t len = strlen(str);
+
+	if (len + 1 > sizeof(ctx->urc_buff) - ctx->urc_buff_len) {
+		LOG_WRN("URC dropped (buffer full)");
+		return false;
+	}
+
+	memcpy(&ctx->urc_buff[ctx->urc_buff_len], str, len + 1);
+	ctx->urc_buff_len += len + 1;
+
+	return true;
+}
+
+static bool urc_defer_vf(const struct hio_atci *atci, const char *fmt, va_list args)
+{
+	struct hio_atci_ctx *ctx = atci->ctx;
+	size_t space = sizeof(ctx->urc_buff) - ctx->urc_buff_len;
+	int len = vsnprintf(&ctx->urc_buff[ctx->urc_buff_len], space, fmt, args);
+
+	if (len < 0 || (size_t)len + 1 > space) {
+		if (space > 0) {
+			ctx->urc_buff[ctx->urc_buff_len] = '\0';
+		}
+		LOG_WRN("URC dropped (buffer full)");
+		return false;
+	}
+
+	ctx->urc_buff_len += len + 1;
+
+	return true;
+}
+
+static void urc_flush(const struct hio_atci *atci)
+{
+	struct hio_atci_ctx *ctx = atci->ctx;
+	size_t offset = 0;
+
+	while (offset < ctx->urc_buff_len) {
+		const char *str = &ctx->urc_buff[offset];
+		size_t len = strlen(str);
+
+		ctx->crc = 0;
+		hio_atci_io_write(atci, str, len);
+		hio_atci_io_endline(atci);
+
+		offset += len + 1;
+	}
+
+	ctx->urc_buff_len = 0;
+}
+
 static void process(const struct hio_atci *atci)
 {
 	if (atci->ctx->cmd_buff_len < 2) {
@@ -300,36 +367,40 @@ static void process(const struct hio_atci *atci)
 	}
 
 	atci->ctx->crc = 0;
+	atci->ctx->cmd_processing = true;
 
 	int ret = execute(atci);
 
 	if (!atci->ctx->ret_printed) {
 		if (ret == 0) {
-			hio_atci_io_write(atci, "OK", 2);
+			WRITE_LITERAL(atci, "OK");
 		} else if (ret == -ENOMSG) {
-			hio_atci_io_write(atci, "ERROR: \"Invalid command\"", 24);
+			WRITE_LITERAL(atci, "ERROR: \"Invalid command\"");
 		} else if (ret == -ENOEXEC) {
-			hio_atci_io_write(atci, "ERROR: \"Command not found\"", 26);
+			WRITE_LITERAL(atci, "ERROR: \"Command not found\"");
 		} else if (ret == -EIO) {
-			hio_atci_io_write(atci, "ERROR: \"I/O error\"", 21);
+			WRITE_LITERAL(atci, "ERROR: \"I/O error\"");
 		} else if (ret == -ENOMEM) {
-			hio_atci_io_write(atci, "ERROR: \"Out of memory\"", 18);
+			WRITE_LITERAL(atci, "ERROR: \"Out of memory\"");
 		} else if (ret == -ENOTSUP) {
-			hio_atci_io_write(atci, "ERROR: \"Command not supported\"", 30);
+			WRITE_LITERAL(atci, "ERROR: \"Command not supported\"");
 		} else if (ret == -EINVAL) {
-			hio_atci_io_write(atci, "ERROR: \"Invalid argument\"", 25);
+			WRITE_LITERAL(atci, "ERROR: \"Invalid argument\"");
 		} else if (ret == -EACCES) {
-			hio_atci_io_write(atci, "ERROR: \"Permission denied\"", 26);
+			WRITE_LITERAL(atci, "ERROR: \"Permission denied\"");
 		} else if (ret == -ECRC_FORMAT) {
-			hio_atci_io_write(atci, "ERROR: \"Invalid CRC format\"", 27);
+			WRITE_LITERAL(atci, "ERROR: \"Invalid CRC format\"");
 		} else if (ret == -ECRC_MISMATCH) {
-			hio_atci_io_write(atci, "ERROR: \"CRC mismatch\"", 21);
+			WRITE_LITERAL(atci, "ERROR: \"CRC mismatch\"");
 		} else if (ret < 0) {
 			hio_atci_io_writef(atci, "ERROR: \"%d\"", ret);
 		}
 	}
 
 	hio_atci_io_endline(atci);
+
+	atci->ctx->cmd_processing = false;
+	urc_flush(atci);
 }
 
 static void process_ch(const struct hio_atci *atci, char ch)
@@ -367,8 +438,6 @@ static void process_rx(const struct hio_atci *atci)
 		return;
 	}
 
-	atomic_set(&atci->ctx->processing, 1);
-
 	size_t count = 0;
 	char ch;
 
@@ -380,8 +449,6 @@ static void process_rx(const struct hio_atci *atci)
 
 		process_ch(atci, ch);
 	}
-
-	atomic_set(&atci->ctx->processing, 0);
 }
 
 static void atci_thread(void *atci_handle, void *arg_log_backend, void *arg_log_level)
@@ -508,10 +575,8 @@ int hio_atci_get_by_name(const char *name, const struct hio_atci **atci)
 	}
 
 	STRUCT_SECTION_FOREACH(hio_atci, item) {
-		if (strncmp(item->name, name, strlen(name)) == 0) {
-			if (atci) {
-				*atci = item;
-			}
+		if (strcmp(item->name, name) == 0) {
+			*atci = item;
 			return 0;
 		}
 	}
@@ -526,15 +591,10 @@ int hio_atci_get_by_name(const char *name, const struct hio_atci **atci)
 		LOG_ERR("ATCI thread in invalid state %d", atci->ctx->state);                      \
 		return -EINVAL;                                                                    \
 	}                                                                                          \
-	bool need_lock = !atomic_get(&atci->ctx->processing);                                      \
-	if (need_lock) {                                                                           \
-		k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);                                       \
-	}
+	k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
 
 #define OUTPUT_LOCK_END()                                                                          \
-	if (need_lock) {                                                                           \
-		k_mutex_unlock(&atci->ctx->wr_mtx);                                                \
-	}                                                                                          \
+	k_mutex_unlock(&atci->ctx->wr_mtx);                                                        \
 	return 0;
 
 int hio_atci_write(const struct hio_atci *atci, const void *data, size_t length)
@@ -623,8 +683,6 @@ int hio_atci_errorf(const struct hio_atci *atci, const char *fmt, ...)
 	OUTPUT_LOCK_END()
 }
 
-#define BROADCAST_WAIT_MS 500
-
 int hio_atci_broadcast(const char *str)
 {
 	STRUCT_SECTION_FOREACH(hio_atci, atci) {
@@ -632,23 +690,24 @@ int hio_atci_broadcast(const char *str)
 			continue;
 		}
 
-		int timeout = BROADCAST_WAIT_MS;
-		while (atomic_get(&atci->ctx->processing)) {
-			if (--timeout == 0) {
-				break;
-			}
-			k_sleep(K_MSEC(1));
-		}
+		k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
 
-		if (timeout == 0) {
-			LOG_ERR("Timeout for ATCI processing in %s", atci->name);
+		/* If called from a command handler on this instance (recursive
+		 * mutex re-lock), defer the URC so it does not interleave with
+		 * the unfinished response; it is flushed right after it. */
+		if (atci->ctx->cmd_processing) {
+			urc_defer(atci, str);
+			k_mutex_unlock(&atci->ctx->wr_mtx);
 			continue;
 		}
 
-		k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
-
+		/* Preserve the CRC of an unfinished line written via
+		 * hio_atci_print* from another application thread. */
+		uint32_t saved_crc = atci->ctx->crc;
+		atci->ctx->crc = 0;
 		hio_atci_io_write(atci, str, strlen(str));
 		hio_atci_io_endline(atci);
+		atci->ctx->crc = saved_crc;
 
 		k_mutex_unlock(&atci->ctx->wr_mtx);
 	}
@@ -662,26 +721,31 @@ int hio_atci_broadcastf(const char *fmt, ...)
 			continue;
 		}
 
-		int timeout = BROADCAST_WAIT_MS;
-		while (atomic_get(&atci->ctx->processing)) {
-			if (--timeout == 0) {
-				break;
-			}
-			k_sleep(K_MSEC(1));
-		}
-
-		if (timeout == 0) {
-			LOG_ERR("Timeout for ATCI processing in %s", atci->name);
-			continue;
-		}
-
 		k_mutex_lock(&atci->ctx->wr_mtx, K_FOREVER);
 
 		va_list args;
 		va_start(args, fmt);
+
+		/* If called from a command handler on this instance (recursive
+		 * mutex re-lock), defer the URC so it does not interleave with
+		 * the unfinished response; it is flushed right after it. */
+		if (atci->ctx->cmd_processing) {
+			urc_defer_vf(atci, fmt, args);
+			va_end(args);
+			k_mutex_unlock(&atci->ctx->wr_mtx);
+			continue;
+		}
+
+		/* Preserve the CRC of an unfinished line written via
+		 * hio_atci_print* from another application thread. */
+		uint32_t saved_crc = atci->ctx->crc;
+		atci->ctx->crc = 0;
+
 		fprintf_fmt(atci, fmt, args);
 		hio_atci_io_endline(atci);
 		va_end(args);
+
+		atci->ctx->crc = saved_crc;
 
 		k_mutex_unlock(&atci->ctx->wr_mtx);
 	}
@@ -703,4 +767,16 @@ void hio_atci_set_auth_check_cb(hio_atci_auth_check_cb cb, void *user_data)
 {
 	m_auth_check_cb = cb;
 	m_auth_user_data = user_data;
+}
+
+void hio_atci_auth_set(const struct hio_atci *atci, bool authenticated)
+{
+	if (atci) {
+		atci->ctx->authenticated = authenticated;
+	}
+}
+
+bool hio_atci_auth_get(const struct hio_atci *atci)
+{
+	return atci ? atci->ctx->authenticated : false;
 }

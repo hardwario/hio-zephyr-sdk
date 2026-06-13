@@ -34,6 +34,10 @@ extern "C" {
 #define CONFIG_HIO_ATCI_PRINTF_BUFF_SIZE 0
 #endif
 
+#ifndef CONFIG_HIO_ATCI_URC_BUFF_SIZE
+#define CONFIG_HIO_ATCI_URC_BUFF_SIZE 0
+#endif
+
 /** @brief ATCI internal state. */
 enum hio_atci_state {
 	HIO_ATCI_STATE_UNINITIALIZED = 0, /**< The ATCI instance is not initialized. */
@@ -43,8 +47,9 @@ enum hio_atci_state {
 
 /** @brief Backend event type. */
 enum hio_atci_backend_evt {
-	HIO_ATCI_BACKEND_EVT_RX_RDY, /**< Data received and ready to be read. */
-	HIO_ATCI_BACKEND_EVT_TX_RDY  /**< Backend is ready for transmission. */
+	HIO_ATCI_BACKEND_EVT_RX_RDY,  /**< Data received and ready to be read. */
+	HIO_ATCI_BACKEND_EVT_TX_RDY,  /**< Backend is ready for transmission. */
+	HIO_ATCI_BACKEND_EVT_DISABLED /**< Backend was disabled; the session ended. */
 };
 
 /** @brief Event handler function prototype for backend events. */
@@ -146,7 +151,6 @@ struct hio_atci_ctx {
 	enum hio_atci_state state;
 	k_tid_t tid;
 	struct k_event event;
-	atomic_t processing;
 	struct k_mutex wr_mtx;
 	uint16_t cmd_buff_len;
 	char cmd_buff[CONFIG_HIO_ATCI_CMD_BUFF_SIZE];
@@ -158,6 +162,10 @@ struct hio_atci_ctx {
 	uint32_t crc;
 	uint8_t crc_mode; /**< CRC mode: 0 - disabled, 1 - enabled. 2 - optional */
 	bool modem_trace; /**< Flag for modem trace output. */
+	bool cmd_processing; /**< Command processing in progress (URCs are deferred). */
+	char urc_buff[CONFIG_HIO_ATCI_URC_BUFF_SIZE]; /**< Deferred URC messages (NUL separated). */
+	uint16_t urc_buff_len; /**< Used bytes in urc_buff. */
+	bool authenticated;  /**< Session authentication state (cleared on disconnect). */
 };
 
 /** @brief ATCI instance definition. */
@@ -207,7 +215,8 @@ struct hio_atci_cmd {
 		.hint = _hint,                                                                     \
 	}
 
-/* Placeholder macros for future logging backend integration. */
+#if defined(CONFIG_HIO_ATCI_LOG_BACKEND)
+
 extern const struct log_backend_api hio_atci_log_backend_api;
 
 int hio_atci_log_backend_output_func(uint8_t *data, size_t length, void *ctx);
@@ -237,6 +246,13 @@ int hio_atci_log_backend_output_func(uint8_t *data, size_t length, void *ctx);
 		.mpsc_buffer = &_name##_mpsc_buffer,                                               \
 	}
 #define HIO_ATCI_LOG_BACKEND_PTR(_name) (&_name##_log_backend)
+
+#else /* CONFIG_HIO_ATCI_LOG_BACKEND */
+
+#define HIO_ATCI_LOG_BACKEND_DEFINE(_name, _queue_size, _timeout)
+#define HIO_ATCI_LOG_BACKEND_PTR(_name) NULL
+
+#endif /* CONFIG_HIO_ATCI_LOG_BACKEND */
 
 /**
  * @brief Define an ATCI instance.
@@ -383,6 +399,26 @@ enum hio_atci_cmd_type {
 	HIO_ATCI_CMD_TYPE_TEST
 };
 
+/**
+ * @brief Set the authentication state of an ATCI instance session.
+ *
+ * The state is per instance and is automatically cleared when the backend
+ * reports HIO_ATCI_BACKEND_EVT_DISABLED (e.g. cable disconnect).
+ *
+ * @param atci          Pointer to the ATCI instance.
+ * @param authenticated New authentication state.
+ */
+void hio_atci_auth_set(const struct hio_atci *atci, bool authenticated);
+
+/**
+ * @brief Get the authentication state of an ATCI instance session.
+ *
+ * @param atci Pointer to the ATCI instance.
+ *
+ * @return true if the session is authenticated, false otherwise.
+ */
+bool hio_atci_auth_get(const struct hio_atci *atci);
+
 /** @brief ACL check callback function prototype. */
 typedef int (*hio_atci_auth_check_cb)(const struct hio_atci *atci, const struct hio_atci_cmd *cmd,
 				      enum hio_atci_cmd_type type, void *user_data);
@@ -411,10 +447,35 @@ struct hio_atci_log_backend {
 	struct mpsc_pbuf_buffer *mpsc_buffer;
 };
 
+#if defined(CONFIG_HIO_ATCI_LOG_BACKEND)
+
 int hio_atci_log_backend_enable(const struct hio_atci_log_backend *backend,
 				const struct hio_atci *atci, uint32_t init_log_level);
 int hio_atci_log_backend_disable(const struct hio_atci_log_backend *backend);
 int hio_atci_log_backend_process(const struct hio_atci_log_backend *backend);
+
+#else /* CONFIG_HIO_ATCI_LOG_BACKEND */
+
+/* Stubs so the core compiles and links without the log backend; the calls are
+ * unreachable because HIO_ATCI_LOG_BACKEND_PTR() is NULL and EVENT_LOG_MSG is
+ * never posted. */
+static inline int hio_atci_log_backend_enable(const struct hio_atci_log_backend *backend,
+					      const struct hio_atci *atci, uint32_t init_log_level)
+{
+	return 0;
+}
+
+static inline int hio_atci_log_backend_disable(const struct hio_atci_log_backend *backend)
+{
+	return 0;
+}
+
+static inline int hio_atci_log_backend_process(const struct hio_atci_log_backend *backend)
+{
+	return 0;
+}
+
+#endif /* CONFIG_HIO_ATCI_LOG_BACKEND */
 
 /** @} */
 

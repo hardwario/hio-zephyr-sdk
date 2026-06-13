@@ -43,21 +43,28 @@ LOG_MODULE_REGISTER(hio_atci_login, CONFIG_HIO_ATCI_LOG_LEVEL);
 struct hio_atci_login_config g_hio_atci_login_config;
 static struct hio_atci_login_config m_config_interim;
 
-static bool m_logged_in;
-
 static struct hio_config_item m_config_items[] = {
-	HIO_CONFIG_ITEM_STRING("login-hash", m_config_interim.login_hash,
-			       "authentication key (SHA-256 hash hex string)", ""),
+	HIO_CONFIG_ITEM_STRING("passphrase-hash", m_config_interim.passphrase_hash,
+			       "authentication passphrase (SHA-256 hash hex string)",
+			       CONFIG_HIO_ATCI_LOGIN_DEFAULT_PASSPHRASE_HASH),
 };
 
-bool hio_atci_login_is_logged_in(void)
+/* Brute-force protection:
+ * - authentication is rejected for the first BOOT_DELAY seconds after boot
+ *   (prevents brute-force attacks combined with device resets),
+ * - after MAX_ATTEMPTS consecutive failures a COOLDOWN period is enforced.
+ * The state is intentionally global (shared by all ATCI instances). */
+static uint8_t m_failed_attempts;
+static int64_t m_cooldown_until;
+
+bool hio_atci_login_is_logged_in(const struct hio_atci *atci)
 {
-	return m_logged_in;
+	return hio_atci_auth_get(atci);
 }
 
-void hio_atci_login_logout(void)
+void hio_atci_login_logout(const struct hio_atci *atci)
 {
-	m_logged_in = false;
+	hio_atci_auth_set(atci, false);
 }
 
 /* Compute SHA-256 of @p input and write it as a lowercase hex string (64 chars
@@ -140,7 +147,7 @@ static int hio_atci_login_auth_cb(const struct hio_atci *atci, const struct hio_
 		return 0;
 	}
 
-	if (m_logged_in) {
+	if (hio_atci_auth_get(atci)) {
 		return 0;
 	}
 
@@ -153,6 +160,20 @@ static int at_login_set(const struct hio_atci *atci, char *argv)
 		return -EINVAL;
 	}
 
+	int64_t now = k_uptime_get();
+
+	if (now < (int64_t)CONFIG_HIO_ATCI_LOGIN_BOOT_DELAY * MSEC_PER_SEC) {
+		LOG_WRN("ATCI login rejected: boot delay active");
+		hio_atci_error(atci, "\"Login not available yet\"");
+		return -EACCES;
+	}
+
+	if (m_cooldown_until > 0 && now < m_cooldown_until) {
+		LOG_WRN("ATCI login rejected: cooldown active");
+		hio_atci_error(atci, "\"Too many failed attempts\"");
+		return -EACCES;
+	}
+
 	char *pwd = argv;
 	size_t len = strlen(pwd);
 
@@ -162,9 +183,9 @@ static int at_login_set(const struct hio_atci *atci, char *argv)
 		len -= 2;
 	}
 
-	/* Empty key means no valid password is configured. */
-	if (g_hio_atci_login_config.login_hash[0] == '\0') {
-		LOG_WRN("ATCI login rejected: no key configured");
+	/* Empty passphrase means no valid password is configured. */
+	if (g_hio_atci_login_config.passphrase_hash[0] == '\0') {
+		LOG_WRN("ATCI login rejected: no passphrase configured");
 		return -EACCES;
 	}
 
@@ -174,11 +195,20 @@ static int at_login_set(const struct hio_atci *atci, char *argv)
 		return ret;
 	}
 
-	if (strcasecmp(digest_hex, g_hio_atci_login_config.login_hash) != 0) {
+	if (strcasecmp(digest_hex, g_hio_atci_login_config.passphrase_hash) != 0) {
+		if (++m_failed_attempts >= CONFIG_HIO_ATCI_LOGIN_MAX_ATTEMPTS) {
+			m_failed_attempts = 0;
+			m_cooldown_until = now + (int64_t)CONFIG_HIO_ATCI_LOGIN_COOLDOWN *
+						 MSEC_PER_SEC;
+			LOG_WRN("ATCI login cooldown activated (%d s)",
+				CONFIG_HIO_ATCI_LOGIN_COOLDOWN);
+		}
 		return -EACCES;
 	}
 
-	m_logged_in = true;
+	m_failed_attempts = 0;
+	m_cooldown_until = 0;
+	hio_atci_auth_set(atci, true);
 	LOG_INF("ATCI login OK");
 	return 0;
 }
@@ -188,7 +218,7 @@ HIO_ATCI_CMD_REGISTER(login, "$LOGIN", 0, NULL, at_login_set, NULL, NULL,
 
 static int at_logout_action(const struct hio_atci *atci)
 {
-	m_logged_in = false;
+	hio_atci_auth_set(atci, false);
 	LOG_INF("ATCI logout");
 	return 0;
 }

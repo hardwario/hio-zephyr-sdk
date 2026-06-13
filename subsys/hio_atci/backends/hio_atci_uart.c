@@ -354,6 +354,10 @@ static int disable(const struct hio_atci_backend *backend)
 		gpio_pin_set_dt(&uart->enable_gpio, 0);
 	}
 
+	if (uart->handler) {
+		uart->handler(HIO_ATCI_BACKEND_EVT_DISABLED, uart->handler_ctx);
+	}
+
 	LOG_INF("UART backend disabled");
 	k_mutex_unlock(&uart->mtx);
 	return 0;
@@ -376,6 +380,9 @@ static int write(const struct hio_atci_backend *backend, const void *data, size_
 			*cnt = length;
 			k_sem_take(&uart->tx_sem, K_FOREVER);
 		}
+	} else {
+		/* Transport is down: discard data intentionally. */
+		*cnt = length;
 	}
 
 	uart->handler(HIO_ATCI_BACKEND_EVT_TX_RDY, uart->handler_ctx);
