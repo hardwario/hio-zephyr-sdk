@@ -9,15 +9,19 @@
 
 /* HIO includes */
 #include <hio/hio_atci.h>
+#if defined(CONFIG_HIO_ATCI_CMD_REBOOT)
 #include <hio/hio_sys.h>
+#endif
 
 /* Zephyr includes */
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/iterable_sections.h>
 #include <zephyr/sys/reboot.h>
+#if defined(CONFIG_HIO_ATCI_CMD_SHELL)
 #include <zephyr/shell/shell.h>
 #include <zephyr/shell/shell_dummy.h>
+#endif
 
 /* Standard includes */
 #include <errno.h>
@@ -111,22 +115,19 @@ static int at_crc_set(const struct hio_atci *atci, char *argv)
 		return -EINVAL;
 	}
 
-	if (strcmp(argv, "1") == 0) {
+	switch (argv[0]) {
+	case '0':
 		atci->ctx->crc_mode = 0;
 		return 0;
-	}
-
-	if (strcmp(argv, "0") == 0) {
+	case '1':
 		atci->ctx->crc_mode = 1;
 		return 0;
-	}
-
-	if (strcmp(argv, "2") == 0) {
+	case '2':
 		atci->ctx->crc_mode = 2;
 		return 0;
+	default:
+		return -EINVAL;
 	}
-
-	return -EINVAL;
 }
 
 static int at_crc_read(const struct hio_atci *atci)
@@ -167,6 +168,10 @@ static int at_shell_set(const struct hio_atci *atci, char *argv)
 	}
 	shell_backend_dummy_clear_output(sh);
 
+	/* Intentional reuse of the dummy shell's temp_buff to avoid double
+	 * buffering: temp_buff is only used by the shell for interactive input
+	 * (tab completion), which the dummy backend never does, and
+	 * shell_execute_cmd() copies the command into its own cmd_buff. */
 	char *cmd = sh->ctx->temp_buff;
 
 	strncpy(cmd, argv + 1, cmd_len - 2);

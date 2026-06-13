@@ -31,12 +31,14 @@
 #include <string.h>
 #include <stdlib.h>
 
-// jinak pro fw chci
-// AT$FW="list"
-// AT$FW="start",size
-// AT$FW="chunk","base64"
-// AT$FW="end" - predstava ze ti rekne ze je vse ok
-// AT$FW="swap"
+/*
+ * Supported command forms:
+ *   AT$FW="info"
+ *   AT$FW="start",<size>
+ *   AT$FW="chunk",<offset>,<hex-data>
+ *   AT$FW="done"
+ *   AT$FW="confirm"
+ */
 
 LOG_MODULE_DECLARE(hio_atci_cmd, CONFIG_HIO_ATCI_LOG_LEVEL);
 
@@ -272,12 +274,14 @@ static int chunk(const struct hio_atci *atci, char *argv)
 		return ret;
 	}
 
-	int progress = (int)((dfu_offset + len) * 100 / m_fw_size);
-	if (progress > 100) {
-		progress = 100;
-	}
+	if (m_fw_size > 0) {
+		int progress = (int)((dfu_offset + len) * 100 / m_fw_size);
+		if (progress > 100) {
+			progress = 100;
+		}
 
-	LOG_INF("Progress: %d%%", progress);
+		LOG_INF("Progress: %d%%", progress);
+	}
 
 	return 0;
 }
@@ -400,9 +404,13 @@ static int at_fw_read(const struct hio_atci *atci)
 	hio_atci_printfln(atci, "$FW: \"confirmed\",%s",
 			  boot_is_img_confirmed() ? "true" : "false");
 	struct mcuboot_img_header hdr;
-	boot_read_bank_header(FLASH_AREA_IMAGE_PRIMARY, &hdr, sizeof(hdr));
-	hio_atci_printfln(atci, "$FW: \"version\",\"%u.%u.%u\"", hdr.h.v1.sem_ver.major,
-			  hdr.h.v1.sem_ver.minor, hdr.h.v1.sem_ver.revision);
+	int err = boot_read_bank_header(FLASH_AREA_IMAGE_PRIMARY, &hdr, sizeof(hdr));
+	if (err) {
+		hio_atci_printfln(atci, "$FW: \"error\",\"failed to read header: %d\"", err);
+	} else {
+		hio_atci_printfln(atci, "$FW: \"version\",\"%u.%u.%u\"", hdr.h.v1.sem_ver.major,
+				  hdr.h.v1.sem_ver.minor, hdr.h.v1.sem_ver.revision);
+	}
 	hio_atci_printfln(atci, "$FW: \"swap type\",\"%s\"", swap_type_str(mcuboot_swap_type()));
 	return 0;
 }

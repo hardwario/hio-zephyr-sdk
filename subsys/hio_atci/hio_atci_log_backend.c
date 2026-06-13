@@ -129,6 +129,13 @@ static void process_log_msg(const struct hio_atci *atci, const struct log_output
 		}
 	}
 
+	/*
+	 * Save and restore the CRC of any in-flight command response. In
+	 * CONFIG_LOG_MODE_IMMEDIATE this can run in the middle of a command
+	 * handler's output (same thread, recursive mutex), so the log line must
+	 * not clobber the pending response's accumulated CRC.
+	 */
+	uint32_t saved_crc = atci->ctx->crc;
 	atci->ctx->crc = 0;
 	log_output_msg_process(log_output, &msg->log, flags);
 	if (atci->ctx->fprintf_flag) {
@@ -136,6 +143,7 @@ static void process_log_msg(const struct hio_atci *atci, const struct log_output
 		hio_atci_io_write(atci, "\"", 1);
 		hio_atci_io_endline(atci);
 	}
+	atci->ctx->crc = saved_crc;
 
 	if (locked) {
 		if (k_is_in_isr()) {
@@ -178,9 +186,12 @@ int hio_atci_log_backend_process(const struct hio_atci_log_backend *backend)
 
 	dropped = atomic_set(&backend->ctx->dropped_cnt, 0);
 	if (dropped) {
+		/* Preserve the CRC of any in-flight command response (see process_log_msg) */
+		uint32_t saved_crc = atci->ctx->crc;
 		atci->ctx->crc = 0;
 		hio_atci_io_writef(atci, "@LOG: \"--- %u messages dropped ---\"", dropped);
 		hio_atci_io_endline(atci);
+		atci->ctx->crc = saved_crc;
 	}
 
 	return process_msg_from_buffer(atci);
@@ -199,6 +210,13 @@ static int store_msg(const struct hio_atci *atci, union log_msg_generic *msg)
 	struct mpsc_pbuf_buffer *mpsc_buffer = log_backend->mpsc_buffer;
 
 	size_t wlen = log_msg_generic_get_wlen((union mpsc_pbuf_generic *)msg);
+	size_t hdr_wlen = DIV_ROUND_UP(sizeof(struct mpsc_pbuf_hdr), sizeof(uint32_t));
+
+	/* Validate message length before claiming a buffer slot to avoid leaking it */
+	if (wlen <= hdr_wlen) {
+		return -EFBIG; /* Invalid message length */
+	}
+
 	union mpsc_pbuf_generic *dst =
 		mpsc_pbuf_alloc(mpsc_buffer, wlen, K_MSEC(log_backend->timeout));
 
@@ -209,10 +227,6 @@ static int store_msg(const struct hio_atci *atci, union log_msg_generic *msg)
 
 	uint8_t *dst_data = (uint8_t *)dst + sizeof(struct mpsc_pbuf_hdr);
 	uint8_t *src_data = (uint8_t *)msg + sizeof(struct mpsc_pbuf_hdr);
-	size_t hdr_wlen = DIV_ROUND_UP(sizeof(struct mpsc_pbuf_hdr), sizeof(uint32_t));
-	if (wlen <= hdr_wlen) {
-		return -EFBIG; /* Invalid message length */
-	}
 
 	dst->hdr.data = msg->buf.hdr.data;
 	memcpy(dst_data, src_data, (wlen - hdr_wlen) * sizeof(uint32_t));
@@ -231,6 +245,19 @@ static void process(const struct log_backend *const backend, union log_msg_gener
 	if (atci->log_backend->ctx->state == STATE_ENABLED) {
 
 		if (IS_ENABLED(CONFIG_LOG_MODE_IMMEDIATE)) {
+			/* A log emitted by a command handler on this instance's own
+			 * thread would interleave into the unfinished response line
+			 * (recursive mutex re-lock). Defer it to the thread loop. */
+			if (!k_is_in_isr() && k_current_get() == atci->ctx->tid &&
+			    atci->ctx->cmd_processing) {
+				if (store_msg(atci, msg)) {
+					dropped(backend, 1);
+				}
+				if (IS_ENABLED(CONFIG_MULTITHREADING)) {
+					k_event_post(&atci->ctx->event, EVENT_LOG_MSG);
+				}
+				return;
+			}
 			process_log_msg(atci, log_output, msg, true);
 			return;
 		}
