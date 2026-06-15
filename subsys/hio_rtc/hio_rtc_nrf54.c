@@ -3,6 +3,16 @@
  * Standalone implementation selected by CMake when CONFIG_SOC_SERIES_NRF54LX is
  * set. Shares only the public API in <hio/hio_rtc.h> with the nRF52/91 variant
  * (hio_rtc_nrf5x.c).
+ *
+ * Tickless design: wall-clock time is derived from the free-running GRTC
+ * SYSCOUNTER (1 MHz, always-on domain, keeps counting through System OFF) plus
+ * an anchor {epoch_s, ticks} kept in retained RAM. There is NO per-second
+ * interrupt, so the device is never woken just to maintain time.
+ *
+ * The GRTC SYSCOUNTER only resets on POR / power loss, which is exactly when
+ * retained RAM also loses its content. Therefore "retention valid" implies the
+ * counter is continuous and the anchor is usable; otherwise time defaults to
+ * the epoch and re-anchors.
  */
 
 /* HIO includes */
@@ -10,10 +20,7 @@
 
 /* Zephyr includes */
 #include <zephyr/device.h>
-#include <zephyr/drivers/clock_control.h>
-#include <zephyr/drivers/clock_control/nrf_clock_control.h>
 #include <zephyr/init.h>
-#include <zephyr/irq.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/shell/shell.h>
@@ -37,31 +44,92 @@
 
 LOG_MODULE_REGISTER(hio_rtc, CONFIG_HIO_RTC_LOG_LEVEL);
 
-#define RTC_IRQn        GRTC_0_IRQn
-#define RTC_IRQ_HANDLER nrfx_grtc_irq_handler
+/* GRTC syscounter runs at 1 MHz. */
+#define TICKS_PER_SEC 1000000ULL
 
-/* GRTC syscounter runs at 1 MHz, so 1,000,000 ticks = 1 second. */
-#define RTC_TICK_US 1000000
+/* Bump when the layout/semantics of struct rtc_anchor change, so a stale layout
+ * left in retained RAM by an older firmware is rejected. (Retention validity
+ * itself is handled by the region prefix/checksum via retention_is_valid().) */
+#define RTC_ANCHOR_VERSION 1
 
-static uint8_t m_grtc_channel;
+struct rtc_anchor {
+	uint8_t version;
+	int64_t epoch_s; /* wall-clock at the anchor (Unix UTC) */
+	uint64_t ticks;  /* syscounter value at the anchor */
+};
 
-static struct onoff_client m_lfclk_cli;
+static struct rtc_anchor m_anchor;
+static struct k_spinlock m_lock;
 
 #if DT_HAS_ALIAS(rtc_retention)
-/* Retention device for persisting RTC across reboots */
 static const struct device *retention_rtc = DEVICE_DT_GET(DT_ALIAS(rtc_retention));
 #endif
 
-/* RTC time storage - persisted to retention if available */
-static struct hio_rtc_tm m_tm = {
-	.year = 1970,
-	.month = 1,
-	.day = 1,
-	.wday = 4,
-	.hours = 0,
-	.minutes = 0,
-	.seconds = 0,
-};
+static inline uint64_t now_ticks(void)
+{
+	return nrfx_grtc_syscounter_get();
+}
+
+static void anchor_save(void)
+{
+#if DT_HAS_ALIAS(rtc_retention)
+	struct rtc_anchor snapshot;
+	k_spinlock_key_t key = k_spin_lock(&m_lock);
+
+	snapshot = m_anchor;
+	k_spin_unlock(&m_lock, key);
+
+	int ret = retention_write(retention_rtc, 0, (uint8_t *)&snapshot, sizeof(snapshot));
+	if (ret) {
+		LOG_ERR("Call `retention_write` failed: %d", ret);
+	}
+#endif
+}
+
+/* Current wall-clock in seconds, derived from anchor + syscounter delta. */
+static int64_t now_epoch(void)
+{
+	k_spinlock_key_t key = k_spin_lock(&m_lock);
+	struct rtc_anchor a = m_anchor;
+	k_spin_unlock(&m_lock, key);
+
+	uint64_t now = now_ticks();
+	int64_t delta = (now >= a.ticks) ? (int64_t)((now - a.ticks) / TICKS_PER_SEC) : 0;
+
+	return a.epoch_s + delta;
+}
+
+/* Re-anchor to the current wall-clock and persist it. Used both on time set and
+ * by the periodic checkpoint so retained RAM always holds a fresh wall-clock.
+ * The GRTC syscounter resets on a warm reboot (but retained RAM survives), so
+ * the checkpoint is what lets time survive reboots without a System-OFF wake. */
+static void rtc_reanchor(int64_t epoch_s)
+{
+	uint64_t now = now_ticks();
+
+	k_spinlock_key_t key = k_spin_lock(&m_lock);
+	m_anchor.version = RTC_ANCHOR_VERSION;
+	m_anchor.epoch_s = epoch_s;
+	m_anchor.ticks = now;
+	k_spin_unlock(&m_lock, key);
+
+	anchor_save();
+}
+
+/* Periodic wall-clock checkpoint (System ON only; kernel timer does NOT wake
+ * from System OFF). Bounds the time lost on a warm reboot to ~one period. */
+#define RTC_CHECKPOINT_PERIOD K_SECONDS(1)
+
+static void checkpoint_work_fn(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(m_checkpoint_work, checkpoint_work_fn);
+
+static void checkpoint_work_fn(struct k_work *work)
+{
+	ARG_UNUSED(work);
+
+	rtc_reanchor(now_epoch());
+	k_work_reschedule(&m_checkpoint_work, RTC_CHECKPOINT_PERIOD);
+}
 
 static int get_days_in_month(int year, int month)
 {
@@ -84,29 +152,26 @@ static int get_days_in_month(int year, int month)
 	return 31;
 }
 
-static int get_day_of_week(int year, int month, int day)
+static void epoch_to_tm(int64_t epoch_s, struct hio_rtc_tm *tm)
 {
-	int adjustment = (14 - month) / 12;
-	int m = month + 12 * adjustment - 2;
-	int y = year - adjustment;
-	int w = (day + (13 * m - 1) / 5 + y + y / 4 - y / 100 + y / 400) % 7;
+	time_t t = (time_t)epoch_s;
+	struct tm r = {0};
 
-	return w ? w : 7;
+	gmtime_r(&t, &r);
+
+	tm->year = r.tm_year + 1900;
+	tm->month = r.tm_mon + 1;
+	tm->day = r.tm_mday;
+	/* hio convention: Mon=1 .. Sun=7; struct tm: Sun=0 .. Sat=6 */
+	tm->wday = (r.tm_wday == 0) ? 7 : r.tm_wday;
+	tm->hours = r.tm_hour;
+	tm->minutes = r.tm_min;
+	tm->seconds = r.tm_sec;
 }
 
 int hio_rtc_get_tm(struct hio_rtc_tm *tm)
 {
-	irq_disable(RTC_IRQn);
-
-	tm->year = m_tm.year;
-	tm->month = m_tm.month;
-	tm->day = m_tm.day;
-	tm->wday = m_tm.wday;
-	tm->hours = m_tm.hours;
-	tm->minutes = m_tm.minutes;
-	tm->seconds = m_tm.seconds;
-
-	irq_enable(RTC_IRQn);
+	epoch_to_tm(now_epoch(), tm);
 
 	return 0;
 }
@@ -137,67 +202,30 @@ int hio_rtc_set_tm(const struct hio_rtc_tm *tm)
 		return -EINVAL;
 	}
 
-	irq_disable(RTC_IRQn);
-
-	m_tm.year = tm->year;
-	m_tm.month = tm->month;
-	m_tm.day = tm->day;
-	m_tm.wday = get_day_of_week(m_tm.year, m_tm.month, m_tm.day);
-	m_tm.hours = tm->hours;
-	m_tm.minutes = tm->minutes;
-	m_tm.seconds = tm->seconds;
-
-	irq_enable(RTC_IRQn);
+	struct tm t = {
+		.tm_year = tm->year - 1900,
+		.tm_mon = tm->month - 1,
+		.tm_mday = tm->day,
+		.tm_hour = tm->hours,
+		.tm_min = tm->minutes,
+		.tm_sec = tm->seconds,
+		.tm_isdst = -1,
+	};
+	rtc_reanchor(timeutil_timegm64(&t));
 
 	return 0;
 }
 
 int hio_rtc_get_ts(int64_t *ts)
 {
-	struct tm tm = {0};
-
-	irq_disable(RTC_IRQn);
-
-	tm.tm_year = m_tm.year - 1900;
-	tm.tm_mon = m_tm.month - 1;
-	tm.tm_mday = m_tm.day;
-	tm.tm_hour = m_tm.hours;
-	tm.tm_min = m_tm.minutes;
-	tm.tm_sec = m_tm.seconds;
-	tm.tm_isdst = -1;
-
-	irq_enable(RTC_IRQn);
-
-	*ts = timeutil_timegm64(&tm);
+	*ts = now_epoch();
 
 	return 0;
 }
 
 int hio_rtc_set_ts(int64_t ts)
 {
-	int ret;
-
-	time_t time = ts;
-	struct tm result = {0};
-	if (!gmtime_r(&time, &result)) {
-		LOG_ERR("Call `gmtime_r` failed");
-		return -EINVAL;
-	}
-
-	struct hio_rtc_tm tm = {
-		.year = result.tm_year + 1900,
-		.month = result.tm_mon + 1,
-		.day = result.tm_mday,
-		.hours = result.tm_hour,
-		.minutes = result.tm_min,
-		.seconds = result.tm_sec,
-	};
-
-	ret = hio_rtc_set_tm(&tm);
-	if (ret) {
-		LOG_ERR("Call `set_tm` failed: %d", ret);
-		return ret;
-	}
+	rtc_reanchor(ts);
 
 	return 0;
 }
@@ -215,97 +243,6 @@ int hio_rtc_get_utc_string(char *out_str, size_t out_str_size)
 		     tm.day, tm.hours, tm.minutes, tm.seconds) < 0) {
 		LOG_ERR("Call `snprintf` failed");
 		return -ENOMEM;
-	}
-
-	return 0;
-}
-
-static void rtc_advance_second(void)
-{
-	if (++m_tm.seconds < 60) {
-		goto retention;
-	}
-
-	m_tm.seconds = 0;
-
-	if (++m_tm.minutes < 60) {
-		goto retention;
-	}
-
-	m_tm.minutes = 0;
-
-	if (++m_tm.hours < 24) {
-		goto retention;
-	}
-
-	m_tm.hours = 0;
-
-	if (++m_tm.wday >= 8) {
-		m_tm.wday = 1;
-	}
-
-	if (++m_tm.day <= get_days_in_month(m_tm.year, m_tm.month)) {
-		goto retention;
-	}
-
-	m_tm.day = 1;
-
-	if (++m_tm.month > 12) {
-		m_tm.month = 1;
-
-		++m_tm.year;
-	}
-
-retention:
-#if DT_HAS_ALIAS(rtc_retention)
-	/* Save RTC state to retention memory - direct struct copy */
-	int ret = retention_write(retention_rtc, 0, (uint8_t *)&m_tm, sizeof(m_tm));
-	if (ret) {
-		LOG_ERR("Call `retention_write` failed: %d", ret);
-	}
-#endif
-	return;
-}
-
-static void rtc_handler(int32_t channel, uint64_t cc_value, void *p_context)
-{
-	ARG_UNUSED(channel);
-	ARG_UNUSED(cc_value);
-	ARG_UNUSED(p_context);
-
-	/* Re-arm for the next tick using a COMPARE reference to avoid drift. */
-	nrfx_grtc_syscounter_cc_rel_set(m_grtc_channel, RTC_TICK_US, NRFX_GRTC_CC_RELATIVE_COMPARE);
-
-	rtc_advance_second();
-}
-
-static int request_lfclk(void)
-{
-	int ret;
-
-	struct onoff_manager *mgr = z_nrf_clock_control_get_onoff(CLOCK_CONTROL_NRF_SUBSYS_LF);
-	if (!mgr) {
-		LOG_ERR("Call `z_nrf_clock_control_get_onoff` failed");
-		return -ENXIO;
-	}
-
-	static struct k_poll_signal sig;
-	k_poll_signal_init(&sig);
-	sys_notify_init_signal(&m_lfclk_cli.notify, &sig);
-
-	ret = onoff_request(mgr, &m_lfclk_cli);
-	if (ret < 0) {
-		LOG_ERR("Call `onoff_request` failed: %d", ret);
-		return ret;
-	}
-
-	struct k_poll_event events[] = {
-		K_POLL_EVENT_INITIALIZER(K_POLL_TYPE_SIGNAL, K_POLL_MODE_NOTIFY_ONLY, &sig),
-	};
-	ret = k_poll(events, ARRAY_SIZE(events), K_FOREVER);
-	if (ret) {
-		LOG_ERR("Call `k_poll` failed: %d", ret);
-		return ret;
 	}
 
 	return 0;
@@ -429,56 +366,48 @@ SHELL_CMD_REGISTER(rtc, &sub_rtc, "RTC commands for date/time operations.", prin
 
 static int init(void)
 {
-	int ret;
+	const char *src = "default";
+	bool have_time = false;
 
 	LOG_INF("System initialization");
 
 #if DT_NODE_EXISTS(DT_ALIAS(rtc_retention))
-	/* Try to restore RTC state from retention memory */
-	if (retention_is_valid(retention_rtc)) {
-		LOG_INF("Retention valid - restoring RTC state");
-		ret = retention_read(retention_rtc, 0, (uint8_t *)&m_tm, sizeof(m_tm));
-		if (ret == 0) {
-			LOG_INF("Restored: %04d/%02d/%02d %02d:%02d:%02d", m_tm.year, m_tm.month,
-				m_tm.day, m_tm.hours, m_tm.minutes, m_tm.seconds);
-		} else {
-			LOG_WRN("Retention read failed: %d", ret);
+	/* Retained RAM survives both System OFF and warm reboot; invalid only after
+	 * POR / power loss (which also resets the GRTC syscounter). */
+	if (retention_is_valid(retention_rtc) == 1) {
+		struct rtc_anchor a;
+		int ret = retention_read(retention_rtc, 0, (uint8_t *)&a, sizeof(a));
+
+		if (ret == 0 && a.version == RTC_ANCHOR_VERSION) {
+			if (now_ticks() >= a.ticks) {
+				/* Syscounter continuous: System OFF wake or no reset.
+				 * Anchor + delta gives the exact time (incl. sleep). */
+				m_anchor = a;
+				src = "restored";
+			} else {
+				/* Warm reboot: syscounter reset but RAM kept. Restore the
+				 * last checkpointed wall-clock and re-anchor to now. Lost
+				 * time is bounded by the checkpoint period. */
+				rtc_reanchor(a.epoch_s);
+				src = "reboot";
+			}
+			have_time = true;
 		}
-	} else {
-		LOG_INF("Retention not valid - using default time");
 	}
 #endif
 
-	ret = request_lfclk();
-	if (ret) {
-		LOG_ERR("Call `request_lfclk` failed: %d", ret);
-		return ret;
+	if (!have_time) {
+		/* POR / first boot: default to epoch and anchor at the current count. */
+		rtc_reanchor(0); /* 1970-01-01T00:00:00Z */
 	}
 
-	ret = nrfx_grtc_init(0);
-	if (ret != 0 && ret != -EALREADY) {
-		LOG_ERR("Call `nrfx_grtc_init` failed: %d", ret);
-		return -EIO;
-	}
+	struct hio_rtc_tm tm;
+	hio_rtc_get_tm(&tm);
+	LOG_INF("Time (%s): %04d/%02d/%02d %02d:%02d:%02d", src, tm.year, tm.month, tm.day,
+		tm.hours, tm.minutes, tm.seconds);
 
-	if (ret == -EALREADY) {
-		LOG_INF("GRTC already initialized");
-	}
-
-	ret = nrfx_grtc_channel_alloc(&m_grtc_channel);
-	if (ret) {
-		LOG_ERR("Call `nrfx_grtc_channel_alloc` failed: %d", ret);
-		return -EIO;
-	}
-
-	nrfx_grtc_channel_callback_set(m_grtc_channel, rtc_handler, NULL);
-
-	IRQ_CONNECT(RTC_IRQn, 0, RTC_IRQ_HANDLER, NULL, 0);
-	irq_enable(RTC_IRQn);
-
-	/* Set up initial compare event for the 1 second tick (interrupt enabled). */
-	uint64_t compare_value = nrfx_grtc_syscounter_get() + RTC_TICK_US;
-	nrfx_grtc_syscounter_cc_abs_set(m_grtc_channel, compare_value, true);
+	/* Start the System-ON wall-clock checkpoint (survives warm reboot). */
+	k_work_schedule(&m_checkpoint_work, RTC_CHECKPOINT_PERIOD);
 
 	return 0;
 }
