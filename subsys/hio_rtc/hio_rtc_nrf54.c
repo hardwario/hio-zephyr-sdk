@@ -1,9 +1,15 @@
+/* hio_rtc implementation for the nRF54L/H series (GRTC peripheral).
+ *
+ * Standalone implementation selected by CMake when CONFIG_SOC_SERIES_NRF54LX is
+ * set. Shares only the public API in <hio/hio_rtc.h> with the nRF52/91 variant
+ * (hio_rtc_nrf5x.c).
+ */
+
 /* HIO includes */
 #include <hio/hio_rtc.h>
 
 /* Zephyr includes */
 #include <zephyr/device.h>
-#include <zephyr/devicetree.h>
 #include <zephyr/drivers/clock_control.h>
 #include <zephyr/drivers/clock_control/nrf_clock_control.h>
 #include <zephyr/init.h>
@@ -13,15 +19,12 @@
 #include <zephyr/shell/shell.h>
 #include <zephyr/sys/timeutil.h>
 
-#if DT_NODE_EXISTS(DT_ALIAS(rtc_retention))
+#if DT_HAS_ALIAS(rtc_retention)
 #include <zephyr/retention/retention.h>
 #endif
 
-#if defined(CONFIG_SOC_SERIES_NRF54LX)
+/* nrfx includes */
 #include <nrfx_grtc.h>
-#else
-#include <nrfx_rtc.h>
-#endif
 
 /* Standard includes */
 #include <ctype.h>
@@ -34,27 +37,23 @@
 
 LOG_MODULE_REGISTER(hio_rtc, CONFIG_HIO_RTC_LOG_LEVEL);
 
-#if defined(CONFIG_SOC_SERIES_NRF54LX)
-/* NRF54 uses GRTC peripheral */
 #define RTC_IRQn        GRTC_0_IRQn
 #define RTC_IRQ_HANDLER nrfx_grtc_irq_handler
+
+/* GRTC syscounter runs at 1 MHz, so 1,000,000 ticks = 1 second. */
+#define RTC_TICK_US 1000000
+
 static uint8_t m_grtc_channel;
-#else
-/* NRF52/NRF91 use RTC peripheral */
-#define RTC_IRQn        RTC0_IRQn
-#define RTC_IRQ_HANDLER nrfx_rtc_0_irq_handler
-static const nrfx_rtc_t m_rtc = NRFX_RTC_INSTANCE(0);
-#endif
 
 static struct onoff_client m_lfclk_cli;
 
-#if DT_NODE_EXISTS(DT_ALIAS(rtc_retention))
+#if DT_HAS_ALIAS(rtc_retention)
 /* Retention device for persisting RTC across reboots */
 static const struct device *retention_rtc = DEVICE_DT_GET(DT_ALIAS(rtc_retention));
 #endif
 
 /* RTC time storage - persisted to retention if available */
-struct hio_rtc_tm m_tm = {
+static struct hio_rtc_tm m_tm = {
 	.year = 1970,
 	.month = 1,
 	.day = 1,
@@ -221,33 +220,8 @@ int hio_rtc_get_utc_string(char *out_str, size_t out_str_size)
 	return 0;
 }
 
-#if defined(CONFIG_SOC_SERIES_NRF54LX)
-static void rtc_handler(int32_t channel, uint64_t cc_value, void *p_context)
+static void rtc_advance_second(void)
 {
-	ARG_UNUSED(channel);
-	ARG_UNUSED(cc_value);
-	ARG_UNUSED(p_context);
-
-	/* Re-arm the timer for next tick (1 second) - use COMPARE reference to avoid drift */
-	/* GRTC syscounter runs at 1 MHz, so 1,000,000 ticks = 1 second */
-	nrfx_grtc_syscounter_cc_rel_set(m_grtc_channel, 1000000, NRFX_GRTC_CC_RELATIVE_COMPARE);
-
-#else
-static void rtc_handler(nrfx_rtc_int_type_t int_type)
-{
-	if (int_type != NRFX_RTC_INT_TICK) {
-		return;
-	}
-
-	static int prescaler = 0;
-
-	if (++prescaler % 8 != 0) {
-		return;
-	}
-
-	prescaler = 0;
-#endif
-
 	if (++m_tm.seconds < 60) {
 		goto retention;
 	}
@@ -283,7 +257,7 @@ static void rtc_handler(nrfx_rtc_int_type_t int_type)
 	}
 
 retention:
-#if DT_NODE_EXISTS(DT_ALIAS(rtc_retention))
+#if DT_HAS_ALIAS(rtc_retention)
 	/* Save RTC state to retention memory - direct struct copy */
 	int ret = retention_write(retention_rtc, 0, (uint8_t *)&m_tm, sizeof(m_tm));
 	if (ret) {
@@ -291,6 +265,18 @@ retention:
 	}
 #endif
 	return;
+}
+
+static void rtc_handler(int32_t channel, uint64_t cc_value, void *p_context)
+{
+	ARG_UNUSED(channel);
+	ARG_UNUSED(cc_value);
+	ARG_UNUSED(p_context);
+
+	/* Re-arm for the next tick using a COMPARE reference to avoid drift. */
+	nrfx_grtc_syscounter_cc_rel_set(m_grtc_channel, RTC_TICK_US, NRFX_GRTC_CC_RELATIVE_COMPARE);
+
+	rtc_advance_second();
 }
 
 static int request_lfclk(void)
@@ -469,8 +455,6 @@ static int init(void)
 		return ret;
 	}
 
-#if defined(CONFIG_SOC_SERIES_NRF54LX)
-	/* NRF54 GRTC initialization */
 	ret = nrfx_grtc_init(0);
 	if (ret != 0 && ret != -EALREADY) {
 		LOG_ERR("Call `nrfx_grtc_init` failed: %d", ret);
@@ -481,42 +465,20 @@ static int init(void)
 		LOG_INF("GRTC already initialized");
 	}
 
-	/* Allocate GRTC channel */
 	ret = nrfx_grtc_channel_alloc(&m_grtc_channel);
 	if (ret) {
 		LOG_ERR("Call `nrfx_grtc_channel_alloc` failed: %d", ret);
 		return -EIO;
 	}
 
-	/* Set up callback for the channel */
 	nrfx_grtc_channel_callback_set(m_grtc_channel, rtc_handler, NULL);
 
-	/* Enable the IRQ for GRTC */
 	IRQ_CONNECT(RTC_IRQn, 0, RTC_IRQ_HANDLER, NULL, 0);
 	irq_enable(RTC_IRQn);
 
-	/* Set up initial compare event for 1 second intervals (GRTC runs at 1 MHz) */
-	/* Enable interrupt for this channel (third parameter = true) */
-	uint64_t compare_value = nrfx_grtc_syscounter_get() + 1000000;
+	/* Set up initial compare event for the 1 second tick (interrupt enabled). */
+	uint64_t compare_value = nrfx_grtc_syscounter_get() + RTC_TICK_US;
 	nrfx_grtc_syscounter_cc_abs_set(m_grtc_channel, compare_value, true);
-
-#else
-	/* NRF52 RTC initialization */
-	nrfx_rtc_config_t config = NRFX_RTC_DEFAULT_CONFIG;
-	config.prescaler = 4095;
-	(void)nrfx_rtc_init(&m_rtc, &config, rtc_handler);
-	if (!nrfx_rtc_init_check(&m_rtc)) {
-		LOG_ERR("Call `nrfx_rtc_init` failed");
-		return -EIO;
-	}
-
-	nrfx_rtc_tick_enable(&m_rtc, true);
-	nrfx_rtc_enable(&m_rtc);
-
-	/* Enable the IRQ for RTC */
-	IRQ_CONNECT(RTC_IRQn, 0, RTC_IRQ_HANDLER, NULL, 0);
-	irq_enable(RTC_IRQn);
-#endif
 
 	return 0;
 }
