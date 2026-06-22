@@ -11,4 +11,8 @@ set(HIO_LTE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../subsys/hio_lte)
 
 include_directories(${HIO_LTE_DIR})
 target_sources(app PRIVATE ${HIO_LTE_DIR}/hio_lte_parse.c)
+target_sources(app PRIVATE ${HIO_LTE_DIR}/hio_lte_state.c)
+target_sources(app PRIVATE ${HIO_LTE_DIR}/hio_lte_util.c)
 target_sources(app PRIVATE src/test_parse.c)
+target_sources(app PRIVATE src/test_state.c)
+target_sources(app PRIVATE src/test_util.c)
