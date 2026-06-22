@@ -224,6 +224,7 @@ int hio_cloud_util_save_firmware_update_id(const hio_cloud_uuid_t uuid)
 struct settings_read_callback_params {
 	void *data;
 	size_t len;
+	bool found;
 };
 
 static int settings_read_callback(const char *key, size_t len, settings_read_cb read_cb,
@@ -243,6 +244,8 @@ static int settings_read_callback(const char *key, size_t len, settings_read_cb 
 		return -EINVAL;
 	}
 
+	params->found = true;
+
 	return 0;
 }
 
@@ -251,9 +254,21 @@ int hio_cloud_util_get_firmware_update_id(hio_cloud_uuid_t uuid)
 	struct settings_read_callback_params params = {
 		.data = uuid,
 		.len = sizeof(hio_cloud_uuid_t),
+		.found = false,
 	};
-	return settings_load_subtree_direct("cloud/firmware/update_id", settings_read_callback,
-					    &params);
+
+	/* settings_load_subtree_direct returns 0 even when the key does not
+	 * exist (the callback is simply never invoked), so the caller cannot
+	 * tell "loaded" from "absent" by the return value alone. Track it via
+	 * the callback and report -ENOENT, otherwise the uninitialized uuid
+	 * buffer would be taken as a valid id. */
+	int ret = settings_load_subtree_direct("cloud/firmware/update_id",
+					       settings_read_callback, &params);
+	if (ret) {
+		return ret;
+	}
+
+	return params.found ? 0 : -ENOENT;
 }
 
 int hio_cloud_util_delete_firmware_update_id(void)
