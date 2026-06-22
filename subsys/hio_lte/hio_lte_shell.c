@@ -168,6 +168,11 @@ static int cmd_state(const struct shell *shell, size_t argc, char **argv)
 		shell_print(shell, "earfcn: %d", conn_param.earfcn);
 	}
 
+	char *ceer;
+	if (!hio_lte_get_ceer(&ceer)) {
+		shell_print(shell, "last-ceer: %s", ceer);
+	}
+
 	const char *fsm_state = "not available";
 	hio_lte_get_fsm_state(&fsm_state);
 

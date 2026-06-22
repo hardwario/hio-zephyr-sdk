@@ -61,6 +61,7 @@ int hio_lte_flow_open_socket(const struct hio_lte_socket_config *socket_config,
 int hio_lte_flow_close_socket(bool save_dtls_session);
 
 int hio_lte_flow_check(void);
+int hio_lte_flow_set_sndtimeo(int timeout_sec);
 int hio_lte_flow_send(const struct hio_lte_send_recv_param *param);
 int hio_lte_flow_recv(const struct hio_lte_send_recv_param *param);
 

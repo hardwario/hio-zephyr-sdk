@@ -27,6 +27,9 @@ void hio_lte_state_set_iccid(const char *iccid);
 int hio_lte_state_get_modem_fw_version(char **version);
 void hio_lte_state_set_modem_fw_version(const char *version);
 
+int hio_lte_state_get_ceer(char **ceer);
+void hio_lte_state_set_ceer(const char *ceer);
+
 int hio_lte_state_get_conn_param(struct hio_lte_conn_param *param);
 void hio_lte_state_set_conn_param(const struct hio_lte_conn_param *param);
 

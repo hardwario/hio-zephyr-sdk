@@ -104,6 +104,12 @@ struct hio_lte_send_recv_param {
 			       * recv_buf).
 			       */
 	k_timeout_t timeout;  /**< Timeout for the operation. */
+	int retry_count;      /**< Number of extra send attempts while waiting for the network
+			       * to grant a connection (each attempt waits for RRC). 0 (the
+			       * default) sends once and does not retry; N retries up to N
+			       * more times. Bounds the resend loop independently of
+			       * @ref timeout, which only limits how long one attempt waits.
+			       */
 };
 
 /**
@@ -231,6 +237,17 @@ int hio_lte_get_iccid(char **iccid);
  * @retval <0     Error.
  */
 int hio_lte_get_modem_fw_version(char **version);
+
+/**
+ * @brief Get the last extended error report (AT+CEER) captured after a flow
+ *        failure — typically the network release or reject cause.
+ *
+ * @param ceer    Output: pointer to an internal null-terminated string.
+ * @retval 0      Success.
+ * @retval -ENODATA No report captured yet.
+ * @retval <0     Error.
+ */
+int hio_lte_get_ceer(char **ceer);
 
 /**
  * @brief Get the latest cached LTE connection parameters.

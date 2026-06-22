@@ -4,6 +4,7 @@
 #include "hio_lte_state.h"
 #include "hio_lte_str.h"
 #include "hio_lte_talk.h"
+#include "hio_lte_util.h"
 
 /* HIO includes */
 #include <hio/hio_rtc.h>
@@ -43,7 +44,15 @@ LOG_MODULE_REGISTER(hio_lte_flow, CONFIG_HIO_LTE_LOG_LEVEL);
 
 #define XRECVFROM_TIMEOUT_SEC 5
 
-#define SOCKET_SEND_TMO_SEC  30
+/* SNDTIMEO bounds nrf_send with NRF_MSG_WAITACK, which blocks until the data is
+ * delivered on-air. Because the modem only attempts a connection (CSCON 1) in
+ * response to a send, this wait spans the entire time-to-CSCON-1, so it MUST be
+ * at least as long as SEND_CSCON_1_TIMEOUT — otherwise the send is aborted with
+ * ETIMEDOUT before the network is given its full chance to set up the bearer,
+ * the FSM's longer CSCON timeout never gets reached, and the transfer stalls.
+ * Field test with SNDTIMEO=30 against CSCON timeout=120 failed exactly this way.
+ * Keep these two values in lockstep. */
+#define SOCKET_SEND_TMO_SEC  120
 #define RESPONSE_TIMEOUT_SEC 5
 
 #define SEC_TAG 5005
@@ -592,6 +601,12 @@ static int socket_setup(bool dtls_enabled, bool load_dtls_session)
 {
 	int ret;
 
+	/* Both SNDTIMEO and RCVTIMEO here are just initial defaults: the FSM
+	 * overrides SNDTIMEO per send (hio_lte_flow_set_sndtimeo, from the
+	 * caller's remaining deadline) and RCVTIMEO per receive (hio_lte_flow_recv,
+	 * from the granted PSM active time). nrf_send uses NRF_MSG_WAITACK and
+	 * blocks until the data is on-air, so SNDTIMEO is the real bound on the
+	 * time-to-CSCON-1 wait, not a mere full-TX-buffer guard. */
 	struct nrf_timeval tv = {
 		.tv_sec = SOCKET_SEND_TMO_SEC,
 		.tv_usec = 0,
@@ -828,6 +843,22 @@ int hio_lte_flow_check(void)
 
 	char resp[128] = {0};
 
+	/* Best-effort: capture the last network release/reject cause so field
+	 * failures (e.g. RRC release with extended wait time) are visible in
+	 * the log and via `lte state`. */
+	ret = hio_lte_talk_at_cmd_with_resp_prefix("AT+CEER", resp, sizeof(resp), "+CEER: ");
+	if (!ret && resp[0] != '\0') {
+		LOG_WRN("CEER: %s", resp);
+		hio_lte_state_set_ceer(resp);
+	}
+
+	/* Best-effort diagnostics for the China low-throughput case: whether the
+	 * network imposes APN rate control (rate / time_window / remaining block
+	 * time) and the granted eDRX cycle. Raw queries — the full modem
+	 * response is logged via tx:/rx:, no parsing needed yet. */
+	hio_lte_talk_at_cmd("AT%APNRATECTRL=0,0");
+	hio_lte_talk_at_cmd("AT+CEDRXRDP");
+
 	/* Check functional mode */
 	ret = hio_lte_talk_at_cmd_with_resp_prefix("AT+CFUN?", resp, sizeof(resp), "+CFUN: ");
 	if (ret) {
@@ -910,38 +941,69 @@ int hio_lte_flow_check(void)
 	return 0;
 }
 
+int hio_lte_flow_set_sndtimeo(int timeout_sec)
+{
+	struct nrf_timeval tv = {
+		.tv_sec = timeout_sec,
+		.tv_usec = 0,
+	};
+
+	int ret = nrf_setsockopt(m_socket_fd, NRF_SOL_SOCKET, NRF_SO_SNDTIMEO, (const void *)&tv,
+				 sizeof(struct nrf_timeval));
+	if (ret < 0) {
+		LOG_ERR("Call `nrf_setsockopt` SNDTIMEO failed: %d", -ret);
+		return ret;
+	}
+
+	return 0;
+}
+
 int hio_lte_flow_send(const struct hio_lte_send_recv_param *param)
 {
 	int ret;
 
+	/* Always rewrite the RAI option: a value armed by a previous exchange
+	 * (ONE_RESP/LAST) would otherwise stick to the socket and make the
+	 * network drop RRC right after every mid-transfer fragment, forcing a
+	 * new RRC setup per fragment. ONGOING tells the modem to keep the
+	 * connection while the transfer continues. */
 	int option;
 	if (param->rai) {
 		option = param->recv_buf ? NRF_RAI_ONE_RESP : NRF_RAI_LAST;
-		ret = nrf_setsockopt(m_socket_fd, NRF_SOL_SOCKET, NRF_SO_RAI, &option,
-				     sizeof(option));
-		if (ret) {
-			LOG_ERR("Call `nrf_setsockopt` failed: %d", -ret);
-			return ret;
-		}
+	} else {
+		option = NRF_RAI_ONGOING;
+	}
+	ret = nrf_setsockopt(m_socket_fd, NRF_SOL_SOCKET, NRF_SO_RAI, &option, sizeof(option));
+	if (ret) {
+		LOG_ERR("Call `nrf_setsockopt` failed: %d", -ret);
+		return ret;
 	}
 
-	ssize_t total_sentb = 0;
-	while (total_sentb < param->send_len) {
-		ssize_t sentb = nrf_send(
-			m_socket_fd, (const void *)((const uint8_t *)param->send_buf + total_sentb),
-			param->send_len - total_sentb, 0);
-		if (sentb == -1) {
-			ret = -errno;
-			if (ret == -NRF_EAGAIN) {
-				LOG_ERR("Connection closed by the peer");
-				return -ENOTCONN;
-			}
-
-			LOG_ERR("Failed to send data: %d", ret);
-			return ret;
+	/* NRF_MSG_WAITACK blocks until the datagram is actually sent on-air by
+	 * the modem (bounded by SNDTIMEO), instead of just being queued. This is
+	 * what keeps the caller from handing the modem a second packet while the
+	 * first is still buffered waiting for RRC: without RRC the modem queues
+	 * sends and flushes them in one burst once a connection is granted, which
+	 * the server then sees as a duplicate storm and resets the sequence.
+	 * On SNDTIMEO the network never granted a connection in time -> ETIMEDOUT,
+	 * which the FSM maps to "no connection" so the upper layer can back off.
+	 *
+	 * One datagram per call: on a UDP socket nrf_send transmits the whole
+	 * datagram or fails, so a single send maps to a single FLAP packet on
+	 * the wire. */
+	ssize_t sentb = nrf_send(m_socket_fd, param->send_buf, param->send_len, NRF_MSG_WAITACK);
+	if (sentb == -1) {
+		ret = -errno;
+		if (ret == -NRF_EAGAIN) {
+			LOG_WRN("Send not delivered on-air within timeout");
+			return -ETIMEDOUT;
 		}
-
-		total_sentb += sentb;
+		LOG_ERR("Failed to send data: %d", ret);
+		return ret;
+	}
+	if (sentb != param->send_len) {
+		LOG_ERR("Partial datagram send: %zd of %u", sentb, param->send_len);
+		return -EIO;
 	}
 
 	if (param->rai && !param->recv_buf) {
@@ -954,9 +1016,9 @@ int hio_lte_flow_send(const struct hio_lte_send_recv_param *param)
 		}
 	}
 
-	LOG_INF("Sent %d bytes, rai: %d", total_sentb, param->rai);
+	LOG_INF("Sent %zd bytes, rai: %d", sentb, param->rai);
 
-	return total_sentb;
+	return sentb;
 }
 
 int hio_lte_flow_recv(const struct hio_lte_send_recv_param *param)
@@ -967,8 +1029,11 @@ int hio_lte_flow_recv(const struct hio_lte_send_recv_param *param)
 		return -EINVAL;
 	}
 
+	struct hio_lte_cereg_param cereg = {0};
+	hio_lte_state_get_cereg_param(&cereg);
+
 	struct nrf_timeval tv = {
-		.tv_sec = RESPONSE_TIMEOUT_SEC,
+		.tv_sec = hio_lte_util_recv_timeout_sec(&cereg),
 		.tv_usec = 0,
 	};
 
@@ -981,8 +1046,8 @@ int hio_lte_flow_recv(const struct hio_lte_send_recv_param *param)
 		return ret;
 	}
 
-	LOG_INF("Receiving data from socket_fd %d, expecting up to %u bytes", m_socket_fd,
-		param->recv_size);
+	LOG_INF("Receiving data from socket_fd %d, expecting up to %u bytes, timeout %lld s",
+		m_socket_fd, param->recv_size, (long long)tv.tv_sec);
 
 	ssize_t readb =
 		nrf_recv(m_socket_fd, (void *)((uint8_t *)param->recv_buf + *param->recv_len),

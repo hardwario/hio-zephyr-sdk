@@ -3,6 +3,7 @@
 #include "hio_lte_state.h"
 #include "hio_lte_str.h"
 #include "hio_lte_talk.h"
+#include "hio_lte_util.h"
 
 /* HIO includes */
 #include <hio/hio_rtc.h>
@@ -26,7 +27,13 @@ LOG_MODULE_REGISTER(hio_lte, CONFIG_HIO_LTE_LOG_LEVEL);
 
 #define SIMDETECTED_TIMEOUT    K_SECONDS(10)
 #define MDMEV_RESET_LOOP_DELAY K_MINUTES(32)
-#define SEND_CSCON_1_TIMEOUT   K_SECONDS(30)
+/* The real bound on waiting for the network to grant a connection (CSCON 1) is
+ * SNDTIMEO inside the blocking nrf_send (see hio_lte_util_send_timeout_sec). The
+ * FSM timer in the send state is only a watchdog: this guard is added on top of
+ * SNDTIMEO so the watchdog fires strictly after the send's own timeout, catching
+ * the pathological case where nrf_send wedges and never returns. It also bounds
+ * the brief wait for the SEND event once the send succeeds. */
+#define SEND_WATCHDOG_GUARD_SEC 1
 #define CONEVAL_TIMEOUT        K_SECONDS(30)
 #define NCELLMEAS_TIMEOUT      K_SECONDS(60)
 
@@ -83,6 +90,8 @@ atomic_t m_flag = ATOMIC_INIT(0);
 
 K_MUTEX_DEFINE(m_send_recv_lock);
 struct hio_lte_send_recv_param *m_send_recv_param = NULL;
+static int m_send_recv_result;
+static int m_send_attempt;
 
 struct hio_lte_metrics m_metrics;
 K_MUTEX_DEFINE(m_metrics_lock);
@@ -490,6 +499,11 @@ int hio_lte_get_modem_fw_version(char **version)
 	return hio_lte_state_get_modem_fw_version(version);
 }
 
+int hio_lte_get_ceer(char **ceer)
+{
+	return hio_lte_state_get_ceer(ceer);
+}
+
 int hio_lte_send_recv(const struct hio_lte_send_recv_param *param)
 {
 	LOG_INF("send_len: %u", param->send_len);
@@ -501,6 +515,8 @@ int hio_lte_send_recv(const struct hio_lte_send_recv_param *param)
 	LOG_DBG("locked");
 
 	m_send_recv_param = (struct hio_lte_send_recv_param *)param;
+	m_send_recv_result = 0;
+	m_send_attempt = 0;
 
 	k_event_clear(&m_states_event, SEND_RECV_BIT);
 
@@ -516,11 +532,13 @@ int hio_lte_send_recv(const struct hio_lte_send_recv_param *param)
 		return -ETIMEDOUT;
 	}
 
+	int result = m_send_recv_result;
+
 	k_mutex_unlock(&m_send_recv_lock);
 
 	LOG_DBG("unlock");
 
-	return 0;
+	return result;
 }
 
 int hio_lte_get_conn_param(struct hio_lte_conn_param *param)
@@ -664,6 +682,7 @@ static int on_enter_error(void)
 	int ret = hio_lte_flow_check();
 	if (ret == 0) {
 		m_error_ctx.flow_check_failures = 0;
+
 		LOG_INF("Flow check successful, resuming operation in 5 seconds");
 		m_error_ctx.on_timeout_state = FSM_STATE_READY;
 		start_timer(K_SECONDS(5));
@@ -1130,8 +1149,37 @@ static int on_enter_send(void)
 	}
 	k_mutex_unlock(&m_metrics_lock);
 
+	m_send_attempt++;
+
+	/* nrf_send with NRF_MSG_WAITACK blocks until the data is on-air, which
+	 * spans the whole time-to-CSCON-1 (the modem only attempts a connection
+	 * in response to a send). Bound that wait by SNDTIMEO derived from the
+	 * caller's remaining deadline, capped at the hard ceiling: a send must
+	 * never block past the caller's own deadline, but K_FOREVER transfers
+	 * still get the full ceiling. */
+	k_timepoint_t end = sys_timepoint_calc(m_send_recv_param->timeout);
+	k_timeout_t remaining = sys_timepoint_timeout(end);
+	int remaining_sec = K_TIMEOUT_EQ(remaining, K_FOREVER)
+				    ? -1
+				    : k_ticks_to_sec_ceil32(remaining.ticks);
+	int sndtimeo_sec = hio_lte_util_send_timeout_sec(remaining_sec);
+
+	ret = hio_lte_flow_set_sndtimeo(sndtimeo_sec);
+	if (ret < 0) {
+		LOG_ERR("Call `hio_lte_flow_set_sndtimeo` failed: %d", ret);
+		return ret;
+	}
+
+	/* Watchdog armed BEFORE the (blocking) send: SNDTIMEO is the real bound,
+	 * so this only fires in the pathological case where nrf_send wedges and
+	 * never returns. The extra second keeps it strictly after SNDTIMEO so a
+	 * normal on-air timeout is reported by the send, not pre-empted here.
+	 * The normal path stops this timer right after the send returns. */
+	start_timer(K_SECONDS(sndtimeo_sec + SEND_WATCHDOG_GUARD_SEC));
+
 	ret = hio_lte_flow_send(m_send_recv_param);
 	if (ret < 0) {
+		stop_timer();
 		LOG_ERR("Call `hio_lte_flow_send` failed: %d", ret);
 
 		k_mutex_lock(&m_metrics_lock, K_FOREVER);
@@ -1141,7 +1189,10 @@ static int on_enter_send(void)
 		return ret;
 	}
 
-	start_timer(SEND_CSCON_1_TIMEOUT);
+	/* Send delivered on-air, so CSCON 1 has been granted. Re-arm the timer
+	 * as a short bound on the SEND event delivery that moves us on to
+	 * RECEIVE/CONEVAL. */
+	start_timer(K_SECONDS(SEND_WATCHDOG_GUARD_SEC));
 
 	if (atomic_test_bit(&m_flag, FLAG_CSCON)) {
 		delegate_event(HIO_LTE_FSM_EVENT_SEND);
@@ -1182,6 +1233,22 @@ static int send_event_handler(enum hio_lte_fsm_event event)
 		k_mutex_lock(&m_metrics_lock, K_FOREVER);
 		m_metrics.uplink_errors++;
 		k_mutex_unlock(&m_metrics_lock);
+
+		/* Reaching TIMEOUT in the SEND state means the network never
+		 * granted a connection (CSCON 1) for this attempt — had it, the
+		 * FSM would have moved on to RECEIVE/CONEVAL. Retry up to
+		 * retry_count more times, then end the transaction. The error is
+		 * -ENOTCONN (not -ETIMEDOUT) so the caller can tell "the network
+		 * did not let us transmit" from "we transmitted but the reply was
+		 * lost" and back off differently. First attempt is
+		 * m_send_attempt == 1, so the budget is 1 + retry_count. */
+		if (m_send_recv_param && m_send_attempt > m_send_recv_param->retry_count) {
+			LOG_WRN("Send gave up after %d attempt(s): no connection granted",
+				m_send_attempt);
+			m_send_recv_result = -ENOTCONN;
+			m_send_recv_param = NULL;
+			k_event_post(&m_states_event, SEND_RECV_BIT);
+		}
 		transition_state(FSM_STATE_READY);
 		break;
 	case HIO_LTE_FSM_EVENT_DEREGISTERED:
