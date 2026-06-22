@@ -28,6 +28,24 @@
 
 #define MODEM_SLEEP_DELAY K_SECONDS(10)
 
+/* A failed exchange is retried by resending the very same packet with the same
+ * sequence: the server treats it as a duplicate and replays the cached
+ * response, so no progress is lost. Resending continues until the caller's
+ * timeout expires rather than for a fixed count, which lets a slow network
+ * (few connection grants) eventually get the packet through.
+ *
+ * The backoff before a resend depends on why the previous attempt failed:
+ * a lost reply (-ETIMEDOUT) can be re-solicited promptly, while the network
+ * not granting a connection (-ENOTCONN) means waiting is pointless until it
+ * does, so back off longer to avoid hammering a congested cell. */
+#define TRANSFER_BACKOFF_LOST_REPLY K_SECONDS(1)
+#define TRANSFER_BACKOFF_NO_CONN    K_SECONDS(30)
+
+/* How many times a stale (lagging) ACK is answered by re-sending the same
+ * poll/ack before the transfer is restarted, bounding the every-other-packet
+ * RAI handshake so a persistently out-of-step peer cannot spin forever. */
+#define TRANSFER_REPEAT_LIMIT 3
+
 LOG_MODULE_REGISTER(cloud_transfer, CONFIG_HIO_CLOUD_LOG_LEVEL);
 
 HIO_BUF_DEFINE_STATIC(m_buf_0, HIO_LTE_UDP_MAX_MTU);
@@ -62,7 +80,8 @@ static size_t transfer_mode_max_data_size(void)
 		return 0;
 	}
 }
-static int transfer(struct hio_cloud_packet *pck_send, struct hio_cloud_packet *pck_recv, bool rai)
+static int transfer(struct hio_cloud_packet *pck_send, struct hio_cloud_packet *pck_recv, bool rai,
+		    k_timeout_t timeout)
 {
 	int ret;
 
@@ -94,29 +113,55 @@ static int transfer(struct hio_cloud_packet *pck_send, struct hio_cloud_packet *
 		return -EPROTONOSUPPORT;
 	}
 
-	len = 0;
-
 	LOG_HEXDUMP_INF(hio_buf_get_mem(send_buf), hio_buf_get_used(send_buf),
 			rai ? "Sending packet RAI:" : "Sending packet:");
 
-	struct hio_lte_send_recv_param param = {
-		.rai = rai,
-		.send_buf = hio_buf_get_mem(send_buf),
-		.send_len = hio_buf_get_used(send_buf),
-		.recv_buf = NULL,
-		.recv_size = 0,
-		.recv_len = &len,
-		.timeout = K_FOREVER,
-	};
+	/* The packet is serialized into send_buf once above. On a failed exchange
+	 * resend the same bytes with the same sequence (the server replays its
+	 * cached response, so the transfer keeps its place) until the caller's
+	 * timeout expires. Resending is only meaningful when a response is
+	 * expected (pck_recv set). */
+	k_timepoint_t end = sys_timepoint_calc(timeout);
+	for (int attempt = 0; ; attempt++) {
+		len = 0;
 
-	if (pck_recv) {
-		hio_buf_reset(recv_buf);
-		param.recv_buf = hio_buf_get_mem(recv_buf);
-		param.recv_size = hio_buf_get_free(recv_buf);
-	}
+		struct hio_lte_send_recv_param param = {
+			.rai = rai,
+			.send_buf = hio_buf_get_mem(send_buf),
+			.send_len = hio_buf_get_used(send_buf),
+			.recv_buf = NULL,
+			.recv_size = 0,
+			.recv_len = &len,
+			.timeout = timeout,
+			/* No LTE-level retry: retransmission is owned by this layer
+			 * (the loop below), so the FSM returns instead of resending
+			 * on its own. */
+			.retry_count = 0,
+		};
 
-	ret = hio_lte_send_recv(&param);
-	if (ret) {
+		if (pck_recv) {
+			hio_buf_reset(recv_buf);
+			param.recv_buf = hio_buf_get_mem(recv_buf);
+			param.recv_size = hio_buf_get_free(recv_buf);
+		}
+
+		ret = hio_lte_send_recv(&param);
+		if (!ret) {
+			break;
+		}
+
+		/* Only an exchange that expects a reply is worth resending, and
+		 * only while the caller's deadline has not passed. */
+		bool retryable = pck_recv && (ret == -ETIMEDOUT || ret == -ENOTCONN);
+		if (retryable && !sys_timepoint_expired(end)) {
+			k_timeout_t backoff = (ret == -ENOTCONN) ? TRANSFER_BACKOFF_NO_CONN
+								  : TRANSFER_BACKOFF_LOST_REPLY;
+			LOG_WRN("Exchange failed (%d), resending packet after backoff (attempt %d)",
+				ret, attempt + 2);
+			k_sleep(backoff);
+			continue;
+		}
+
 		LOG_ERR("Call `hio_lte_send_recv` failed: %d", ret);
 		return ret;
 	}
@@ -239,7 +284,7 @@ int hio_cloud_transfer_get_metrics(struct hio_cloud_transfer_metrics *metrics)
 	return 0;
 }
 
-int hio_cloud_transfer_uplink(struct hio_buf *buf, bool *has_downlink)
+int hio_cloud_transfer_uplink(struct hio_buf *buf, bool *has_downlink, k_timeout_t timeout)
 {
 	int ret = 0;
 	int res = 0;
@@ -290,7 +335,10 @@ restart:
 		}
 
 		bool rai = m_pck_send.flags & HIO_CLOUD_PACKET_FLAG_LAST;
-		ret = transfer(&m_pck_send, &m_pck_recv, rai);
+
+		int repeats = 0;
+	resend_uplink:
+		ret = transfer(&m_pck_send, &m_pck_recv, rai, timeout);
 		if (ret) {
 			LOG_ERR("Call `transfer` failed: %d", ret);
 			res = ret;
@@ -315,8 +363,19 @@ restart:
 
 		if (m_pck_recv.sequence != m_sequence) {
 			if (m_pck_recv.sequence == m_last_recv_sequence) {
-				LOG_WRN("Received repeat response");
-				continue;
+				/* Stale ACK from a prior exchange (the server's reply
+				 * lags by one window under RAI). Re-send the SAME
+				 * fragment with the SAME sequence and wait for the
+				 * matching ACK — do not advance the sequence, which
+				 * would desync the server. */
+				if (++repeats <= TRANSFER_REPEAT_LIMIT) {
+					LOG_WRN("Received repeat response, resending part %d (%d/%d)",
+						part, repeats, TRANSFER_REPEAT_LIMIT);
+					goto resend_uplink;
+				}
+				LOG_WRN("Repeat response limit reached, restarting transfer");
+				m_sequence = 0;
+				goto restart;
 			} else {
 				LOG_WRN("Received unexpected sequence expect: %u", m_sequence);
 				m_sequence = 0;
@@ -360,7 +419,7 @@ exit:
 	return res;
 }
 
-int hio_cloud_transfer_downlink(struct hio_buf *buf, bool *has_downlink)
+int hio_cloud_transfer_downlink(struct hio_buf *buf, bool *has_downlink, k_timeout_t timeout)
 {
 	int ret;
 	int res = 0;
@@ -388,11 +447,12 @@ restart:
 		m_pck_send.sequence = m_sequence;
 		m_sequence = hio_cloud_packet_sequence_inc(m_sequence);
 
+		int repeats = 0;
 	again:
 		if (quit) {
 			bool rai = has_downlink ? !*has_downlink
 						: true; /* use RAI if no downlink is expected */
-			ret = transfer(&m_pck_send, NULL, rai);
+			ret = transfer(&m_pck_send, NULL, rai, timeout);
 			if (ret) {
 				LOG_ERR("Call `transfer` failed: %d", ret);
 				res = ret;
@@ -405,7 +465,7 @@ restart:
 
 		LOG_INF("Downlink: Starting send_recv");
 
-		ret = transfer(&m_pck_send, &m_pck_recv, rai);
+		ret = transfer(&m_pck_send, &m_pck_recv, rai, timeout);
 		if (ret) {
 			LOG_ERR("Call `transfer` failed: %d", ret);
 			res = ret;
@@ -420,8 +480,19 @@ restart:
 
 		if (m_pck_recv.sequence != m_sequence) {
 			if (m_pck_recv.sequence == m_last_recv_sequence) {
-				LOG_WRN("Received repeat response");
-				goto again;
+				/* Stale ACK lagging by one window: re-send the same
+				 * poll/ack with the same sequence (goto again keeps
+				 * m_pck_send untouched) and wait for the matching
+				 * reply, bounded so a persistently stale peer cannot
+				 * spin forever. */
+				if (++repeats <= TRANSFER_REPEAT_LIMIT) {
+					LOG_WRN("Received repeat response, resending (%d/%d)",
+						repeats, TRANSFER_REPEAT_LIMIT);
+					goto again;
+				}
+				LOG_WRN("Repeat response limit reached, restarting transfer");
+				m_sequence = 0;
+				goto restart;
 			} else {
 				LOG_WRN("Received unexpected sequence expect: %u", m_sequence);
 				m_sequence = 0;
