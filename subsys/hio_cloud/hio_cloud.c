@@ -204,7 +204,7 @@ static void poll_timer_handler(struct k_timer *timer)
 
 static K_TIMER_DEFINE(m_poll_timer, poll_timer_handler, NULL);
 
-static int transfer(struct hio_buf *buf)
+static int transfer(struct hio_buf *buf, k_timeout_t timeout)
 {
 	int ret;
 
@@ -212,7 +212,7 @@ static int transfer(struct hio_buf *buf)
 	LOG_INF("HAS_DOWNLINK: %d", has_downlink);
 
 	if (hio_buf_get_used(buf) > 0) {
-		ret = hio_cloud_transfer_uplink(buf, &has_downlink);
+		ret = hio_cloud_transfer_uplink(buf, &has_downlink, timeout);
 		if (ret) {
 			LOG_ERR("Call `transfer_uplink` for buf failed: %d", ret);
 			return ret;
@@ -235,7 +235,7 @@ static int transfer(struct hio_buf *buf)
 	if (has_downlink) {
 		has_downlink = false;
 
-		ret = hio_cloud_transfer_downlink(buf, &has_downlink);
+		ret = hio_cloud_transfer_downlink(buf, &has_downlink, timeout);
 		if (ret) {
 			LOG_ERR("Call `hio_cloud_transfer_downlink` failed: %d", ret);
 			return ret;
@@ -264,7 +264,7 @@ static int transfer(struct hio_buf *buf)
 		}
 
 		if (hio_buf_get_used(&upbuf) > 0) {
-			ret = hio_cloud_transfer_uplink(&upbuf, &has_downlink);
+			ret = hio_cloud_transfer_uplink(&upbuf, &has_downlink, timeout);
 			if (ret) {
 				LOG_ERR("Call `hio_cloud_transfer_uplink` for upbuf failed: %d",
 					ret);
@@ -310,7 +310,7 @@ static int create_session(void)
 	LOG_INF("m_transfer_buf.used: %d", hio_buf_get_used(&m_transfer_buf));
 	LOG_INF("m_transfer_buf.free: %d", hio_buf_get_free(&m_transfer_buf));
 
-	ret = transfer(&m_transfer_buf);
+	ret = transfer(&m_transfer_buf, K_FOREVER);
 	if (ret) {
 		LOG_ERR("Call `transfer` failed: %d", ret);
 		k_mutex_unlock(&m_lock);
@@ -357,7 +357,7 @@ static int upload_decoder(void)
 			return ret;
 		}
 
-		ret = transfer(&m_transfer_buf);
+		ret = transfer(&m_transfer_buf, K_FOREVER);
 		if (ret) {
 			LOG_ERR("Call `transfer` failed: %d", ret);
 			k_mutex_unlock(&m_lock);
@@ -407,7 +407,7 @@ static int upload_encoder(void)
 			return ret;
 		}
 
-		ret = transfer(&m_transfer_buf);
+		ret = transfer(&m_transfer_buf, K_FOREVER);
 		if (ret) {
 			LOG_ERR("Call `transfer` failed: %d", ret);
 			k_mutex_unlock(&m_lock);
@@ -460,7 +460,7 @@ static int upload_config(void)
 	if (m_session.config_hash != hash) {
 		LOG_INF("Uploading config hash: %08llx", hash);
 
-		ret = transfer(&m_transfer_buf);
+		ret = transfer(&m_transfer_buf, K_FOREVER);
 		if (ret) {
 			LOG_ERR("Call `transfer` failed: %d", ret);
 			k_mutex_unlock(&m_lock);
@@ -490,18 +490,13 @@ static int firmware_confirmed(void)
 		return 0; // No firmware update ID
 	}
 
-	hio_cloud_util_delete_firmware_update_id();
-
 	if (boot_is_img_confirmed()) {
 		LOG_INF("Image confirmed OK");
-		return 0;
+	} else if (boot_write_img_confirmed()) {
+		LOG_ERR("Failed to confirm image");
+		return -EIO; // Failed to confirm image
 	} else {
-		if (boot_write_img_confirmed()) {
-			LOG_ERR("Failed to confirm image");
-			return -EIO; // Failed to confirm image
-		} else {
-			LOG_INF("Marked image as OK");
-		}
+		LOG_INF("Marked image as OK");
 	}
 
 	struct hio_cloud_upfirmware upfirmware = {
@@ -521,7 +516,7 @@ static int firmware_confirmed(void)
 		return ret;
 	}
 
-	ret = transfer(&m_transfer_buf);
+	ret = transfer(&m_transfer_buf, K_FOREVER);
 	if (ret) {
 		LOG_ERR("Call `transfer` failed: %d", ret);
 		k_mutex_unlock(&m_lock);
@@ -530,14 +525,42 @@ static int firmware_confirmed(void)
 
 	k_mutex_unlock(&m_lock);
 
+	/* The stored id marks a pending ack: drop it only once the cloud has
+	 * received it, so a failed transfer is retried on the next init. */
+	hio_cloud_util_delete_firmware_update_id();
+
 	return 0;
 }
 #endif
 
-static void init_work_handler(struct k_work *work)
+/* Retries the step until it succeeds. Returns -EPERM without retrying when
+ * the step requires a session that is not set, so the caller can restart
+ * from CREATE SESSION. */
+static int init_step(const char *name, int (*step)(void))
 {
 	int ret;
 
+	for (;;) {
+		hio_cloud_transfer_wait_for_ready(K_FOREVER);
+
+		LOG_INF("Running %s", name);
+
+		ret = step();
+		if (ret == -EPERM) {
+			LOG_WRN("%s requires a session", name);
+			return ret;
+		}
+		if (ret) {
+			LOG_ERR("%s failed: %d", name, ret);
+			continue;
+		}
+
+		return 0;
+	}
+}
+
+static void init_work_handler(struct k_work *work)
+{
 	LOG_INF("Initializing Start");
 
 	k_mutex_lock(&m_lock, K_FOREVER);
@@ -545,44 +568,26 @@ static void init_work_handler(struct k_work *work)
 	hio_buf_reset(&m_transfer_buf);
 
 	for (;;) {
+		init_step("CREATE SESSION", create_session);
 
-		hio_cloud_transfer_wait_for_ready(K_FOREVER);
-
-		LOG_INF("Running CREATE SESSION");
-		ret = create_session();
-		if (ret) {
-			LOG_ERR("Call `create_session` failed: %d", ret);
-			continue;
-		}
-
-		LOG_INF("Running UPLOAD DECODER");
-
-		ret = upload_decoder();
-		if (ret) {
-			LOG_ERR("Call `upload_decoder` failed: %d", ret);
-			continue;
-		}
-
-		LOG_INF("Running UPLOAD ENCODER");
-
-		ret = upload_encoder();
-
-		if (ret) {
-			LOG_ERR("Call `upload_encoder` failed: %d", ret);
-			continue;
-		}
-
-		LOG_INF("Running UPLOAD CONFIG");
-
-		ret = upload_config();
-
-		if (ret) {
-			LOG_WRN("Call `upload_config` failed: %d", ret);
-		}
-
+		/* The session proves the new image can reach the cloud: confirm
+		 * it and ack the update before the long uploads below, so a
+		 * reboot during them cannot revert a working image. */
 #if defined(CONFIG_MCUBOOT_IMG_MANAGER)
 		firmware_confirmed();
 #endif
+
+		if (init_step("UPLOAD DECODER", upload_decoder)) {
+			continue;
+		}
+
+		if (init_step("UPLOAD ENCODER", upload_encoder)) {
+			continue;
+		}
+
+		if (init_step("UPLOAD CONFIG", upload_config)) {
+			continue;
+		}
 
 		break;
 	}
@@ -720,6 +725,11 @@ int hio_cloud_poll_immediately(void)
 
 int hio_cloud_send(const void *buf, size_t len)
 {
+	return hio_cloud_send_data(buf, len, K_FOREVER);
+}
+
+int hio_cloud_send_data(const void *buf, size_t len, k_timeout_t timeout)
+{
 	int ret;
 
 	if (!buf || !len) {
@@ -753,7 +763,7 @@ int hio_cloud_send(const void *buf, size_t len)
 		return ret;
 	}
 
-	ret = transfer(&m_transfer_buf);
+	ret = transfer(&m_transfer_buf, timeout);
 	if (ret) {
 		LOG_ERR("Call `transfer` failed: %d", ret);
 		k_mutex_unlock(&m_lock);
@@ -777,7 +787,7 @@ int hio_cloud_recv(void)
 
 	hio_buf_reset(&m_transfer_buf);
 
-	ret = transfer(&m_transfer_buf);
+	ret = transfer(&m_transfer_buf, K_FOREVER);
 
 	if (ret) {
 		LOG_ERR("Call `transfer` failed: %d", ret);
@@ -844,7 +854,7 @@ int hio_cloud_firmware_update(const char *firmware)
 		return ret;
 	}
 
-	ret = transfer(&m_transfer_buf);
+	ret = transfer(&m_transfer_buf, K_FOREVER);
 
 	if (ret) {
 		LOG_ERR("Call `transfer` failed: %d", ret);

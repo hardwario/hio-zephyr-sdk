@@ -62,7 +62,20 @@ int hio_cloud_set_callback(hio_cloud_cb user_cb, void *user_data);
 int hio_cloud_set_poll_interval(k_timeout_t interval);
 int hio_cloud_poll_immediately(void);
 
-int hio_cloud_send(const void *buf, size_t len);
+/**
+ * @brief Send data to the cloud, giving up after @p timeout.
+ *
+ * @param timeout Deadline for the transfer; K_FOREVER never gives up.
+ */
+int hio_cloud_send_data(const void *buf, size_t len, k_timeout_t timeout);
+
+/**
+ * @brief Send data to the cloud. Equivalent to @ref hio_cloud_send_data with
+ *        K_FOREVER.
+ *
+ * @deprecated Use @ref hio_cloud_send_data with an explicit timeout.
+ */
+__deprecated int hio_cloud_send(const void *buf, size_t len);
 
 int hio_cloud_get_last_seen_ts(int64_t *ts);
 int hio_cloud_firmware_update(const char *firmwareId);
