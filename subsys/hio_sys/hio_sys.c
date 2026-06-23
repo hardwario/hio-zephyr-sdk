@@ -98,6 +98,24 @@ inline void hio_sys_reboot(const char *reason)
 	reboot(reason);
 }
 
+/* Only the pointer is stored, so the reason must outlive the delay (see the
+ * header: string literal or otherwise static storage, not a stack buffer). */
+static const char *m_delayed_reason;
+
+static void reboot_work_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	reboot(m_delayed_reason);
+}
+
+static K_WORK_DELAYABLE_DEFINE(m_reboot_work, reboot_work_handler);
+
+void hio_sys_reboot_delayed(const char *reason, k_timeout_t delay)
+{
+	m_delayed_reason = reason;
+	k_work_schedule(&m_reboot_work, delay);
+}
+
 void hio_sys_set_reboot_notifier_cb(hio_sys_reboot_notifier_cb cb, void *user_data)
 {
 	m_reboot_notifier_cb = cb;
