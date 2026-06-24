@@ -1,9 +1,17 @@
+/*
+ * Copyright (c) 2026 HARDWARIO a.s.
+ *
+ * SPDX-License-Identifier: LicenseRef-HARDWARIO-5-Clause
+ */
+
 #ifndef HIO_INCLUDE_HIO_CONFIG_H_
 #define HIO_INCLUDE_HIO_CONFIG_H_
 
 /* Zephyr includes */
+#include <zephyr/kernel.h>
 #include <zephyr/shell/shell.h>
 #include <zephyr/settings/settings.h>
+#include <zephyr/sys/util.h>
 
 /* Standard include */
 #include <stddef.h>
@@ -40,8 +48,8 @@ enum hio_config_item_type {
 #define HIO_CONFIG_ITEM_INT(_name_d, _var, _min, _max, _help, _default, ...)                       \
 	{                                                                                          \
 		.name = _name_d, .type = HIO_CONFIG_TYPE_INT, .variable = &_var,                   \
-		.size = sizeof(_var), .min = _min, .max = _max, .help = _help,                     \
-		.default_int = _default, __VA_ARGS__                                               \
+		.size = sizeof(_var) + ZERO_OR_COMPILE_ERROR(sizeof(_var) == sizeof(int)),         \
+		.min = _min, .max = _max, .help = _help, .default_int = _default, __VA_ARGS__      \
 	}
 
 #define HIO_CONFIG_ITEM_FLOAT(_name_d, _var, _min, _max, _help, _default, ...)                     \
@@ -57,6 +65,9 @@ enum hio_config_item_type {
 		.size = sizeof(_var), .help = _help, .default_bool = _default, __VA_ARGS__         \
 	}
 
+/* ENUM may use a narrower backing type than int (ARM defaults to
+ * -fshort-enums), so no int-size assert here; item->size carries the real
+ * width and init/parse memcpy through it. */
 #define HIO_CONFIG_ITEM_ENUM(_name_d, _var, _items_str, _help, _default, ...)                      \
 	{                                                                                          \
 		.name = _name_d, .type = HIO_CONFIG_TYPE_ENUM, .variable = &_var,                  \
@@ -101,6 +112,14 @@ struct hio_config_item {
 	hio_config_parse_cb parse_cb; /**< Optional custom parse callback */
 };
 
+/*
+ * Threading model: config is single-writer by design. All commits happen at
+ * registration (before the application runs) or right before reboot. The
+ * `final` buffer must not be read concurrently with a runtime
+ * *_without_reboot commit. Callers that need runtime reconfiguration are
+ * responsible for their own synchronization; the subsystem performs no
+ * locking around the interim->final copy.
+ */
 struct hio_config {
 	const char *name;              /**< Module name (used as prefix for settings) */
 	const char *storage_name;      /**< Optional name used as prefix for settings storage */
@@ -162,11 +181,30 @@ int hio_config_item_access(const struct hio_config *module, const struct hio_con
  * items. The items are used to define the configuration parameters for the
  * module.
  *
- * @param config Pointer to the configuration module to register.
+ * @note Registration must run after hio_config_init(). This function waits
+ *       (forever) for the config subsystem to be initialized, so it may be
+ *       called from any init priority; it returns once the subsystem is ready.
+ *       Use hio_config_register_timeout() to fail fast instead of waiting.
+ *
+ * @param module Pointer to the configuration module to register.
  *
  * @return 0 on success, negative error code on failure.
  */
 int hio_config_register(struct hio_config *module);
+
+/**
+ * @brief Register a configuration module, waiting at most @p timeout.
+ *
+ * Like hio_config_register(), but if the config subsystem is not initialized
+ * within @p timeout the module is NOT registered and -ETIMEDOUT is returned
+ * (with a descriptive error log) instead of blocking.
+ *
+ * @param module  Pointer to the configuration module to register.
+ * @param timeout Maximum time to wait for the config subsystem to initialize.
+ *
+ * @return 0 on success, -ETIMEDOUT on timeout, negative error code on failure.
+ */
+int hio_config_register_timeout(struct hio_config *module, k_timeout_t timeout);
 /**
  * @brief Save configuration to persistent storage and reboot system.
  */

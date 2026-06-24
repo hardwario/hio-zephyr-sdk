@@ -1,3 +1,9 @@
+/*
+ * Copyright (c) 2026 HARDWARIO a.s.
+ *
+ * SPDX-License-Identifier: LicenseRef-HARDWARIO-5-Clause
+ */
+
 /* HIO includes */
 #include <hio/hio_config.h>
 #include <hio/hio_util.h>
@@ -101,6 +107,9 @@ static int load_direct_cb(const char *key, size_t len, settings_read_cb read_cb,
 	return 0;
 }
 
+/* Single-writer by design: commits run at registration or before reboot, so
+ * the interim->final copy is unlocked. Runtime *_without_reboot commits are
+ * the caller's responsibility to synchronize. */
 static int commit(const struct hio_config *module)
 {
 	if (module->commit) {
@@ -118,7 +127,7 @@ static int commit(const struct hio_config *module)
 	return 0;
 }
 
-int hio_config_register(struct hio_config *module)
+static int register_module(struct hio_config *module, k_timeout_t timeout)
 {
 	int ret;
 
@@ -132,7 +141,20 @@ int hio_config_register(struct hio_config *module)
 		return -EINVAL;
 	}
 
-	k_event_wait(&m_event, CONFIG_EVENT_READY, false, K_FOREVER);
+	/*
+	 * Wait for the config subsystem to be initialized. By design registration
+	 * blocks until hio_config_init() has run, so callers can register from any
+	 * init priority. hio_config_register() waits forever; callers that prefer
+	 * to fail fast can use hio_config_register_timeout().
+	 */
+	if (!(k_event_wait(&m_event, CONFIG_EVENT_READY, false, timeout) & CONFIG_EVENT_READY)) {
+		LOG_ERR("Config subsystem not initialized while registering '%s'. "
+			"Registration must run after hio_config_init(); use a SYS_INIT "
+			"priority numerically greater than CONFIG_HIO_CONFIG_INIT_PRIORITY "
+			"at APPLICATION level, or hio_config_register() to wait for it.",
+			module->name);
+		return -ETIMEDOUT;
+	}
 
 	/* Check for duplicate */
 	struct hio_config *existing;
@@ -174,6 +196,16 @@ int hio_config_register(struct hio_config *module)
 	LOG_INF("Loaded stored settings for '%s'", module->name);
 
 	return 0;
+}
+
+int hio_config_register(struct hio_config *module)
+{
+	return register_module(module, K_FOREVER);
+}
+
+int hio_config_register_timeout(struct hio_config *module, k_timeout_t timeout)
+{
+	return register_module(module, timeout);
 }
 
 static int save(void)
@@ -249,6 +281,8 @@ static int reset(void)
 
 	/* Needs to be static so it is zero-ed */
 	static struct fs_file_t file;
+	/* Re-initialize so a second reset starts from a defined state */
+	fs_file_t_init(&file);
 	ret = fs_open(&file, CONFIG_SETTINGS_FILE_PATH, FS_O_CREATE);
 	if (ret) {
 		LOG_ERR("Call `fs_open` failed: %d", ret);
@@ -601,6 +635,8 @@ static int iter_commit_cb(const struct hio_config *module, void *user_data)
 	if (ret) {
 		LOG_ERR("Commit failed for '%s': %d", module->name, ret);
 	}
+	/* Intentionally do not propagate: a faulty module's commit failure must
+	 * not abort iteration and block the remaining subsystems' commits. */
 	return 0;
 }
 
