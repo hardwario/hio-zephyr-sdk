@@ -62,7 +62,7 @@ static int item_print_value(const struct hio_atci *atci, const struct hio_config
 
 	case HIO_CONFIG_TYPE_HEX:
 		hio_atci_printf(atci, "$CONFIG: \"%s\",\"%s\",\"", module->name, item->name);
-		for (int i = 0; i < item->size; i++) {
+		for (size_t i = 0; i < item->size; i++) {
 			hio_atci_printf(atci, "%02x", ((uint8_t *)item->variable)[i]);
 		}
 		hio_atci_printfln(atci, "\"");
@@ -170,6 +170,10 @@ static int at_config_set(const struct hio_atci *atci, char *argv)
 static int print_item_cb(const struct hio_config *module, const struct hio_config_item *item,
 			 void *user_data)
 {
+	/* The iterator no longer filters by access; hide items lacking SHOW. */
+	if (!(hio_config_item_access(module, item) & HIO_CONFIG_ACCESS_SHOW)) {
+		return 0;
+	}
 	return item_print_value((const struct hio_atci *)user_data, module, item);
 }
 
@@ -188,13 +192,11 @@ static int at_reset_action(const struct hio_atci *atci)
 		return ret;
 	}
 
-	hio_atci_println(atci, "OK");
+	/* Let the core emit the OK line (with CRC trailer when enabled) before
+	 * rebooting; the reboot is deferred so the response is sent first. */
+	hio_sys_reboot_delayed("Config reset", K_MSEC(500));
 
-	k_sleep(K_SECONDS(1));
-
-	hio_sys_reboot("Config reset");
-
-	return ret;
+	return 0;
 }
 
 static int at_write_action(const struct hio_atci *atci)
@@ -207,13 +209,11 @@ static int at_write_action(const struct hio_atci *atci)
 		return ret;
 	}
 
-	hio_atci_println(atci, "OK");
+	/* Let the core emit the OK line (with CRC trailer when enabled) before
+	 * rebooting; the reboot is deferred so the response is sent first. */
+	hio_sys_reboot_delayed("Config save", K_MSEC(500));
 
-	k_sleep(K_SECONDS(1));
-
-	hio_sys_reboot("Config save");
-
-	return ret;
+	return 0;
 }
 
 static const char *item_type_str(enum hio_config_item_type type)
@@ -240,6 +240,11 @@ static void sanitize_help(const char *help, char *buf, size_t buf_size)
 {
 	size_t j = 0;
 
+	if (!help) {
+		buf[0] = '\0';
+		return;
+	}
+
 	for (size_t i = 0; help[i] != '\0' && help[i] != '\n' && j < buf_size - 2; i++) {
 		if (help[i] == '"') {
 			if (j + 2 > buf_size - 1) {
@@ -257,6 +262,12 @@ static int test_item_cb(const struct hio_config *module, const struct hio_config
 			void *user_data)
 {
 	const struct hio_atci *atci = (const struct hio_atci *)user_data;
+
+	/* The iterator no longer filters by access; hide items lacking SHOW. */
+	if (!(hio_config_item_access(module, item) & HIO_CONFIG_ACCESS_SHOW)) {
+		return 0;
+	}
+
 	const char *type = item_type_str(item->type);
 	char help_buf[128];
 	sanitize_help(item->help, help_buf, sizeof(help_buf));
@@ -275,7 +286,7 @@ static int test_item_cb(const struct hio_config *module, const struct hio_config
 		break;
 
 	case HIO_CONFIG_TYPE_BOOL:
-		hio_atci_printfln(atci, "$CONFIG: \"%s\",\"%s\",\"%s\",,,,,%s,\"%s\"",
+		hio_atci_printfln(atci, "$CONFIG: \"%s\",\"%s\",\"%s\",,,,%s,\"%s\"",
 				  module->name, item->name, type,
 				  item->default_bool ? "true" : "false", help_buf);
 		break;
@@ -299,10 +310,10 @@ static int test_item_cb(const struct hio_config *module, const struct hio_config
 		break;
 
 	case HIO_CONFIG_TYPE_HEX: {
-		hio_atci_printf(atci, "$CONFIG: \"%s\",\"%s\",\"%s\",,,,,\"",
+		hio_atci_printf(atci, "$CONFIG: \"%s\",\"%s\",\"%s\",,,,\"",
 				module->name, item->name, type);
 		if (item->default_hex) {
-			for (int i = 0; i < item->size; i++) {
+			for (size_t i = 0; i < item->size; i++) {
 				hio_atci_printf(atci, "%02x", item->default_hex[i]);
 			}
 		}
