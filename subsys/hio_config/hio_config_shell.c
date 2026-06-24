@@ -58,7 +58,7 @@ static int item_print_value(const struct shell *shell, const struct hio_config *
 
 	case HIO_CONFIG_TYPE_HEX:
 		shell_fprintf(shell, SHELL_NORMAL, "%s config %s ", module->name, item->name);
-		for (int i = 0; i < item->size; i++) {
+		for (size_t i = 0; i < item->size; i++) {
 			shell_fprintf(shell, SHELL_NORMAL, "%02x", ((uint8_t *)item->variable)[i]);
 		}
 		shell_fprintf(shell, SHELL_NORMAL, "\n");
@@ -116,7 +116,18 @@ int hio_config_shell_cmd(const struct shell *shell, size_t argc, char **argv)
 
 	LOG_DBG("cmd_buff: %s", shell->ctx->cmd_buff);
 
+	/* `config` is registered as a subcommand under each module's root command
+	 * (e.g. "atci config ...", "lte config ..."). The module name is the
+	 * parent command, which is not present in argv, so it is read from the
+	 * shell's command buffer: Zephyr tokenizes cmd_buff in place, leaving the
+	 * first token (the module name) NUL-terminated at its start. This relies
+	 * on that shell-internal behavior. */
 	const char *module_name = shell->ctx->cmd_buff;
+
+	if (!module_name || module_name[0] == '\0') {
+		shell_error(shell, "cannot determine module name");
+		return -EINVAL;
+	}
 
 	int ret;
 	struct hio_config *module;
@@ -234,6 +245,10 @@ static int cmd_modules(const struct shell *shell, size_t argc, char **argv)
 static int print_item_cb(const struct hio_config *module, const struct hio_config_item *item,
 			 void *user_data)
 {
+	/* The iterator no longer filters by access; hide items lacking SHOW. */
+	if (!(hio_config_item_access(module, item) & HIO_CONFIG_ACCESS_SHOW)) {
+		return 0;
+	}
 	return item_print_value((const struct shell *)user_data, module, item);
 }
 
@@ -297,11 +312,11 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	              cmd_show, 1, 0),
 
 	SHELL_CMD_ARG(save, NULL,
-	              "Save all configuration.",
+	              "Save all configuration and reboot.",
 	              cmd_save, 1, 0),
 
 	SHELL_CMD_ARG(reset, NULL,
-	              "Reset all configuration.",
+	              "Reset all configuration to defaults and reboot.",
 	              cmd_reset, 1, 0),
 
 	SHELL_SUBCMD_SET_END
