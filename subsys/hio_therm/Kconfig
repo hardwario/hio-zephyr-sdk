@@ -9,7 +9,7 @@ config HIO_THERM
 	select CBPRINTF_FP_SUPPORT if HIO_THERM_LOG_LEVEL_DBG || HIO_THERM_SHELL
 	select I2C
 	select SENSOR
-	select TMP112
+	select HIO_TMP112
 
 if HIO_THERM
 

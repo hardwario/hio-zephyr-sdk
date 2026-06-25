@@ -15,6 +15,7 @@
 #include <zephyr/drivers/sensor.h>
 #include <zephyr/sys/__assert.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/version.h>
 #include "tmp112.h"
 
 LOG_MODULE_REGISTER(HIO_TMP112, CONFIG_SENSOR_LOG_LEVEL);
@@ -133,7 +134,7 @@ static int tmp112_attr_set(const struct device *dev, enum sensor_channel chan,
 	}
 
 	switch (attr) {
-#if CONFIG_TMP112_FULL_SCALE_RUNTIME
+#if CONFIG_HIO_TMP112_FULL_SCALE_RUNTIME
 	case SENSOR_ATTR_FULL_SCALE:
 		/* the sensor supports two ranges -55 to 128 and -55 to 150 */
 		/* the value contains the upper limit */
@@ -152,7 +153,7 @@ static int tmp112_attr_set(const struct device *dev, enum sensor_channel chan,
 		break;
 #endif
 
-#if CONFIG_TMP112_SAMPLING_FREQUENCY_RUNTIME
+#if CONFIG_HIO_TMP112_SAMPLING_FREQUENCY_RUNTIME
 	case SENSOR_ATTR_SAMPLING_FREQUENCY: {
 		bool one_shot;
 
@@ -254,11 +255,21 @@ static int tmp112_channel_get(const struct device *dev, enum sensor_channel chan
 	return sensor_value_from_micro(val, (int32_t)drv_data->sample * TMP112_TEMP_SCALE);
 }
 
+/* DEVICE_API() was introduced in Zephyr 4.0; older releases (e.g. NCS based
+ * on Zephyr 3.7) declare the API table directly. */
+#if ZEPHYR_VERSION_CODE >= ZEPHYR_VERSION(4, 0, 0)
 static DEVICE_API(sensor, tmp112_driver_api) = {
 	.attr_set = tmp112_attr_set,
 	.sample_fetch = tmp112_sample_fetch,
 	.channel_get = tmp112_channel_get,
 };
+#else
+static const struct sensor_driver_api tmp112_driver_api = {
+	.attr_set = tmp112_attr_set,
+	.sample_fetch = tmp112_sample_fetch,
+	.channel_get = tmp112_channel_get,
+};
+#endif
 
 static int tmp112_init(const struct device *dev)
 {

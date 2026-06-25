@@ -4,32 +4,36 @@
 # Copyright (c) 2026 HARDWARIO a.s.
 # SPDX-License-Identifier: Apache-2.0
 
-config TMP112
-	bool "TMP112 Temperature Sensor"
+config HIO_TMP112
+	bool "TMP112 Temperature Sensor (HARDWARIO)"
 	default y
+	depends on SENSOR
 	depends on DT_HAS_HARDWARIO_TMP112_ENABLED
 	select I2C
 	help
-	  Enable the driver for Texas Instruments TMP112 High-Accuracy Digital
-	  Temperature Sensors.
+	  Enable the HARDWARIO driver for Texas Instruments TMP112 High-Accuracy
+	  Digital Temperature Sensors.
 
-	  This HARDWARIO variant adds shutdown / one-shot operation: when the
+	  This variant adds shutdown / one-shot operation: when the
 	  conversion-rate device-tree property is set to 0, the sensor stays in
 	  shutdown and a one-shot conversion is triggered on each sample_fetch.
+
+	  It binds to the "hardwario,tmp112" compatible and is independent of the
+	  upstream Zephyr TMP112 driver (config TMP112 / "ti,tmp112").
 
 	  The TMP102 is compatible with the TMP112 but is less accurate and has
 	  been successfully tested with this driver.
 
-if TMP112
+if HIO_TMP112
 
-config TMP112_FULL_SCALE_RUNTIME
+config HIO_TMP112_FULL_SCALE_RUNTIME
 	bool "Allow to set extended mode at runtime"
 	default y
 	help
 	  When set extended mode can be selected using tmp112_attr_set
 	  with SENSOR_ATTR_FULL_SCALE and value to set either 128 or 150
 
-config TMP112_SAMPLING_FREQUENCY_RUNTIME
+config HIO_TMP112_SAMPLING_FREQUENCY_RUNTIME
 	bool "Allow to set conversion rate at runtime"
 	default y
 	help
@@ -37,4 +41,4 @@ config TMP112_SAMPLING_FREQUENCY_RUNTIME
 	  with SENSOR_ATTR_SAMPLING_FREQUENCY. Setting the rate to 0 Hz at
 	  runtime puts the sensor into shutdown / one-shot mode.
 
-endif # TMP112
+endif # HIO_TMP112
