@@ -11,8 +11,10 @@
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/sensor.h>
+#include <zephyr/init.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/pm/device.h>
 
 /* Standard includes */
 #include <math.h>
@@ -76,6 +78,32 @@ update:
 	}
 }
 
+static int accel_resume(void)
+{
+#ifdef CONFIG_PM_DEVICE
+	int ret = pm_device_action_run(m_dev, PM_DEVICE_ACTION_RESUME);
+	if (ret && ret != -EALREADY) {
+		LOG_ERR("Call `pm_device_action_run` (resume) failed: %d", ret);
+		return ret;
+	}
+#endif /* CONFIG_PM_DEVICE */
+
+	return 0;
+}
+
+static int accel_suspend(void)
+{
+#ifdef CONFIG_PM_DEVICE
+	int ret = pm_device_action_run(m_dev, PM_DEVICE_ACTION_SUSPEND);
+	if (ret && ret != -EALREADY) {
+		LOG_ERR("Call `pm_device_action_run` (suspend) failed: %d", ret);
+		return ret;
+	}
+#endif /* CONFIG_PM_DEVICE */
+
+	return 0;
+}
+
 int hio_accel_read(float *accel_x, float *accel_y, float *accel_z, int *orientation)
 {
 	int ret;
@@ -86,6 +114,13 @@ int hio_accel_read(float *accel_x, float *accel_y, float *accel_z, int *orientat
 		LOG_ERR("Device `LIS2DH12` not ready");
 		k_mutex_unlock(&m_mut);
 		return -EINVAL;
+	}
+
+	/* Wake the accelerometer up for the duration of the measurement. */
+	ret = accel_resume();
+	if (ret) {
+		k_mutex_unlock(&m_mut);
+		return ret;
 	}
 
 	/* TODO Check if this is the best aprroach */
@@ -101,16 +136,14 @@ int hio_accel_read(float *accel_x, float *accel_y, float *accel_z, int *orientat
 
 	if (ret) {
 		LOG_ERR("Call `sensor_sample_fetch` failed: %d", ret);
-		k_mutex_unlock(&m_mut);
-		return ret;
+		goto end;
 	}
 
 	struct sensor_value val[3];
 	ret = sensor_channel_get(m_dev, SENSOR_CHAN_ACCEL_XYZ, val);
 	if (ret) {
 		LOG_ERR("Call `sensor_channel_get` failed: %d", ret);
-		k_mutex_unlock(&m_mut);
-		return ret;
+		goto end;
 	}
 
 	float accel_x_ = sensor_value_to_double(&val[0]);
@@ -143,7 +176,34 @@ int hio_accel_read(float *accel_x, float *accel_y, float *accel_z, int *orientat
 		*orientation = orientation_;
 	}
 
+end:
+
+	/* Put the accelerometer back to sleep. Preserve the measurement
+	 * result; report the suspend error only if nothing failed before.
+	 */
+	{
+		int suspend_ret = accel_suspend();
+		if (!ret) {
+			ret = suspend_ret;
+		}
+	}
+
 	k_mutex_unlock(&m_mut);
 
-	return 0;
+	return ret;
 }
+
+static int hio_accel_init(void)
+{
+	if (!device_is_ready(m_dev)) {
+		LOG_ERR("Device `LIS2DH12` not ready");
+		return -ENODEV;
+	}
+
+	/* Suspend the accelerometer after boot; it is woken up on demand
+	 * for each measurement in `hio_accel_read`.
+	 */
+	return accel_suspend();
+}
+
+SYS_INIT(hio_accel_init, APPLICATION, CONFIG_HIO_ACCEL_INIT_PRIORITY);
