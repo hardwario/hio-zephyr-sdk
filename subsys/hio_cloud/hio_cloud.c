@@ -29,7 +29,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define EVENT_INITIALIZED_SET BIT(0)
+#define EVENT_STARTED_SET     BIT(0)
+#define EVENT_INITIALIZED_SET BIT(1)
 #define WORK_Q_STACK_SIZE     4096
 #define WORK_Q_PRIORITY       K_LOWEST_APPLICATION_THREAD_PRIO
 
@@ -51,6 +52,13 @@ static k_timeout_t m_poll_period = K_NO_WAIT;
 
 static K_MUTEX_DEFINE(m_lock_state);
 static int64_t m_state_last_seen_ts = 0;
+
+/* True once hio_cloud_init() completed: m_options, the transfer layer and
+ * m_work_q are only valid afterwards. */
+static bool is_started(void)
+{
+	return k_event_test(&m_cloud_events, EVENT_STARTED_SET) != 0;
+}
 
 static int process_downlink(struct hio_buf *buf, struct hio_buf *upbuf)
 {
@@ -612,7 +620,12 @@ int hio_cloud_init(struct hio_cloud_options *options)
 		return -EINVAL;
 	}
 
-	m_options = options;
+	if (is_started()) {
+		LOG_ERR("Already initialized");
+		return -EALREADY;
+	}
+
+	k_work_queue_init(&m_work_q);
 
 	hio_cloud_config_init();
 
@@ -650,12 +663,14 @@ int hio_cloud_init(struct hio_cloud_options *options)
 		return ret;
 	}
 
-	k_mutex_init(&m_lock);
-	k_mutex_init(&m_lock_state);
+	/* Publish the options and start the work queue only after all the
+	 * validations above passed, so a failed init leaves the module inert. */
+	m_options = options;
 
-	k_work_queue_init(&m_work_q);
 	k_work_queue_start(&m_work_q, m_work_q_stack, K_THREAD_STACK_SIZEOF(m_work_q_stack),
 			   WORK_Q_PRIORITY, NULL);
+
+	k_event_post(&m_cloud_events, EVENT_STARTED_SET);
 
 	k_work_submit_to_queue(&m_work_q, &m_init_work);
 
@@ -718,7 +733,18 @@ int hio_cloud_set_poll_interval(k_timeout_t interval)
 
 int hio_cloud_poll_immediately(void)
 {
-	k_work_submit_to_queue(&m_work_q, &m_poll_work);
+	int ret;
+
+	if (!is_started()) {
+		LOG_WRN("Cloud is not initialized");
+		return -EPERM;
+	}
+
+	ret = k_work_submit_to_queue(&m_work_q, &m_poll_work);
+	if (ret < 0) {
+		LOG_ERR("Call `k_work_submit_to_queue` failed: %d", ret);
+		return ret;
+	}
 
 	return 0;
 }
@@ -734,6 +760,11 @@ int hio_cloud_send_data(const void *buf, size_t len, k_timeout_t timeout)
 
 	if (!buf || !len) {
 		return -EINVAL;
+	}
+
+	if (!is_started()) {
+		LOG_WRN("Cloud is not initialized");
+		return -EPERM;
 	}
 
 	k_mutex_lock(&m_lock, K_FOREVER);
@@ -780,6 +811,11 @@ int hio_cloud_send_data(const void *buf, size_t len, k_timeout_t timeout)
 int hio_cloud_recv(void)
 {
 	int ret;
+
+	if (!is_started()) {
+		LOG_WRN("Cloud is not initialized");
+		return -EPERM;
+	}
 
 	k_mutex_lock(&m_lock, K_FOREVER);
 
@@ -832,6 +868,11 @@ int hio_cloud_firmware_update(const char *firmware)
 	if (len > 200) {
 		LOG_ERR("Invalid argument `firmware` is too long");
 		return -EINVAL;
+	}
+
+	if (!is_started()) {
+		LOG_WRN("Cloud is not initialized");
+		return -EPERM;
 	}
 
 	k_mutex_lock(&m_lock, K_FOREVER);
