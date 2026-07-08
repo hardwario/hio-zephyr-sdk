@@ -136,6 +136,13 @@ static int cmd_show(const struct shell *shell, size_t argc, char **argv)
 	cmd_ble_passkey(shell, argc, argv);
 #endif
 
+	struct hio_info_hook *hook;
+	SYS_SLIST_FOR_EACH_CONTAINER(hio_info_hook_list_get(), hook, node) {
+		if (hook->shell) {
+			hook->shell(shell);
+		}
+	}
+
 	return 0;
 }
 

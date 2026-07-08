@@ -89,6 +89,19 @@ LOG_MODULE_REGISTER(hio_info, CONFIG_HIO_INFO_LOG_LEVEL);
 
 static int m_state = -EAGAIN;
 
+static sys_slist_t m_hook_list = SYS_SLIST_STATIC_INIT(&m_hook_list);
+
+int hio_info_hook_register(struct hio_info_hook *hook)
+{
+	sys_slist_append(&m_hook_list, &hook->node);
+	return 0;
+}
+
+sys_slist_t *hio_info_hook_list_get(void)
+{
+	return &m_hook_list;
+}
+
 struct hio_info_data {
 	char vendor_name[VENDOR_NAME_LENGTH];
 	char product_name[PRODUCT_NAME_LENGTH];

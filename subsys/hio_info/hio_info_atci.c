@@ -133,6 +133,13 @@ static int at_info_set(const struct hio_atci *atci, char *argv)
 		}
 	}
 
+	struct hio_info_hook *hook;
+	SYS_SLIST_FOR_EACH_CONTAINER(hio_info_hook_list_get(), hook, node) {
+		if (hook->name && strcmp(tmp, hook->name) == 0) {
+			return hook->atci ? hook->atci(atci) : 0;
+		}
+	}
+
 	hio_atci_error(atci, "\"Item not found\"");
 	return -ENOENT;
 }
@@ -141,6 +148,13 @@ static int at_info_read(const struct hio_atci *atci)
 {
 	for (int i = 0; i < ARRAY_SIZE(info_items); i++) {
 		info_item_print(atci, &info_items[i]);
+	}
+
+	struct hio_info_hook *hook;
+	SYS_SLIST_FOR_EACH_CONTAINER(hio_info_hook_list_get(), hook, node) {
+		if (hook->atci) {
+			hook->atci(atci);
+		}
 	}
 
 	return 0;
@@ -153,6 +167,14 @@ static int at_info_test(const struct hio_atci *atci)
 	for (int i = 0; i < ARRAY_SIZE(info_items); i++) {
 		hio_atci_printfln(atci, "$INFO: \"%s\",\"string\",\"%s\"",
 				  info_items[i].name, info_items[i].label);
+	}
+
+	struct hio_info_hook *hook;
+	SYS_SLIST_FOR_EACH_CONTAINER(hio_info_hook_list_get(), hook, node) {
+		if (hook->name) {
+			hio_atci_printfln(atci, "$INFO: \"%s\",\"string\",\"%s\"", hook->name,
+					  hook->label ? hook->label : "");
+		}
 	}
 
 	return 0;
