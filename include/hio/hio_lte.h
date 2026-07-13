@@ -153,7 +153,7 @@ struct hio_lte_metrics {
 struct hio_lte_socket_config {
 	bool dtls_enabled; /**< True to enable DTLS. */
 	uint16_t port;     /**< Remote UDP port. */
-	char *addr;        /**< Remote address (IPv4 string). */
+	char addr[40];     /**< Remote address (IPv4 string, copied by value). */
 };
 
 /**
@@ -178,6 +178,19 @@ int hio_lte_enable(const struct hio_lte_socket_config *socket_config);
  * @retval -ENODEV Modem is disabled.
  */
 int hio_lte_reconnect(void);
+
+/**
+ * @brief Update socket configuration and reopen the socket.
+ *
+ * Does NOT trigger network re-attach; only the data socket is closed and
+ * reopened with the new configuration.
+ *
+ * @param socket_config  New socket configuration.
+ * @retval 0   Success.
+ * @retval -EINVAL Invalid parameter.
+ * @retval -ENOTSUP Test mode is enabled.
+ */
+int hio_lte_update_socket_config(const struct hio_lte_socket_config *socket_config);
 
 /**
  * @brief Wait for connection to be established.

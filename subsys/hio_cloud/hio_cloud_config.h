@@ -23,8 +23,11 @@ enum hio_cloud_protocol {
 struct hio_cloud_config {
 	enum hio_cloud_protocol protocol;
 	char addr[40];
+	char addr2[40];
+	char addr3[40];
 	int port_signed;
 	int port_dtls;
+	int failover;
 };
 
 extern struct hio_cloud_config g_hio_cloud_config;

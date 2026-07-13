@@ -41,12 +41,22 @@ static struct hio_config_item m_config_items[] = {
 			     "transfer protocol", HIO_CLOUD_PROTOCOL_FLAP_HASH),
 	HIO_CONFIG_ITEM_STRING("addr", m_config_interim.addr, "default IP address",
 			       CONFIG_HIO_CLOUD_DEFAULT_ADDR),
+	HIO_CONFIG_ITEM_STRING("addr2", m_config_interim.addr2,
+			       "second IP address (empty = unused)",
+			       CONFIG_HIO_CLOUD_DEFAULT_ADDR2),
+	HIO_CONFIG_ITEM_STRING("addr3", m_config_interim.addr3,
+			       "third IP address (empty = unused)",
+			       CONFIG_HIO_CLOUD_DEFAULT_ADDR3),
 	HIO_CONFIG_ITEM_INT("port-flap-hash", m_config_interim.port_signed, 1, 65536,
 			    "default UDP port for flap-hash mode",
 			    CONFIG_HIO_CLOUD_DEFAULT_PORT_HASH),
 	HIO_CONFIG_ITEM_INT("port-flap-dtls", m_config_interim.port_dtls, 1, 65536,
 			    "default UDP port for flap-dtls mode",
 			    CONFIG_HIO_CLOUD_DEFAULT_PORT_DTLS),
+	HIO_CONFIG_ITEM_INT("failover", m_config_interim.failover, 0, 255,
+			    "consecutive failed send_recv attempts before switching "
+			    "address (0 = disabled)",
+			    CONFIG_HIO_CLOUD_DEFAULT_FAILOVER),
 };
 
 int hio_cloud_config_init(void)

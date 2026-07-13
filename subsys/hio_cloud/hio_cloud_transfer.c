@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: LicenseRef-HARDWARIO-5-Clause
  */
 
+#include "hio_cloud_backend.h"
 #include "hio_cloud_packet.h"
 #include "hio_cloud_transfer.h"
 #include "hio_cloud_config.h"
@@ -24,9 +25,17 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 #include <time.h>
 
 #define MODEM_SLEEP_DELAY K_SECONDS(10)
+
+/* Positive so it never collides with the negative errno codes propagated to
+ * the cloud layer or the 0 success code. Returned by transfer() when the
+ * active address was switched mid-exchange: the caller restarts the logical
+ * transfer from the first fragment with a fresh sequence and never propagates
+ * this value outward. */
+#define TRANSFER_ADDR_SWITCHED 1
 
 /* A failed exchange is retried by resending the very same packet with the same
  * sequence: the server treats it as a duplicate and replays the cached
@@ -46,6 +55,18 @@
  * RAI handshake so a persistently out-of-step peer cannot spin forever. */
 #define TRANSFER_REPEAT_LIMIT 3
 
+/* Internal cap applied to a K_FOREVER wait_ready. The LTE layer sets
+ * CONNECTED_BIT only after the socket opens, and with DTLS against a dead
+ * server the handshake in nrf_connect never succeeds — a K_FOREVER wait
+ * (init_step in hio_cloud waits before every step) would then block forever,
+ * no send_recv transaction would ever be created, and the address failover
+ * (counted on failed attempts) would never activate. Capping the wait lets
+ * the caller proceed: init_step ignores the return value, the subsequent
+ * send_recv sets a pending transaction, and the LTE ERROR path ends it with
+ * -ENOTCONN so failures become countable. Finite caller timeouts are passed
+ * through unchanged. */
+#define WAIT_READY_FOREVER_CAP K_SECONDS(30)
+
 LOG_MODULE_REGISTER(cloud_transfer, CONFIG_HIO_CLOUD_LOG_LEVEL);
 
 HIO_BUF_DEFINE_STATIC(m_buf_0, HIO_LTE_UDP_MAX_MTU);
@@ -63,6 +84,118 @@ static struct hio_cloud_transfer_metrics m_metrics = {
 	.downlink_last_ts = -1,
 };
 static K_MUTEX_DEFINE(m_lock_metrics);
+
+/* Failover state (reset on boot). Mutated only by failover_report_attempt() on
+ * the cloud work-queue thread; read by get_failover_state() from the shell.
+ * Plain 32-bit accesses are atomic on the target, so no lock is taken here (it
+ * must in particular not run under m_lock_metrics). */
+static int m_active_idx;
+static int m_consecutive_failures;
+static uint32_t m_failover_count;
+
+/* Collect the non-empty configured addresses in order (addr, addr2, addr3);
+ * empty entries are skipped, so addr + addr3 yields a two-entry list. Returns
+ * the number of entries written to @p addrs. */
+static int build_addr_list(const char *addrs[3])
+{
+	int count = 0;
+
+	if (g_hio_cloud_config.addr[0]) {
+		addrs[count++] = g_hio_cloud_config.addr;
+	}
+	if (g_hio_cloud_config.addr2[0]) {
+		addrs[count++] = g_hio_cloud_config.addr2;
+	}
+	if (g_hio_cloud_config.addr3[0]) {
+		addrs[count++] = g_hio_cloud_config.addr3;
+	}
+
+	return count;
+}
+
+static int fill_socket_config(struct hio_lte_socket_config *cfg, const char *addr)
+{
+	memset(cfg, 0, sizeof(*cfg));
+	/* memset above zeroed the whole struct, so copying at most size-1 bytes
+	 * leaves the last byte NUL — cfg->addr stays null-terminated. */
+	strncpy(cfg->addr, addr, sizeof(cfg->addr) - 1);
+
+	switch (g_hio_cloud_config.protocol) {
+	case HIO_CLOUD_PROTOCOL_FLAP_HASH:
+		cfg->dtls_enabled = false;
+		cfg->port = g_hio_cloud_config.port_signed;
+		break;
+	case HIO_CLOUD_PROTOCOL_FLAP_DTLS:
+		cfg->dtls_enabled = true;
+		cfg->port = g_hio_cloud_config.port_dtls;
+		break;
+	default:
+		LOG_ERR("Unsupported cloud protocol");
+		return -EPROTONOSUPPORT;
+	}
+
+	return 0;
+}
+
+/* Called after every hio_lte_send_recv attempt in the transfer() retry loop.
+ * Counts consecutive failures and, once the threshold is reached with more than
+ * one address configured, rotates to the next address via
+ * hio_lte_update_socket_config(). Returns true only when the active address was
+ * switched, so the caller aborts and restarts the logical transfer. */
+static bool failover_report_attempt(bool success)
+{
+	if (success) {
+		m_consecutive_failures = 0;
+		return false;
+	}
+
+	m_consecutive_failures++;
+
+	int failover = g_hio_cloud_config.failover;
+	if (failover <= 0) {
+		return false;
+	}
+
+	const char *addrs[3];
+	int count = build_addr_list(addrs);
+	if (count <= 1) {
+		return false;
+	}
+
+	/* The address list can shrink if the config changed since boot; keep
+	 * m_active_idx in range so indexing addrs[] below stays safe. */
+	if (m_active_idx >= count) {
+		m_active_idx = 0;
+	}
+
+	if (m_consecutive_failures < failover) {
+		return false;
+	}
+
+	int candidate_idx = (m_active_idx + 1) % count;
+
+	struct hio_lte_socket_config socket_config;
+	int ret = fill_socket_config(&socket_config, addrs[candidate_idx]);
+	if (ret) {
+		return false;
+	}
+
+	ret = hio_lte_update_socket_config(&socket_config);
+	if (ret) {
+		LOG_ERR("Call `hio_lte_update_socket_config` failed: %d", ret);
+		/* State unchanged; the next failure retries the switch. */
+		return false;
+	}
+
+	LOG_WRN("Failover: switching address from %s to %s after %d consecutive failures",
+		addrs[m_active_idx], addrs[candidate_idx], m_consecutive_failures);
+
+	m_active_idx = candidate_idx;
+	m_failover_count++;
+	m_consecutive_failures = 0;
+
+	return true;
+}
 
 static size_t transfer_mode_max_data_size(void)
 {
@@ -146,6 +279,14 @@ static int transfer(struct hio_cloud_packet *pck_send, struct hio_cloud_packet *
 		}
 
 		ret = hio_lte_send_recv(&param);
+
+		/* Feed the failover counter with every attempt (outside the
+		 * metrics lock). A switch aborts this exchange so the caller can
+		 * restart the logical transfer against the new address. */
+		if (failover_report_attempt(ret == 0)) {
+			return TRANSFER_ADDR_SWITCHED;
+		}
+
 		if (!ret) {
 			break;
 		}
@@ -215,7 +356,7 @@ static int transfer(struct hio_cloud_packet *pck_send, struct hio_cloud_packet *
 	return 0;
 }
 
-int hio_cloud_transfer_init(uint32_t serial_number, uint8_t token[16])
+int hio_cloud_transfer_init(uint32_t serial_number, const uint8_t token[16])
 {
 	memset(&m_pck_send, 0, sizeof(m_pck_send));
 	memset(&m_pck_recv, 0, sizeof(m_pck_recv));
@@ -226,23 +367,20 @@ int hio_cloud_transfer_init(uint32_t serial_number, uint8_t token[16])
 	m_sequence = 0;
 	m_last_recv_sequence = 0;
 
+	m_active_idx = 0;
+	m_consecutive_failures = 0;
+	m_failover_count = 0;
+
 	hio_cloud_transfer_reset_metrics();
 
-	struct hio_lte_socket_config socket_config = {
-		.addr = g_hio_cloud_config.addr,
-	};
-	switch (g_hio_cloud_config.protocol) {
-	case HIO_CLOUD_PROTOCOL_FLAP_HASH:
-		socket_config.dtls_enabled = false;
-		socket_config.port = g_hio_cloud_config.port_signed;
-		break;
-	case HIO_CLOUD_PROTOCOL_FLAP_DTLS:
-		socket_config.dtls_enabled = true;
-		socket_config.port = g_hio_cloud_config.port_dtls;
-		break;
-	default:
-		LOG_ERR("Unsupported cloud protocol");
-		return -EPROTONOSUPPORT;
+	const char *addrs[3];
+	int count = build_addr_list(addrs);
+	const char *addr = count > 0 ? addrs[0] : g_hio_cloud_config.addr;
+
+	struct hio_lte_socket_config socket_config;
+	int ret = fill_socket_config(&socket_config, addr);
+	if (ret) {
+		return ret;
 	}
 
 	hio_lte_enable(&socket_config);
@@ -253,6 +391,10 @@ int hio_cloud_transfer_init(uint32_t serial_number, uint8_t token[16])
 int hio_cloud_transfer_wait_for_ready(k_timeout_t timeout)
 {
 	int ret;
+
+	if (K_TIMEOUT_EQ(timeout, K_FOREVER)) {
+		timeout = WAIT_READY_FOREVER_CAP;
+	}
 
 	ret = hio_lte_wait_for_connected(timeout);
 	if (ret) {
@@ -339,6 +481,12 @@ restart:
 		int repeats = 0;
 	resend_uplink:
 		ret = transfer(&m_pck_send, &m_pck_recv, rai, timeout);
+		if (ret == TRANSFER_ADDR_SWITCHED) {
+			LOG_WRN("Address switched, restarting uplink from first part");
+			m_sequence = 0;
+			m_last_recv_sequence = 0;
+			goto restart;
+		}
 		if (ret) {
 			LOG_ERR("Call `transfer` failed: %d", ret);
 			res = ret;
@@ -453,6 +601,12 @@ restart:
 			bool rai = has_downlink ? !*has_downlink
 						: true; /* use RAI if no downlink is expected */
 			ret = transfer(&m_pck_send, NULL, rai, timeout);
+			if (ret == TRANSFER_ADDR_SWITCHED) {
+				LOG_WRN("Address switched, restarting downlink");
+				m_sequence = 0;
+				m_last_recv_sequence = 0;
+				goto restart;
+			}
 			if (ret) {
 				LOG_ERR("Call `transfer` failed: %d", ret);
 				res = ret;
@@ -466,6 +620,12 @@ restart:
 		LOG_INF("Downlink: Starting send_recv");
 
 		ret = transfer(&m_pck_send, &m_pck_recv, rai, timeout);
+		if (ret == TRANSFER_ADDR_SWITCHED) {
+			LOG_WRN("Address switched, restarting downlink");
+			m_sequence = 0;
+			m_last_recv_sequence = 0;
+			goto restart;
+		}
 		if (ret) {
 			LOG_ERR("Call `transfer` failed: %d", ret);
 			res = ret;
@@ -577,3 +737,33 @@ int hio_cloud_transfer_set_psk(const char *psk_hex)
 
 	return hio_lte_set_psk(identity, psk_hex);
 }
+
+static int hio_cloud_transfer_get_failover_state(struct hio_cloud_backend_failover_state *state)
+{
+	if (!state) {
+		return -EINVAL;
+	}
+
+	const char *addrs[3];
+	int count = build_addr_list(addrs);
+
+	int idx = m_active_idx;
+
+	state->active_idx = idx;
+	state->active_addr = (count > 0 && idx < count) ? addrs[idx] : "";
+	state->consecutive_failures = m_consecutive_failures;
+	state->failover_count = m_failover_count;
+
+	return 0;
+}
+
+const struct hio_cloud_backend hio_cloud_backend_udp_lte = {
+	.init = hio_cloud_transfer_init,
+	.wait_ready = hio_cloud_transfer_wait_for_ready,
+	.uplink = hio_cloud_transfer_uplink,
+	.downlink = hio_cloud_transfer_downlink,
+	.set_psk = hio_cloud_transfer_set_psk,
+	.get_metrics = hio_cloud_transfer_get_metrics,
+	.reset_metrics = hio_cloud_transfer_reset_metrics,
+	.get_failover_state = hio_cloud_transfer_get_failover_state,
+};

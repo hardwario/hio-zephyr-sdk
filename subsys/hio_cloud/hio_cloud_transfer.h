@@ -38,7 +38,7 @@ struct hio_cloud_transfer_metrics {
 	int64_t poll_last_ts;
 };
 
-int hio_cloud_transfer_init(uint32_t serial_number, uint8_t token[16]);
+int hio_cloud_transfer_init(uint32_t serial_number, const uint8_t token[16]);
 int hio_cloud_transfer_wait_for_ready(k_timeout_t timeout);
 int hio_cloud_transfer_reset_metrics(void);
 int hio_cloud_transfer_get_metrics(struct hio_cloud_transfer_metrics *metrics);

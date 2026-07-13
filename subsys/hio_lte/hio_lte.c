@@ -86,6 +86,9 @@ static K_EVENT_DEFINE(m_states_event);
 #define FLAG_CFUN4         BIT(2)
 #define FLAG_NCELLMEAS_REQ BIT(3)
 #define FLAG_DTLS_SAVED    BIT(4)
+/* Bit index passed to atomic_*_bit, not a mask; BIT(5) would be 32 and index
+ * past the 32-bit atomic word, so the next free index is used directly. */
+#define FLAG_SOCKET_RECONFIG 5
 atomic_t m_flag = ATOMIC_INIT(0);
 
 K_MUTEX_DEFINE(m_send_recv_lock);
@@ -425,12 +428,44 @@ int hio_lte_enable(const struct hio_lte_socket_config *socket_config)
 	if (!socket_config) {
 		return -EINVAL;
 	}
+	k_mutex_lock(&m_state_lock, K_FOREVER);
 	memcpy(&m_socket_config, socket_config, sizeof(struct hio_lte_socket_config));
+	k_mutex_unlock(&m_state_lock);
 	if (g_hio_lte_config.test) {
 		LOG_WRN("LTE Test mode enabled");
 		return -ENOTSUP;
 	}
 	delegate_event(HIO_LTE_FSM_EVENT_ENABLE);
+	return 0;
+}
+
+int hio_lte_update_socket_config(const struct hio_lte_socket_config *socket_config)
+{
+	if (!socket_config) {
+		return -EINVAL;
+	}
+	if (g_hio_lte_config.test) {
+		LOG_WRN("LTE Test mode enabled");
+		return -ENOTSUP;
+	}
+
+	k_mutex_lock(&m_state_lock, K_FOREVER);
+	memcpy(&m_socket_config, socket_config, sizeof(struct hio_lte_socket_config));
+	enum fsm_state current = m_state;
+	k_mutex_unlock(&m_state_lock);
+
+	atomic_set_bit(&m_flag, FLAG_SOCKET_RECONFIG);
+	/* Saved DTLS session belongs to the old server; force a full handshake
+	 * with the new one. */
+	atomic_clear_bit(&m_flag, FLAG_DTLS_SAVED);
+
+	if (current == FSM_STATE_DISABLED) {
+		/* Not connected yet: the stored config is picked up on next enable. */
+		return 0;
+	}
+
+	delegate_event(HIO_LTE_FSM_EVENT_SOCKET_RECONFIG);
+
 	return 0;
 }
 
@@ -668,6 +703,9 @@ static int disabled_event_handler(enum hio_lte_fsm_event event)
 		transition_state(FSM_STATE_ERROR);
 		break;
 	case HIO_LTE_FSM_EVENT_DEREGISTERED:
+		break;
+	case HIO_LTE_FSM_EVENT_SOCKET_RECONFIG:
+		/* Config already stored; nothing to do while disabled. */
 		break;
 	default:
 		return -ENOTSUP;
@@ -989,7 +1027,17 @@ static int on_leave_attach(void)
 
 static int on_enter_open_socket(void)
 {
-	if (strcmp(m_socket_config.addr, "127.0.0.1") == 0) {
+	/* Consume a pending reconfig here: the socket about to be opened already
+	 * uses the latest config, so states that reach OPEN_SOCKET on their own
+	 * (ATTACH, ERROR, RETRY_DELAY, ...) need no extra reopen. */
+	atomic_test_and_clear_bit(&m_flag, FLAG_SOCKET_RECONFIG);
+
+	struct hio_lte_socket_config socket_config;
+	k_mutex_lock(&m_state_lock, K_FOREVER);
+	memcpy(&socket_config, &m_socket_config, sizeof(socket_config));
+	k_mutex_unlock(&m_state_lock);
+
+	if (strcmp(socket_config.addr, "127.0.0.1") == 0) {
 		LOG_WRN("Using loopback address, skipping socket open");
 
 		int ret = hio_lte_flow_coneval();
@@ -1002,7 +1050,7 @@ static int on_enter_open_socket(void)
 
 	bool dtls_saved = atomic_test_and_clear_bit(&m_flag, FLAG_DTLS_SAVED);
 
-	int ret = hio_lte_flow_open_socket(&m_socket_config, dtls_saved);
+	int ret = hio_lte_flow_open_socket(&socket_config, dtls_saved);
 	if (ret < 0) {
 		LOG_ERR("Call `hio_lte_flow_open_socket` failed: %d", ret);
 		return ret;
@@ -1032,8 +1080,33 @@ static int open_socket_event_handler(enum hio_lte_fsm_event event)
 	return 0;
 }
 
+/* Close the current socket and reopen it on the (already updated) socket
+ * config. The old server's DTLS session must not be saved or reused, so pass
+ * false — this also skips the 1 s CONN_SAVE delay. Caller has already cleared
+ * FLAG_SOCKET_RECONFIG. */
+static int reopen_socket_on_reconfig(void)
+{
+	int ret = hio_lte_flow_close_socket(false);
+	if (ret < 0) {
+		LOG_ERR("Call `hio_lte_flow_close_socket` failed: %d", ret);
+	}
+
+	transition_state(FSM_STATE_OPEN_SOCKET);
+
+	return 0;
+}
+
 static int on_enter_ready(void)
 {
+	/* Only poke: the flag is consumed (test-and-clear) by the event handler,
+	 * so the reopen runs from the event context like every other transition,
+	 * not reentrantly from inside entering_state(). Test without clearing so
+	 * the handler still sees the flag. */
+	if (atomic_test_bit(&m_flag, FLAG_SOCKET_RECONFIG)) {
+		delegate_event(HIO_LTE_FSM_EVENT_SOCKET_RECONFIG);
+		return 0;
+	}
+
 	if (m_send_recv_param) {
 		delegate_event(HIO_LTE_FSM_EVENT_SEND);
 	}
@@ -1046,6 +1119,12 @@ static int on_enter_ready(void)
 static int ready_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
+	case HIO_LTE_FSM_EVENT_SOCKET_RECONFIG:
+		if (atomic_test_and_clear_bit(&m_flag, FLAG_SOCKET_RECONFIG)) {
+			stop_timer();
+			return reopen_socket_on_reconfig();
+		}
+		break;
 	case HIO_LTE_FSM_EVENT_SEND:
 		if (atomic_test_bit(&m_flag, FLAG_CFUN4)) {
 			return 0; /* ignore SEND event */
@@ -1375,6 +1454,11 @@ static int on_enter_coneval(void)
 static int coneval_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
+	case HIO_LTE_FSM_EVENT_SOCKET_RECONFIG:
+		if (atomic_test_and_clear_bit(&m_flag, FLAG_SOCKET_RECONFIG)) {
+			return reopen_socket_on_reconfig();
+		}
+		break;
 	case HIO_LTE_FSM_EVENT_READY:
 		__fallthrough;
 	case HIO_LTE_FSM_EVENT_TIMEOUT:

@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: LicenseRef-HARDWARIO-5-Clause
  */
 
+#include "hio_cloud_backend.h"
 #include "hio_cloud_process.h"
 #include "hio_cloud_util.h"
 #include "hio_cloud_msg.h"
@@ -323,7 +324,7 @@ int hio_cloud_process_dlfirmware(struct hio_cloud_msg_dlfirmware *dlfirmware, st
 			return ret;
 		}
 
-		ret = hio_cloud_transfer_uplink(buf, NULL, K_FOREVER);
+		ret = hio_cloud_backend_get()->uplink(buf, NULL, K_FOREVER);
 		if (ret) {
 			LOG_ERR("Call `hio_cloud_transfer_uplink` for upbuf failed: %d", ret);
 			return ret;

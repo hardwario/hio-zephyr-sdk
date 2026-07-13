@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: LicenseRef-HARDWARIO-5-Clause
  */
 
+#include "hio_cloud_backend.h"
 #include "hio_cloud_transfer.h"
 
 /* HIO includes */
@@ -47,6 +48,20 @@ static int cmd_state(const struct shell *shell, size_t argc, char **argv)
 	hio_cloud_get_last_seen_ts(&last_seen);
 	shell_print(shell, "last seen ts: %lld", last_seen);
 
+	struct hio_cloud_backend_failover_state failover;
+	ret = hio_cloud_backend_get()->get_failover_state(&failover);
+	if (ret == -ENOTSUP) {
+		/* Active transport has no failover; skip those lines. */
+	} else if (ret) {
+		shell_error(shell, "get_failover_state failed: %d", ret);
+		return ret;
+	} else {
+		shell_print(shell, "active addr: %s", failover.active_addr);
+		shell_print(shell, "active idx: %d", failover.active_idx);
+		shell_print(shell, "consecutive failures: %d", failover.consecutive_failures);
+		shell_print(shell, "failover count: %u", failover.failover_count);
+	}
+
 	shell_print(shell, "command succeeded");
 
 	return 0;
@@ -63,7 +78,7 @@ static int cmd_metrics(const struct shell *shell, size_t argc, char **argv)
 	}
 
 	struct hio_cloud_transfer_metrics metrics;
-	ret = hio_cloud_transfer_get_metrics(&metrics);
+	ret = hio_cloud_backend_get()->get_metrics(&metrics);
 	if (ret) {
 		shell_error(shell, "hio_cloud_transfer_get_metrics failed: %d", ret);
 		return ret;
@@ -139,7 +154,7 @@ static int cmd_psk_set(const struct shell *shell, size_t argc, char **argv)
 		return -EINVAL;
 	}
 
-	ret = hio_cloud_transfer_set_psk(argv[1]);
+	ret = hio_cloud_backend_get()->set_psk(argv[1]);
 	if (ret) {
 		shell_error(shell, "hio_cloud_transfer_set_psk failed: %d", ret);
 		return ret;

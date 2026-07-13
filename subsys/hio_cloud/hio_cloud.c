@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: LicenseRef-HARDWARIO-5-Clause
  */
 
+#include "hio_cloud_backend.h"
 #include "hio_cloud_msg.h"
 #include "hio_cloud_transfer.h"
 #include "hio_cloud_process.h"
@@ -38,6 +39,15 @@ LOG_MODULE_REGISTER(hio_cloud, CONFIG_HIO_CLOUD_LOG_LEVEL);
 
 static K_MUTEX_DEFINE(m_lock);
 HIO_BUF_DEFINE_STATIC(m_transfer_buf, HIO_CLOUD_TRANSFER_BUF_SIZE);
+
+/* The transport backend. Only one implementation exists today (UDP over LTE);
+ * a future transport would be a different ops table selected here. */
+static const struct hio_cloud_backend *const m_backend = &hio_cloud_backend_udp_lte;
+
+const struct hio_cloud_backend *hio_cloud_backend_get(void)
+{
+	return m_backend;
+}
 
 static K_THREAD_STACK_DEFINE(m_work_q_stack, WORK_Q_STACK_SIZE);
 static struct k_work_q m_work_q;
@@ -220,7 +230,7 @@ static int transfer(struct hio_buf *buf, k_timeout_t timeout)
 	LOG_INF("HAS_DOWNLINK: %d", has_downlink);
 
 	if (hio_buf_get_used(buf) > 0) {
-		ret = hio_cloud_transfer_uplink(buf, &has_downlink, timeout);
+		ret = m_backend->uplink(buf, &has_downlink, timeout);
 		if (ret) {
 			LOG_ERR("Call `transfer_uplink` for buf failed: %d", ret);
 			return ret;
@@ -243,7 +253,7 @@ static int transfer(struct hio_buf *buf, k_timeout_t timeout)
 	if (has_downlink) {
 		has_downlink = false;
 
-		ret = hio_cloud_transfer_downlink(buf, &has_downlink, timeout);
+		ret = m_backend->downlink(buf, &has_downlink, timeout);
 		if (ret) {
 			LOG_ERR("Call `hio_cloud_transfer_downlink` failed: %d", ret);
 			return ret;
@@ -272,7 +282,7 @@ static int transfer(struct hio_buf *buf, k_timeout_t timeout)
 		}
 
 		if (hio_buf_get_used(&upbuf) > 0) {
-			ret = hio_cloud_transfer_uplink(&upbuf, &has_downlink, timeout);
+			ret = m_backend->uplink(&upbuf, &has_downlink, timeout);
 			if (ret) {
 				LOG_ERR("Call `hio_cloud_transfer_uplink` for upbuf failed: %d",
 					ret);
@@ -549,7 +559,7 @@ static int init_step(const char *name, int (*step)(void))
 	int ret;
 
 	for (;;) {
-		hio_cloud_transfer_wait_for_ready(K_FOREVER);
+		m_backend->wait_ready(K_FOREVER);
 
 		LOG_INF("Running %s", name);
 
@@ -657,7 +667,7 @@ int hio_cloud_init(struct hio_cloud_options *options)
 		return -EINVAL;
 	}
 
-	ret = hio_cloud_transfer_init(serial_number, token);
+	ret = m_backend->init(serial_number, token);
 	if (ret) {
 		LOG_ERR("Call `hio_cloud_transfer_init` failed: %d", ret);
 		return ret;
