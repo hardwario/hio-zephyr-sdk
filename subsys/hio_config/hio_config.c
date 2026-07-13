@@ -4,6 +4,9 @@
  * SPDX-License-Identifier: LicenseRef-HARDWARIO-5-Clause
  */
 
+#undef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L /* Required for strtok_r */
+
 /* HIO includes */
 #include <hio/hio_config.h>
 #include <hio/hio_util.h>
@@ -26,6 +29,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 LOG_MODULE_REGISTER(hio_config, CONFIG_HIO_CONFIG_LOG_LEVEL);
 
@@ -627,6 +631,121 @@ int hio_config_module_item_set_value(const struct hio_config *module, const stru
 	}
 
 	return -EINVAL;
+}
+
+int hio_config_item_format_line(const struct hio_config *module,
+				const struct hio_config_item *item, char *buf, size_t size)
+{
+	int len;
+
+	switch (item->type) {
+	case HIO_CONFIG_TYPE_INT:
+		len = snprintf(buf, size, "%s config %s %d", module->name, item->name,
+			       *(int *)item->variable);
+		break;
+
+	case HIO_CONFIG_TYPE_FLOAT:
+		len = snprintf(buf, size, "%s config %s %.2f", module->name, item->name,
+			       (double)*(float *)item->variable);
+		break;
+
+	case HIO_CONFIG_TYPE_BOOL:
+		len = snprintf(buf, size, "%s config %s %s", module->name, item->name,
+			       *(bool *)item->variable ? "true" : "false");
+		break;
+
+	case HIO_CONFIG_TYPE_ENUM: {
+		int32_t val = 0;
+		memcpy(&val, item->variable, item->size);
+
+		if (val < 0 || val >= item->max) {
+			len = snprintf(buf, size, "%s config %s <invalid: %d>", module->name,
+				       item->name, val);
+		} else {
+			len = snprintf(buf, size, "%s config %s \"%s\"", module->name,
+				       item->name, item->enums[val]);
+		}
+		break;
+	}
+
+	case HIO_CONFIG_TYPE_STRING:
+		len = snprintf(buf, size, "%s config %s \"%s\"", module->name, item->name,
+			       (char *)item->variable);
+		break;
+
+	case HIO_CONFIG_TYPE_HEX:
+		len = snprintf(buf, size, "%s config %s ", module->name, item->name);
+		if (len < 0 || (size_t)len >= size) {
+			return -ENOSPC;
+		}
+		for (size_t i = 0; i < item->size; i++) {
+			int n = snprintf(buf + len, size - len, "%02x",
+					 ((uint8_t *)item->variable)[i]);
+			if (n < 0 || (size_t)n >= size - len) {
+				return -ENOSPC;
+			}
+			len += n;
+		}
+		break;
+
+	default:
+		return -EINVAL;
+	}
+
+	if (len < 0 || (size_t)len >= size) {
+		return -ENOSPC;
+	}
+
+	return len;
+}
+
+int hio_config_parse_line(char *line, const char **err_msg)
+{
+	const char *dummy;
+
+	if (err_msg == NULL) {
+		err_msg = &dummy;
+	}
+	*err_msg = NULL;
+
+	char *saveptr;
+	char *module_name = strtok_r(line, " ", &saveptr);
+	char *keyword = strtok_r(NULL, " ", &saveptr);
+	char *item_name = strtok_r(NULL, " ", &saveptr);
+	char *value = strtok_r(NULL, "", &saveptr);
+
+	if (module_name == NULL || keyword == NULL || strcmp(keyword, "config") != 0 ||
+	    item_name == NULL || value == NULL) {
+		*err_msg = "Malformed config line";
+		return -EINVAL;
+	}
+
+	/* Strip one pair of surrounding double quotes, matching what the Zephyr
+	 * shell tokenizer does before a value reaches argv. */
+	size_t vlen = strlen(value);
+	if (vlen >= 2 && value[0] == '"' && value[vlen - 1] == '"') {
+		value[vlen - 1] = '\0';
+		value++;
+	}
+
+	int ret;
+	struct hio_config *module;
+
+	ret = hio_config_find_module(module_name, &module);
+	if (ret) {
+		*err_msg = "Unknown module";
+		return ret;
+	}
+
+	const struct hio_config_item *item;
+
+	ret = hio_config_module_find_item(module, item_name, &item);
+	if (ret) {
+		*err_msg = "Unknown parameter";
+		return ret;
+	}
+
+	return hio_config_module_item_set_value(module, item, value, err_msg);
 }
 
 static int iter_commit_cb(const struct hio_config *module, void *user_data)

@@ -363,6 +363,46 @@ int hio_config_module_item_set_value(const struct hio_config *module,
 				     const struct hio_config_item *item, char *argv,
 				     const char **err_msg);
 
+/**
+ * @brief Format a config item as a single "show" line.
+ *
+ * Produces exactly `<module> config <item> <value>` (no line terminator),
+ * byte-identical to the shell `config show` output. Cross-referenced by the
+ * cloud config upload path, which hashes these lines — any format change
+ * here changes the reported config hash.
+ *
+ * @param module Pointer to the configuration module.
+ * @param item   Pointer to the configuration item.
+ * @param buf    Output buffer (NUL-terminated on success).
+ * @param size   Output buffer size.
+ *
+ * @return Line length on success, -ENOSPC if the buffer is too small.
+ */
+int hio_config_item_format_line(const struct hio_config *module,
+				const struct hio_config_item *item, char *buf, size_t size);
+
+/**
+ * @brief Parse and apply a single config line.
+ *
+ * Accepts a line in the `<module> config <item> <value>` format produced by
+ * hio_config_item_format_line() / shell `config show`. One pair of
+ * surrounding double quotes is stripped from the value (matching the Zephyr
+ * shell tokenizer semantics, which strips them before argv). The write goes
+ * through hio_config_module_item_set_value(), so parse_cb, range validation
+ * and write access control all apply.
+ *
+ * @note Write semantics must stay in sync with the shell set branch in
+ *       hio_config_shell_cmd() — both paths funnel into
+ *       hio_config_module_item_set_value().
+ *
+ * @param line    Line to parse; modified in place (tokenized).
+ * @param err_msg Optional output for a static error message (may be NULL).
+ *
+ * @return 0 on success, -EINVAL on malformed line, otherwise the error from
+ *         module/item lookup or hio_config_module_item_set_value().
+ */
+int hio_config_parse_line(char *line, const char **err_msg);
+
 #define HIO_CONFIG_SHELL_CMD_ARG                                                                   \
 	SHELL_CMD_ARG(config, NULL, "Configuration commands.", hio_config_shell_cmd, 1, 3)
 

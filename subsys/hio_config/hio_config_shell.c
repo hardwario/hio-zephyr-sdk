@@ -21,49 +21,15 @@ LOG_MODULE_DECLARE(hio_config);
 static int item_print_value(const struct shell *shell, const struct hio_config *module,
 			    const struct hio_config_item *item)
 {
+	char line[CONFIG_SHELL_CMD_BUFF_SIZE];
 
-	switch (item->type) {
-	case HIO_CONFIG_TYPE_INT:
-		shell_print(shell, "%s config %s %d", module->name, item->name,
-			    *(int *)item->variable);
-		break;
-
-	case HIO_CONFIG_TYPE_FLOAT:
-		shell_print(shell, "%s config %s %.2f", module->name, item->name,
-			    (double)*(float *)item->variable);
-		break;
-
-	case HIO_CONFIG_TYPE_BOOL:
-		shell_print(shell, "%s config %s %s", module->name, item->name,
-			    *(bool *)item->variable ? "true" : "false");
-		break;
-
-	case HIO_CONFIG_TYPE_ENUM: {
-		int32_t val = 0;
-		memcpy(&val, item->variable, item->size);
-
-		if (val < 0 || val >= item->max) {
-			shell_print(shell, "%s config %s <invalid: %d>", module->name, item->name,
-				    val);
-		} else {
-			shell_print(shell, "%s config %s \"%s\"", module->name, item->name,
-				    item->enums[val]);
-		}
-		break;
+	int ret = hio_config_item_format_line(module, item, line, sizeof(line));
+	if (ret < 0) {
+		shell_error(shell, "format failed for %s %s: %d", module->name, item->name, ret);
+		return ret;
 	}
-	case HIO_CONFIG_TYPE_STRING:
-		shell_print(shell, "%s config %s \"%s\"", module->name, item->name,
-			    (char *)item->variable);
-		break;
 
-	case HIO_CONFIG_TYPE_HEX:
-		shell_fprintf(shell, SHELL_NORMAL, "%s config %s ", module->name, item->name);
-		for (size_t i = 0; i < item->size; i++) {
-			shell_fprintf(shell, SHELL_NORMAL, "%02x", ((uint8_t *)item->variable)[i]);
-		}
-		shell_fprintf(shell, SHELL_NORMAL, "\n");
-		break;
-	}
+	shell_print(shell, "%s", line);
 
 	return 0;
 }
@@ -182,7 +148,9 @@ int hio_config_shell_cmd(const struct shell *shell, size_t argc, char **argv)
 		}
 	}
 
-	/* Write parameter(s) */
+	/* Write parameter(s). Write semantics must stay in sync with
+	 * hio_config_parse_line() (cloud config downlink) — both paths funnel
+	 * into hio_config_module_item_set_value(). */
 	if (argc == 3) {
 		bool found_any = false;
 		bool has_wildcard = argv[1][strlen(argv[1]) - 1] == '*';

@@ -1,0 +1,6 @@
+tests:
+  hio_config.core:
+    platform_allow: native_posix
+    integration_platforms:
+      - native_posix
+    tags: hio hio_config
