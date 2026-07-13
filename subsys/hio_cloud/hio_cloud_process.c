@@ -48,9 +48,12 @@ int hio_cloud_process_dlconfig(struct hio_cloud_msg_dlconfig *config)
 
 	int ret;
 
-	const struct shell *sh = shell_backend_dummy_get_ptr();
-
-	for (int i = 0; i < config->lines; i++) {
+	/* unpack_config's config->lines counts only non-empty tstr entries,
+	 * but get_next_line consumes CBOR entries sequentially INCLUDING
+	 * empty ones. So the loop must count APPLIED (non-empty) lines
+	 * rather than consumed entries — otherwise an empty entry burns an
+	 * iteration and the trailing lines are silently never read. */
+	for (int i = 0; i < config->lines;) {
 		hio_buf_reset(&line);
 
 		ret = hio_cloud_msg_dlconfig_get_next_line(config, &line);
@@ -59,33 +62,27 @@ int hio_cloud_process_dlconfig(struct hio_cloud_msg_dlconfig *config)
 			return ret;
 		}
 
-		const char *cmd = hio_buf_get_mem(&line);
+		char *cmd = (char *)hio_buf_get_mem(&line);
 
-		LOG_INF("Command %d: %s", i, cmd);
+		LOG_INF("Config line %d: %s", i, cmd);
 
-		shell_backend_dummy_clear_output(sh);
+		if (cmd[0] == '\0') {
+			continue; /* does not count toward config->lines */
+		}
 
-		ret = shell_execute_cmd(sh, cmd);
+		const char *err_msg = NULL;
 
+		/* Applies `<module> config <item> <value>`; same write path as
+		 * the shell (hio_config_module_item_set_value). */
+		ret = hio_config_parse_line(cmd, &err_msg);
 		if (ret) {
-			LOG_ERR("Failed to execute shell command: %s", cmd);
+			LOG_ERR("Call `hio_config_parse_line` failed: %d (%s)", ret,
+				err_msg != NULL ? err_msg : "-");
 			return ret;
 		}
 
-		size_t size;
-
-		const char *p = shell_backend_dummy_get_output(sh, &size);
-		if (!p) {
-			LOG_ERR("Failed to get shell output");
-			return -ENOMEM;
-		}
-
-		LOG_INF("Shell output: %s", p);
-
-		k_sleep(K_MSEC(10));
+		i++;
 	}
-
-	k_sleep(K_SECONDS(1));
 
 	LOG_INF("Save config and reboot");
 
