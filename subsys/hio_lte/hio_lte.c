@@ -691,6 +691,20 @@ static int on_enter_error(void)
 
 	k_event_clear(&m_states_event, ATTACHED_BIT | CONNECTED_BIT);
 
+	/* Flow check failed: the socket is unusable (e.g. DTLS handshake fails in
+	 * nrf_connect, so the FSM never reaches READY/SEND to run the pending
+	 * transaction). End any pending transaction with -ENOTCONN instead of
+	 * looping OPEN_SOCKET->ERROR forever; the cloud transfer layer waits on
+	 * -ENOTCONN and eventually switches address. Both error branches below
+	 * (retry open and fallback restart) leave the socket unusable, so end it
+	 * here. The "flow check OK, resume in 5 s" branch returned above and keeps
+	 * the pending param for on_enter_ready() to re-send. */
+	if (m_send_recv_param) {
+		m_send_recv_result = -ENOTCONN;
+		m_send_recv_param = NULL;
+		k_event_post(&m_states_event, SEND_RECV_BIT);
+	}
+
 	if (ret == -ENOTSOCK) {
 		m_error_ctx.flow_check_failures++;
 
@@ -1294,6 +1308,15 @@ static int on_enter_receive(void)
 		k_mutex_lock(&m_metrics_lock, K_FOREVER);
 		m_metrics.downlink_errors++;
 		k_mutex_unlock(&m_metrics_lock);
+
+		/* End the transaction: the reply did not arrive in the RCVTIMEO
+		 * window. Report -ETIMEDOUT to the caller instead of letting the
+		 * FSM recover and silently re-send the pending param forever; the
+		 * cloud transfer layer owns the retransmission. Do this before
+		 * returning into the ERROR recovery path. */
+		m_send_recv_result = -ETIMEDOUT;
+		m_send_recv_param = NULL;
+		k_event_post(&m_states_event, SEND_RECV_BIT);
 
 		return ret;
 	}
