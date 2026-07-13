@@ -17,9 +17,36 @@
 #include <hio/hio_buf.h>
 #include <hio/hio_cloud.h>
 
+/* Crypto includes */
+#if IS_ENABLED(CONFIG_HIO_CLOUD_HASH_MBEDTLS)
+#include <mbedtls/sha256.h>
+#elif IS_ENABLED(CONFIG_HIO_CLOUD_HASH_PSA)
+#include <psa/crypto.h>
+#else
+#include <tinycrypt/constants.h>
+#include <tinycrypt/sha256.h>
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/**
+ * @brief Incremental variant of hio_cloud_calculate_hash (XOR-folded SHA-256).
+ */
+struct hio_cloud_hash {
+#if IS_ENABLED(CONFIG_HIO_CLOUD_HASH_MBEDTLS)
+	mbedtls_sha256_context ctx;
+#elif IS_ENABLED(CONFIG_HIO_CLOUD_HASH_PSA)
+	psa_hash_operation_t op;
+#else
+	struct tc_sha256_state_struct s;
+#endif
+};
+
+int hio_cloud_hash_begin(struct hio_cloud_hash *h);
+int hio_cloud_hash_update(struct hio_cloud_hash *h, const void *data, size_t len);
+int hio_cloud_hash_finish(struct hio_cloud_hash *h, uint8_t hash[8]);
 
 int hio_cloud_calculate_hash(uint8_t hash[8],
 			     const uint8_t *buf1, size_t len1,

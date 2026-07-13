@@ -26,111 +26,106 @@
 #include <zephyr/shell/shell_dummy.h>
 #include <zephyr/sys/byteorder.h>
 
-/* Crypto includes */
-#if IS_ENABLED(CONFIG_HIO_CLOUD_HASH_MBEDTLS)
-#include <mbedtls/sha256.h>
-#elif IS_ENABLED(CONFIG_HIO_CLOUD_HASH_PSA)
-#include <psa/crypto.h>
-#else
-#include <tinycrypt/constants.h>
-#include <tinycrypt/sha256.h>
-#endif
-
 LOG_MODULE_REGISTER(cloud_util, CONFIG_HIO_CLOUD_LOG_LEVEL);
 
-int hio_cloud_calculate_hash(uint8_t hash[8],
-			     const uint8_t *buf1, size_t len1,
-			     const uint8_t *buf2, size_t len2)
+int hio_cloud_hash_begin(struct hio_cloud_hash *h)
+{
+#if IS_ENABLED(CONFIG_HIO_CLOUD_HASH_MBEDTLS)
+	int ret;
+
+	mbedtls_sha256_init(&h->ctx);
+	ret = mbedtls_sha256_starts(&h->ctx, 0);
+	if (ret) {
+		LOG_ERR("Call `mbedtls_sha256_starts` failed: %d", ret);
+		mbedtls_sha256_free(&h->ctx);
+		return -EINVAL;
+	}
+#elif IS_ENABLED(CONFIG_HIO_CLOUD_HASH_PSA)
+	psa_status_t status;
+
+	h->op = PSA_HASH_OPERATION_INIT;
+	status = psa_hash_setup(&h->op, PSA_ALG_SHA_256);
+	if (status != PSA_SUCCESS) {
+		LOG_ERR("Call `psa_hash_setup` failed: %d", status);
+		return -EINVAL;
+	}
+#else
+	int ret;
+
+	ret = tc_sha256_init(&h->s);
+	if (ret != TC_CRYPTO_SUCCESS) {
+		LOG_ERR("Call `tc_sha256_init` failed: %d", ret);
+		return -EINVAL;
+	}
+#endif
+
+	return 0;
+}
+
+int hio_cloud_hash_update(struct hio_cloud_hash *h, const void *data, size_t len)
+{
+#if IS_ENABLED(CONFIG_HIO_CLOUD_HASH_MBEDTLS)
+	int ret;
+
+	ret = mbedtls_sha256_update(&h->ctx, data, len);
+	if (ret) {
+		LOG_ERR("Call `mbedtls_sha256_update` failed: %d", ret);
+		mbedtls_sha256_free(&h->ctx);
+		return -EINVAL;
+	}
+#elif IS_ENABLED(CONFIG_HIO_CLOUD_HASH_PSA)
+	psa_status_t status;
+
+	status = psa_hash_update(&h->op, data, len);
+	if (status != PSA_SUCCESS) {
+		LOG_ERR("Call `psa_hash_update` failed: %d", status);
+		psa_hash_abort(&h->op);
+		return -EINVAL;
+	}
+#else
+	int ret;
+
+	ret = tc_sha256_update(&h->s, data, len);
+	if (ret != TC_CRYPTO_SUCCESS) {
+		LOG_ERR("Call `tc_sha256_update` failed: %d", ret);
+		return -EINVAL;
+	}
+#endif
+
+	return 0;
+}
+
+int hio_cloud_hash_finish(struct hio_cloud_hash *h, uint8_t hash[8])
 {
 	uint8_t digest[32];
 
 #if IS_ENABLED(CONFIG_HIO_CLOUD_HASH_MBEDTLS)
 	int ret;
-	mbedtls_sha256_context ctx;
-	mbedtls_sha256_init(&ctx);
-	ret = mbedtls_sha256_starts(&ctx, 0);
-	if (ret) {
-		LOG_ERR("Call `mbedtls_sha256_starts` failed: %d", ret);
-		mbedtls_sha256_free(&ctx);
-		return -EINVAL;
-	}
-	ret = mbedtls_sha256_update(&ctx, buf1, len1);
-	if (ret) {
-		LOG_ERR("Call `mbedtls_sha256_update` failed: %d", ret);
-		mbedtls_sha256_free(&ctx);
-		return -EINVAL;
-	}
-	if (buf2 != NULL && len2 > 0) {
-		ret = mbedtls_sha256_update(&ctx, buf2, len2);
-		if (ret) {
-			LOG_ERR("Call `mbedtls_sha256_update` (buf2) failed: %d", ret);
-			mbedtls_sha256_free(&ctx);
-			return -EINVAL;
-		}
-	}
-	ret = mbedtls_sha256_finish(&ctx, digest);
+
+	ret = mbedtls_sha256_finish(&h->ctx, digest);
 	if (ret) {
 		LOG_ERR("Call `mbedtls_sha256_finish` failed: %d", ret);
-		mbedtls_sha256_free(&ctx);
+		mbedtls_sha256_free(&h->ctx);
 		return -EINVAL;
 	}
-	mbedtls_sha256_free(&ctx);
+	mbedtls_sha256_free(&h->ctx);
 #elif IS_ENABLED(CONFIG_HIO_CLOUD_HASH_PSA)
 	psa_status_t status;
-	psa_hash_operation_t op = PSA_HASH_OPERATION_INIT;
-	status = psa_hash_setup(&op, PSA_ALG_SHA_256);
-	if (status != PSA_SUCCESS) {
-		LOG_ERR("Call `psa_hash_setup` failed: %d", status);
-		return -EINVAL;
-	}
-	status = psa_hash_update(&op, buf1, len1);
-	if (status != PSA_SUCCESS) {
-		LOG_ERR("Call `psa_hash_update` failed: %d", status);
-		psa_hash_abort(&op);
-		return -EINVAL;
-	}
-	if (buf2 != NULL && len2 > 0) {
-		status = psa_hash_update(&op, buf2, len2);
-		if (status != PSA_SUCCESS) {
-			LOG_ERR("Call `psa_hash_update` (buf2) failed: %d", status);
-			psa_hash_abort(&op);
-			return -EINVAL;
-		}
-	}
 	size_t hash_len;
-	status = psa_hash_finish(&op, digest, sizeof(digest), &hash_len);
+
+	status = psa_hash_finish(&h->op, digest, sizeof(digest), &hash_len);
 	if (status != PSA_SUCCESS) {
 		LOG_ERR("Call `psa_hash_finish` failed: %d", status);
-		psa_hash_abort(&op);
+		psa_hash_abort(&h->op);
 		return -EINVAL;
 	}
 #else
 	int ret;
-	struct tc_sha256_state_struct s;
-	ret = tc_sha256_init(&s);
-	if (ret != TC_CRYPTO_SUCCESS) {
-		LOG_ERR("Call `tc_sha256_init` failed: %d", ret);
-		return ret;
-	}
 
-	ret = tc_sha256_update(&s, buf1, len1);
-	if (ret != TC_CRYPTO_SUCCESS) {
-		LOG_ERR("Call `tc_sha256_update` failed: %d", ret);
-		return ret;
-	}
-
-	if (buf2 != NULL && len2 > 0) {
-		ret = tc_sha256_update(&s, buf2, len2);
-		if (ret != TC_CRYPTO_SUCCESS) {
-			LOG_ERR("Call `tc_sha256_update` (buf2) failed: %d", ret);
-			return ret;
-		}
-	}
-
-	ret = tc_sha256_final(digest, &s);
+	ret = tc_sha256_final(digest, &h->s);
 	if (ret != TC_CRYPTO_SUCCESS) {
 		LOG_ERR("Call `tc_sha256_final` failed: %d", ret);
-		return ret;
+		return -EINVAL;
 	}
 #endif
 
@@ -139,6 +134,33 @@ int hio_cloud_calculate_hash(uint8_t hash[8],
 	}
 
 	return 0;
+}
+
+int hio_cloud_calculate_hash(uint8_t hash[8],
+			     const uint8_t *buf1, size_t len1,
+			     const uint8_t *buf2, size_t len2)
+{
+	int ret;
+	struct hio_cloud_hash h;
+
+	ret = hio_cloud_hash_begin(&h);
+	if (ret) {
+		return ret;
+	}
+
+	ret = hio_cloud_hash_update(&h, buf1, len1);
+	if (ret) {
+		return ret;
+	}
+
+	if (buf2 != NULL && len2 > 0) {
+		ret = hio_cloud_hash_update(&h, buf2, len2);
+		if (ret) {
+			return ret;
+		}
+	}
+
+	return hio_cloud_hash_finish(&h, hash);
 }
 
 int hio_cloud_util_shell_cmd(const char *cmd, struct hio_buf *buf)
