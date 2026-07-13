@@ -48,6 +48,17 @@ int hio_cloud_hash_begin(struct hio_cloud_hash *h);
 int hio_cloud_hash_update(struct hio_cloud_hash *h, const void *data, size_t len);
 int hio_cloud_hash_finish(struct hio_cloud_hash *h, uint8_t hash[8]);
 
+/**
+ * @brief Release a hash context without producing a digest.
+ *
+ * Call exactly once on any error path between hio_cloud_hash_begin() and
+ * hio_cloud_hash_finish() that does not otherwise reach finish(). Do NOT
+ * call this after a failed hio_cloud_hash_update() — update() already
+ * aborts/frees the context on its own failure path, so calling this again
+ * would double-free/double-abort it.
+ */
+void hio_cloud_hash_abort(struct hio_cloud_hash *h);
+
 int hio_cloud_calculate_hash(uint8_t hash[8],
 			     const uint8_t *buf1, size_t len1,
 			     const uint8_t *buf2, size_t len2);

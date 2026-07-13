@@ -54,6 +54,10 @@ config HIO_CLOUD_DEFAULT_PORT_DTLS
 config SHELL_BACKEND_DUMMY_BUF_SIZE
 	int "SHELL_BACKEND_DUMMY_BUF_SIZE"
 	default 8192
+	help
+	  Sizes the dummy shell capture buffer used by the cloud dlshell
+	  (remote shell) path. Config upload/downlink no longer goes through
+	  the dummy shell, so this does not limit the config size.
 
 config AT_MONITOR_HEAP_SIZE
 	int "AT_MONITOR_HEAP_SIZE"

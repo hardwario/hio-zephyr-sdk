@@ -136,6 +136,17 @@ int hio_cloud_hash_finish(struct hio_cloud_hash *h, uint8_t hash[8])
 	return 0;
 }
 
+void hio_cloud_hash_abort(struct hio_cloud_hash *h)
+{
+#if IS_ENABLED(CONFIG_HIO_CLOUD_HASH_MBEDTLS)
+	mbedtls_sha256_free(&h->ctx);
+#elif IS_ENABLED(CONFIG_HIO_CLOUD_HASH_PSA)
+	psa_hash_abort(&h->op);
+#else
+	/* TinyCrypt keeps no external resources tied to the state struct. */
+#endif
+}
+
 int hio_cloud_calculate_hash(uint8_t hash[8],
 			     const uint8_t *buf1, size_t len1,
 			     const uint8_t *buf2, size_t len2)

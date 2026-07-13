@@ -21,11 +21,11 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/shell/shell.h>
 
-#include <zephyr/shell/shell_dummy.h>
 #include <zephyr/sys/byteorder.h>
 
 /* HIO includes */
 #include <hio/hio_buf.h>
+#include <hio/hio_config.h>
 #include <hio/hio_info.h>
 #include <hio/hio_lte.h>
 #include <hio/hio_cloud.h>
@@ -469,6 +469,68 @@ static int pack_shell_output_as_list(zcbor_state_t *zs, const char *output, size
 	return 0;
 }
 
+#define PACK_CONFIG_LINE_MAX_SIZE 512
+
+struct pack_config_ctx {
+	zcbor_state_t *zs;
+	struct hio_cloud_hash *hash;
+	/* Set to false when hio_cloud_hash_update() fails: update() already
+	 * aborts/frees the context on its own failure, so the caller must
+	 * not abort it again. */
+	bool hash_live;
+	char line[PACK_CONFIG_LINE_MAX_SIZE];
+};
+
+static int pack_config_item_cb(const struct hio_config *module, const struct hio_config_item *item,
+			       void *user_data)
+{
+	struct pack_config_ctx *ctx = user_data;
+	int ret;
+
+	if (!(hio_config_item_access(module, item) & HIO_CONFIG_ACCESS_SHOW)) {
+		return 0;
+	}
+
+	ret = hio_config_item_format_line(module, item, ctx->line, sizeof(ctx->line));
+	if (ret < 0) {
+		LOG_ERR("Call `hio_config_item_format_line` failed (%s %s): %d", module->name,
+			item->name, ret);
+		return ret;
+	}
+
+	size_t len = ret;
+
+	/* Hash input mirrors the legacy dummy-shell raw output: every line is
+	 * followed by CRLF. Keep in sync with the parity test in
+	 * tests/subsys/hio_config (test_show_parity.c). */
+	ret = hio_cloud_hash_update(ctx->hash, ctx->line, len);
+	if (ret) {
+		LOG_ERR("Call `hio_cloud_hash_update` failed: %d", ret);
+		/* update() already cleaned up the context on this path. */
+		ctx->hash_live = false;
+		return ret;
+	}
+	ret = hio_cloud_hash_update(ctx->hash, "\r\n", 2);
+	if (ret) {
+		LOG_ERR("Call `hio_cloud_hash_update` failed: %d", ret);
+		/* update() already cleaned up the context on this path. */
+		ctx->hash_live = false;
+		return ret;
+	}
+
+	struct zcbor_string tstr = {
+		.value = (const uint8_t *)ctx->line,
+		.len = len,
+	};
+
+	if (!zcbor_tstr_encode(ctx->zs, &tstr)) {
+		LOG_ERR("Call `zcbor_tstr_encode` failed");
+		return -EMSGSIZE;
+	}
+
+	return 0;
+}
+
 int hio_cloud_msg_pack_config(struct hio_buf *buf)
 {
 	int ret;
@@ -479,29 +541,10 @@ int hio_cloud_msg_pack_config(struct hio_buf *buf)
 		return ret;
 	}
 
-	const struct shell *sh = shell_backend_dummy_get_ptr();
+	/* Reserve space for the hash; backfilled after the single pass. */
+	static const uint8_t zeros[8];
 
-	shell_backend_dummy_clear_output(sh);
-
-	ret = shell_execute_cmd(sh, "config show");
-
-	if (ret) {
-		LOG_ERR("Call `shell_execute_cmd` failed: %d", ret);
-		return ret;
-	}
-
-	size_t size;
-
-	const uint8_t *outp = shell_backend_dummy_get_output(sh, &size);
-	if (!outp) {
-		LOG_ERR("Failed to get shell output");
-		return -ENOMEM;
-	}
-
-	uint8_t hash[8];
-	hio_cloud_calculate_hash(hash, outp, size, NULL, 0);
-
-	ret = hio_buf_append_mem(buf, hash, sizeof(hash));
+	ret = hio_buf_append_mem(buf, zeros, sizeof(zeros));
 	if (ret) {
 		LOG_ERR("Call `hio_buf_append_mem` failed: %d", ret);
 		return ret;
@@ -513,15 +556,65 @@ int hio_cloud_msg_pack_config(struct hio_buf *buf)
 		return ret;
 	}
 
-	uint8_t *p = hio_buf_get_mem(buf) + 1 + 8 + 1; // header + hash + compression
+	uint8_t *p = hio_buf_get_mem(buf) + 1 + 8 + 1; /* header + hash + compression */
 
 	ZCBOR_STATE_E(zs, 0, p, hio_buf_get_free(buf) - 1, 1);
 
-	ret = pack_shell_output_as_list(zs, outp, size);
+	struct hio_cloud_hash hash_ctx;
+
+	ret = hio_cloud_hash_begin(&hash_ctx);
 	if (ret) {
-		LOG_ERR("Call `pack_shell_output_as_list` failed: %d", ret);
+		LOG_ERR("Call `hio_cloud_hash_begin` failed: %d", ret);
 		return ret;
 	}
+
+	/* The legacy dummy-shell output starts with a single CRLF; keep it in
+	 * the hash input for wire-hash compatibility (pinned by the parity
+	 * test in tests/subsys/hio_config). */
+	ret = hio_cloud_hash_update(&hash_ctx, "\r\n", 2);
+	if (ret) {
+		LOG_ERR("Call `hio_cloud_hash_update` failed: %d", ret);
+		/* update() already cleaned up the context on this path. */
+		return ret;
+	}
+
+	if (!zcbor_list_start_encode(zs, ZCBOR_VALUE_IS_INDEFINITE_LENGTH)) {
+		hio_cloud_hash_abort(&hash_ctx);
+		return -EMSGSIZE;
+	}
+
+	struct pack_config_ctx ctx = {
+		.zs = zs,
+		.hash = &hash_ctx,
+		.hash_live = true,
+	};
+
+	ret = hio_config_iter_items(NULL, pack_config_item_cb, &ctx);
+	if (ret) {
+		LOG_ERR("Call `hio_config_iter_items` failed: %d", ret);
+		/* Abort unless the item callback already cleaned up the
+		 * context itself (a hash_update failure inside the callback). */
+		if (ctx.hash_live) {
+			hio_cloud_hash_abort(&hash_ctx);
+		}
+		return ret;
+	}
+
+	if (!zcbor_list_end_encode(zs, ZCBOR_VALUE_IS_INDEFINITE_LENGTH)) {
+		hio_cloud_hash_abort(&hash_ctx);
+		return -EMSGSIZE;
+	}
+
+	uint8_t hash[8];
+
+	ret = hio_cloud_hash_finish(&hash_ctx, hash);
+	if (ret) {
+		LOG_ERR("Call `hio_cloud_hash_finish` failed: %d", ret);
+		/* finish() already cleaned up the context on this path. */
+		return ret;
+	}
+
+	memcpy(hio_buf_get_mem(buf) + 1, hash, sizeof(hash));
 
 	hio_buf_seek(buf, 1 + 8 + 1 + (zs->payload - p));
 
