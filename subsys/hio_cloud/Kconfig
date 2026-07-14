@@ -33,7 +33,8 @@ config HIO_CLOUD_HASH_TINYCRYPT
 config HIO_CLOUD_HASH_PSA
 	bool "PSA Crypto"
 	select NRF_SECURITY
-	select MBEDTLS_PSA_CRYPTO_C
+	# With TF-M the PSA crypto API is provided by the secure image
+	select MBEDTLS_PSA_CRYPTO_C if !BUILD_WITH_TFM
 	select PSA_WANT_ALG_SHA_256
 
 endchoice

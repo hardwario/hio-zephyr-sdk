@@ -20,11 +20,11 @@ config HIO_INFO_ATCI
 
 config HIO_INFO_SHELL_BLE
 	bool "HIO_INFO_SHELL_BLE"
-	default y if SOC_SERIES_NRF52X
+	default y if SOC_SERIES_NRF52X || SOC_SERIES_NRF52
 
 config HIO_INFO_BLE
 	bool "HIO_INFO_BLE"
-	default y if BT && SOC_SERIES_NRF52X
+	default y if BT && (SOC_SERIES_NRF52X || SOC_SERIES_NRF52)
 
 config HIO_INFO_DEV_MODE
 	bool "Development mode (use settings instead of UICR/PIB)"
@@ -59,8 +59,8 @@ config HIO_INFO_DEFAULT_BLE_PASSKEY
 	default "(unset)"
 
 config HIO_INFO_INIT_PRIORITY
-	int "Initialization priority"
-	default 0
+	int "Initialization priority (APPLICATION phase)"
+	default 90
 
 module = HIO_INFO
 module-str = Firmware Information Subsystem

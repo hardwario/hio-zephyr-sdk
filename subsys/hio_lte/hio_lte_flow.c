@@ -784,7 +784,7 @@ static int open_socket(const struct hio_lte_socket_config *socket_config, bool l
 	int ciph = 0;
 	if (socket_config->dtls_enabled) {
 		/* Get Cipher */
-		socklen_t optlen = sizeof(ciph);
+		nrf_socklen_t optlen = sizeof(ciph);
 		int ret = nrf_getsockopt(m_socket_fd, NRF_SOL_SECURE, NRF_SO_SEC_CIPHERSUITE_USED,
 					 &ciph, &optlen);
 		LOG_INF("DTLS Cipher suite used: 0x%04x %s (ret %d)", ciph,
