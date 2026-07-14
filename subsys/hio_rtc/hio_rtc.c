@@ -17,7 +17,7 @@
 #include <zephyr/retention/retention.h>
 #endif
 
-#if defined(CONFIG_SOC_SERIES_NRF54LX)
+#if defined(CONFIG_SOC_SERIES_NRF54LX) || defined(CONFIG_SOC_SERIES_NRF54L)
 #include <nrfx_grtc.h>
 #else
 #include <nrfx_rtc.h>
@@ -34,16 +34,29 @@
 
 LOG_MODULE_REGISTER(hio_rtc, CONFIG_HIO_RTC_LOG_LEVEL);
 
-#if defined(CONFIG_SOC_SERIES_NRF54LX)
+#if defined(CONFIG_SOC_SERIES_NRF54LX) || defined(CONFIG_SOC_SERIES_NRF54L)
 /* NRF54 uses GRTC peripheral */
 #define RTC_IRQn        GRTC_0_IRQn
 #define RTC_IRQ_HANDLER nrfx_grtc_irq_handler
 static uint8_t m_grtc_channel;
 #else
 /* NRF52/NRF91 use RTC peripheral */
-#define RTC_IRQn        RTC0_IRQn
+#define RTC_IRQn RTC0_IRQn
+#if NRFX_API_VER_AT_LEAST(4, 1, 0)
+/* nrfx v4.1+: per-instance IRQ handlers were replaced by
+ * nrfx_rtc_irq_handler(instance) and the instance holds driver state */
+static nrfx_rtc_t m_rtc = NRFX_RTC_INSTANCE(NRF_RTC0);
+
+static void rtc_irq_handler(const void *arg)
+{
+	ARG_UNUSED(arg);
+	nrfx_rtc_irq_handler(&m_rtc);
+}
+#define RTC_IRQ_HANDLER rtc_irq_handler
+#else
 #define RTC_IRQ_HANDLER nrfx_rtc_0_irq_handler
 static const nrfx_rtc_t m_rtc = NRFX_RTC_INSTANCE(0);
+#endif
 #endif
 
 static struct onoff_client m_lfclk_cli;
@@ -221,7 +234,7 @@ int hio_rtc_get_utc_string(char *out_str, size_t out_str_size)
 	return 0;
 }
 
-#if defined(CONFIG_SOC_SERIES_NRF54LX)
+#if defined(CONFIG_SOC_SERIES_NRF54LX) || defined(CONFIG_SOC_SERIES_NRF54L)
 static void rtc_handler(int32_t channel, uint64_t cc_value, void *p_context)
 {
 	ARG_UNUSED(channel);
@@ -233,11 +246,22 @@ static void rtc_handler(int32_t channel, uint64_t cc_value, void *p_context)
 	nrfx_grtc_syscounter_cc_rel_set(m_grtc_channel, 1000000, NRFX_GRTC_CC_RELATIVE_COMPARE);
 
 #else
+#if NRFX_API_VER_AT_LEAST(4, 1, 0)
+/* nrfx v4.1+ passes the event type and a context pointer */
+static void rtc_handler(nrf_rtc_event_t event_type, void *p_context)
+{
+	ARG_UNUSED(p_context);
+
+	if (event_type != NRF_RTC_EVENT_TICK) {
+		return;
+	}
+#else
 static void rtc_handler(nrfx_rtc_int_type_t int_type)
 {
 	if (int_type != NRFX_RTC_INT_TICK) {
 		return;
 	}
+#endif
 
 	static int prescaler = 0;
 
@@ -469,7 +493,7 @@ static int init(void)
 		return ret;
 	}
 
-#if defined(CONFIG_SOC_SERIES_NRF54LX)
+#if defined(CONFIG_SOC_SERIES_NRF54LX) || defined(CONFIG_SOC_SERIES_NRF54L)
 	/* NRF54 GRTC initialization */
 	ret = nrfx_grtc_init(0);
 	if (ret != 0 && ret != -EALREADY) {

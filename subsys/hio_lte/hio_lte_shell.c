@@ -7,6 +7,9 @@
 #include <hio/hio_lte.h>
 #include <hio/hio_config.h>
 
+/* Nordic includes */
+#include <ncs_version.h>
+
 /* Zephyr includes */
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -355,7 +358,13 @@ static void flow_bypass_cb(void *user_data, const uint8_t *data, size_t len)
 	fprintf_ctx->fwrite(fprintf_ctx->user_ctx, data, len);
 }
 
+#if NCS_VERSION_NUMBER >= 0x30400
+/* The shell bypass API gained a user_data parameter in NCS 3.4 (Zephyr 4.3) */
+static void shell_bypass_cb(const struct shell *shell, uint8_t *data, size_t len,
+			    void *user_data)
+#else
 static void shell_bypass_cb(const struct shell *shell, uint8_t *data, size_t len)
+#endif
 {
 	static char line[256];
 	static size_t line_len = 0;
@@ -367,7 +376,11 @@ static void shell_bypass_cb(const struct shell *shell, uint8_t *data, size_t len
 	if (strncmp((const char *)data, "+++", 3) == 0) {
 		shell_print(shell, "exiting bypass mode");
 		hio_lte_talk_bypass_set_cb(NULL, NULL);
+#if NCS_VERSION_NUMBER >= 0x30400
+		shell_set_bypass(shell, NULL, NULL);
+#else
 		shell_set_bypass(shell, NULL);
+#endif
 		return;
 	}
 
@@ -404,7 +417,11 @@ static int cmd_test_bypass(const struct shell *shell, size_t argc, char **argv)
 	}
 
 	hio_lte_talk_bypass_set_cb(flow_bypass_cb, (void *)shell->fprintf_ctx);
+#if NCS_VERSION_NUMBER >= 0x30400
+	shell_set_bypass(shell, shell_bypass_cb, NULL);
+#else
 	shell_set_bypass(shell, shell_bypass_cb);
+#endif
 
 	shell_print(shell, "bypass mode enabled, for exit type +++");
 

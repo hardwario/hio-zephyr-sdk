@@ -3,7 +3,9 @@ config HIO_RTC
 	depends on SHELL
 	select EVENTS
 	select NRFX_RTC0 if SOC_SERIES_NRF52X || SOC_SERIES_NRF91X
-	select NRFX_GRTC if SOC_SERIES_NRF54LX
+	# nrfx v4.1+ (NCS 3.4) replaced per-instance NRFX_RTCn symbols
+	select NRFX_RTC if SOC_SERIES_NRF52 || SOC_SERIES_NRF91
+	select NRFX_GRTC if SOC_SERIES_NRF54LX || SOC_SERIES_NRF54L
 	select POLL
 
 if HIO_RTC

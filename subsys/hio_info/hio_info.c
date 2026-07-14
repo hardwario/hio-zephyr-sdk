@@ -14,9 +14,9 @@
 #if defined(CONFIG_BUILD_WITH_TFM)
 #include <tfm_ns_interface.h>
 #include <tfm_ioctl_api.h>
-#elif defined(CONFIG_SOC_SERIES_NRF52X)
+#elif defined(CONFIG_SOC_SERIES_NRF52X) || defined(CONFIG_SOC_SERIES_NRF52)
 #include <nrf52.h>
-#elif defined(CONFIG_SOC_SERIES_NRF54LX)
+#elif defined(CONFIG_SOC_SERIES_NRF54LX) || defined(CONFIG_SOC_SERIES_NRF54L)
 #if NCS_VERSION_NUMBER < 0x30201
 #include <nrf54l15.h>
 #endif
@@ -167,24 +167,28 @@ static int dev_config_init(void)
 
 static int load_pib(void)
 {
-	uint8_t pib[128];
+	/* The TF-M read service and the direct UICR reads below copy
+	 * 32-bit words, so keep the buffer word-aligned. */
+	uint32_t pib_words[128 / sizeof(uint32_t)];
+	uint8_t *pib = (uint8_t *)pib_words;
 
 #if defined(CONFIG_BUILD_WITH_TFM)
 	uint32_t err = 0;
 	enum tfm_platform_err_t plt_err;
 	const uint32_t uicr_otp_start = NRF_UICR_S_BASE + offsetof(NRF_UICR_Type, OTP);
-	plt_err = tfm_platform_mem_read(pib, uicr_otp_start, sizeof(pib), &err);
+
+	plt_err = tfm_platform_mem_read(pib, uicr_otp_start, sizeof(pib_words), &err);
 	if (plt_err != TFM_PLATFORM_ERR_SUCCESS || err != 0) {
-		LOG_ERR("tfm_platform_mem_read failed: %d", err);
+		LOG_ERR("tfm_platform_mem_read failed: %d (%u)", plt_err, err);
 		return -EIO;
 	}
-#elif defined(CONFIG_SOC_SERIES_NRF52X)
-	for (int i = 0; i < (ARRAY_SIZE(pib) / 4); i++) {
-		((uint32_t *)pib)[i] = NRF_UICR->CUSTOMER[i];
+#elif defined(CONFIG_SOC_SERIES_NRF52X) || defined(CONFIG_SOC_SERIES_NRF52)
+	for (int i = 0; i < ARRAY_SIZE(pib_words); i++) {
+		pib_words[i] = NRF_UICR->CUSTOMER[i];
 	}
-#elif defined(CONFIG_SOC_SERIES_NRF54LX)
-	for (int i = 0; i < (ARRAY_SIZE(pib) / 4); i++) {
-		((uint32_t *)pib)[i] = NRF_UICR->OTP[i];
+#elif defined(CONFIG_SOC_SERIES_NRF54LX) || defined(CONFIG_SOC_SERIES_NRF54L)
+	for (int i = 0; i < ARRAY_SIZE(pib_words); i++) {
+		pib_words[i] = NRF_UICR->OTP[i];
 	}
 #else
 	LOG_ERR("Unsupported SoC series");
@@ -192,7 +196,7 @@ static int load_pib(void)
 	return -ENOTSUP;
 #endif
 
-	LOG_HEXDUMP_DBG(pib, sizeof(pib), "PIB dump:");
+	LOG_HEXDUMP_DBG(pib, sizeof(pib_words), "PIB dump:");
 
 	/* Load signature */
 	uint32_t signature = sys_get_be32(pib + SIGNATURE_OFFSET);
@@ -373,7 +377,7 @@ int hio_info_get_ble_devaddr(const char **ble_devaddr)
 
 int hio_info_get_ble_devaddr_uint64(uint64_t *ble_devaddr)
 {
-#if defined(CONFIG_SOC_SERIES_NRF52X)
+#if defined(CONFIG_SOC_SERIES_NRF52X) || defined(CONFIG_SOC_SERIES_NRF52)
 	*ble_devaddr = NRF_FICR->DEVICEADDR[1];
 	*ble_devaddr &= BIT_MASK(16);
 	*ble_devaddr |= BIT(15) | BIT(14);
@@ -440,5 +444,8 @@ static int init(void)
 #if IS_ENABLED(CONFIG_HIO_INFO_DEV_MODE)
 SYS_INIT(init, APPLICATION, 1);
 #else
-SYS_INIT(init, POST_KERNEL, CONFIG_HIO_INFO_INIT_PRIORITY);
+/* With TF-M the PIB is read via the secure read service. Keep this in the
+ * APPLICATION phase - calling into TF-M from an early POST_KERNEL init
+ * (priority 0) freezes the boot on NCS 3.x. */
+SYS_INIT(init, APPLICATION, CONFIG_HIO_INFO_INIT_PRIORITY);
 #endif
