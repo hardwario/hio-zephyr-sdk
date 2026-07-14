@@ -7,10 +7,14 @@
 /* HARDWARIO includes */
 #include <hio/hio_adc.h>
 
+/* Nordic includes */
+#include <ncs_version.h>
+
 /* Zephyr includes */
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/adc.h>
+#include <zephyr/dt-bindings/adc/nrf-saadc.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 
@@ -38,7 +42,13 @@ int hio_adc_init(uint8_t channel)
 		.channel_id = (uint8_t)channel,
 		.differential = 0,
 #if defined(CONFIG_ADC_CONFIGURABLE_INPUTS)
+#if NCS_VERSION_NUMBER >= 0x30400
+		/* nrfx v4 (NCS 3.4) numbers analog inputs from zero (AIN0 = 0);
+		 * before, input_positive was the PSELP register value (AIN0 = 1) */
+		.input_positive = NRF_SAADC_AIN0 + (uint8_t)channel
+#else
 		.input_positive = SAADC_CH_PSELP_PSELP_AnalogInput0 + (uint8_t)channel
+#endif
 #endif
 	};
 
