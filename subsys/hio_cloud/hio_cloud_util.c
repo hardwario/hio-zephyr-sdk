@@ -6,6 +6,9 @@
 
 #include "hio_cloud_util.h"
 
+/* Nordic includes */
+#include <ncs_version.h>
+
 /* Standard includes */
 #include <ctype.h>
 #include <errno.h>
@@ -43,7 +46,13 @@ int hio_cloud_hash_begin(struct hio_cloud_hash *h)
 #elif IS_ENABLED(CONFIG_HIO_CLOUD_HASH_PSA)
 	psa_status_t status;
 
+#if NCS_VERSION_NUMBER >= 0x30400
+	/* PSA_HASH_OPERATION_INIT is an empty initializer `{ }` here, which is
+	 * not valid in an assignment */
+	h->op = psa_hash_operation_init();
+#else
 	h->op = PSA_HASH_OPERATION_INIT;
+#endif
 	status = psa_hash_setup(&h->op, PSA_ALG_SHA_256);
 	if (status != PSA_SUCCESS) {
 		LOG_ERR("Call `psa_hash_setup` failed: %d", status);
