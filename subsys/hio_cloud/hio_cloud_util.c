@@ -21,7 +21,12 @@
 #include <string.h>
 
 /* Zephyr includes */
+/* NVS moved from zephyr/fs to zephyr/kvss in Zephyr 4.3 (NCS 3.4) */
+#if __has_include(<zephyr/kvss/nvs.h>)
+#include <zephyr/kvss/nvs.h>
+#else
 #include <zephyr/fs/nvs.h>
+#endif
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/settings/settings.h>
