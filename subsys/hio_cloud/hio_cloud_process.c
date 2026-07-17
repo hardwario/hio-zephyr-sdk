@@ -378,6 +378,17 @@ static int process_dlfirmware(struct hio_cloud_msg_dlfirmware *dlfirmware, struc
 #endif
 		k_sleep(K_MSEC(100));
 
+		/* Bring the modem to a clean stop before rebooting to apply the
+		 * update. Optional backend op, so NULL-check. Blocking here is
+		 * fine: we are about to reboot anyway. */
+		const struct hio_cloud_backend *backend = hio_cloud_backend_get();
+		if (backend->disable) {
+			ret = backend->disable(K_SECONDS(30));
+			if (ret) {
+				LOG_WRN("Call `backend->disable` failed: %d", ret);
+			}
+		}
+
 		hio_sys_reboot("Firmware update");
 
 	} else {

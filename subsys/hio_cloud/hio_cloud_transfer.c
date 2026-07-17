@@ -757,6 +757,16 @@ static int hio_cloud_transfer_get_failover_state(struct hio_cloud_backend_failov
 	return 0;
 }
 
+static int hio_cloud_transfer_disable(k_timeout_t timeout)
+{
+	int ret = hio_lte_disable();
+	if (ret) {
+		return ret;
+	}
+
+	return hio_lte_wait_for_disable(timeout);
+}
+
 const struct hio_cloud_backend hio_cloud_backend_udp_lte = {
 	.init = hio_cloud_transfer_init,
 	.wait_ready = hio_cloud_transfer_wait_for_ready,
@@ -766,4 +776,5 @@ const struct hio_cloud_backend hio_cloud_backend_udp_lte = {
 	.get_metrics = hio_cloud_transfer_get_metrics,
 	.reset_metrics = hio_cloud_transfer_reset_metrics,
 	.get_failover_state = hio_cloud_transfer_get_failover_state,
+	.disable = hio_cloud_transfer_disable,
 };

@@ -49,6 +49,10 @@ struct hio_cloud_backend {
 	int (*reset_metrics)(void);
 	/* -ENOTSUP if the transport has no failover. */
 	int (*get_failover_state)(struct hio_cloud_backend_failover_state *state);
+	/* Bring the transport to a clean stop (e.g. power the modem down before a
+	 * reboot). May block. Optional: NULL if the transport cannot be stopped;
+	 * callers must NULL-check. */
+	int (*disable)(k_timeout_t timeout);
 };
 
 /* The only transport today: UDP over LTE, implemented by hio_cloud_transfer.c. */
