@@ -865,6 +865,17 @@ int hio_cloud_get_last_seen_ts(int64_t *ts)
 	return 0;
 }
 
+int hio_cloud_get_dfu_status(struct hio_cloud_dfu_status *status)
+{
+	if (!status) {
+		return -EINVAL;
+	}
+
+	hio_cloud_process_get_dfu_status(status);
+
+	return 0;
+}
+
 int hio_cloud_firmware_update(const char *firmware)
 {
 	int ret;

@@ -62,6 +62,15 @@ static int cmd_state(const struct shell *shell, size_t argc, char **argv)
 		shell_print(shell, "failover count: %u", failover.failover_count);
 	}
 
+	struct hio_cloud_dfu_status dfu;
+	ret = hio_cloud_get_dfu_status(&dfu);
+	if (ret) {
+		shell_error(shell, "hio_cloud_get_dfu_status failed: %d", ret);
+		return ret;
+	}
+
+	shell_print(shell, "firmware update active: %s", dfu.running ? "yes" : "no");
+
 	shell_print(shell, "command succeeded");
 
 	return 0;
@@ -116,6 +125,42 @@ static int cmd_firmware_download(const struct shell *shell, size_t argc, char **
 	if (ret) {
 		shell_error(shell, "hio_cloud_firmware_update failed: %d", ret);
 		return ret;
+	}
+
+	shell_print(shell, "command succeeded");
+
+	return 0;
+}
+
+static int cmd_firmware_status(const struct shell *shell, size_t argc, char **argv)
+{
+	int ret;
+
+	if (argc > 1) {
+		shell_error(shell, "command not found: %s", argv[1]);
+		shell_help(shell);
+		return -EINVAL;
+	}
+
+	struct hio_cloud_dfu_status status;
+	ret = hio_cloud_get_dfu_status(&status);
+	if (ret) {
+		shell_error(shell, "hio_cloud_get_dfu_status failed: %d", ret);
+		return ret;
+	}
+
+	shell_print(shell, "firmware update active: %s", status.running ? "yes" : "no");
+
+	shell_print(shell, "firmware id: %s", status.running ? status.id : "not available");
+	shell_print(shell, "target: %s", status.running ? status.target : "not available");
+	shell_print(shell, "type: %s", status.running ? status.type : "not available");
+
+	if (status.running) {
+		unsigned int percent = status.size ? (status.offset * 100U) / status.size : 0U;
+		shell_print(shell, "downloaded: %u/%u bytes (%u%%)", status.offset, status.size,
+			    percent);
+	} else {
+		shell_print(shell, "downloaded: not available");
 	}
 
 	shell_print(shell, "command succeeded");
@@ -184,6 +229,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 
 	SHELL_CMD_ARG(download, NULL, "Download firmware. (format: <fw-id>).",
 		      cmd_firmware_download, 2, 0),
+
+	SHELL_CMD_ARG(status, NULL, "Get firmware download (DFU) status.", cmd_firmware_status, 1,
+		      0),
 
 	SHELL_SUBCMD_SET_END
 

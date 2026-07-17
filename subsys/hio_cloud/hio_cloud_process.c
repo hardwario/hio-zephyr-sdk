@@ -41,6 +41,24 @@
 
 LOG_MODULE_REGISTER(cloud_process, CONFIG_HIO_CLOUD_LOG_LEVEL);
 
+/* DFU status is written from the cloud work queue (chunk processing) and read
+ * from other threads (e.g. shell). It holds non-atomic strings (id/target/type),
+ * so a single mutex guards the whole struct — the reader always sees a coherent
+ * snapshot, not a mix of old and new fields. */
+static K_MUTEX_DEFINE(m_dfu_lock);
+static struct hio_cloud_dfu_status m_dfu_status;
+
+void hio_cloud_process_get_dfu_status(struct hio_cloud_dfu_status *status)
+{
+	if (!status) {
+		return;
+	}
+
+	k_mutex_lock(&m_dfu_lock, K_FOREVER);
+	*status = m_dfu_status;
+	k_mutex_unlock(&m_dfu_lock);
+}
+
 int hio_cloud_process_dlconfig(struct hio_cloud_msg_dlconfig *config)
 {
 	LOG_INF("Received config: num lines: %d", config->lines);
@@ -174,7 +192,7 @@ static void dfu_target_callback_handler(enum dfu_target_evt_id evt)
 }
 #endif
 
-int hio_cloud_process_dlfirmware(struct hio_cloud_msg_dlfirmware *dlfirmware, struct hio_buf *buf)
+static int process_dlfirmware(struct hio_cloud_msg_dlfirmware *dlfirmware, struct hio_buf *buf)
 {
 	int ret;
 
@@ -230,6 +248,23 @@ int hio_cloud_process_dlfirmware(struct hio_cloud_msg_dlfirmware *dlfirmware, st
 
 				return ret;
 			}
+
+			/* First chunk accepted: a firmware download is now in
+			 * progress. Cleared by the wrapper on any error, or by the
+			 * reboot once the update is applied. Capture the identifying
+			 * fields once here (they are constant for the whole download). */
+			k_mutex_lock(&m_dfu_lock, K_FOREVER);
+			m_dfu_status.running = true;
+			m_dfu_status.offset = 0;
+			m_dfu_status.size = dlfirmware->firmware_size;
+			hio_cloud_util_uuid_to_str(dlfirmware->id, m_dfu_status.id,
+						   sizeof(m_dfu_status.id));
+			strncpy(m_dfu_status.target, dlfirmware->target,
+				sizeof(m_dfu_status.target) - 1);
+			m_dfu_status.target[sizeof(m_dfu_status.target) - 1] = '\0';
+			strncpy(m_dfu_status.type, dlfirmware->type, sizeof(m_dfu_status.type) - 1);
+			m_dfu_status.type[sizeof(m_dfu_status.type) - 1] = '\0';
+			k_mutex_unlock(&m_dfu_lock);
 		} else {
 			ret = dfu_target_offset_get(&offset);
 			if (ret) {
@@ -295,6 +330,10 @@ int hio_cloud_process_dlfirmware(struct hio_cloud_msg_dlfirmware *dlfirmware, st
 		LOG_ERR("dfu_target_offset_get failed: %d", ret);
 		return ret;
 	}
+
+	k_mutex_lock(&m_dfu_lock, K_FOREVER);
+	m_dfu_status.offset = offset;
+	k_mutex_unlock(&m_dfu_lock);
 
 	if (offset == dlfirmware->firmware_size) {
 		ret = dfu_target_done(true);
@@ -362,4 +401,21 @@ int hio_cloud_process_dlfirmware(struct hio_cloud_msg_dlfirmware *dlfirmware, st
 	}
 
 	return 0;
+}
+
+int hio_cloud_process_dlfirmware(struct hio_cloud_msg_dlfirmware *dlfirmware, struct hio_buf *buf)
+{
+	int ret = process_dlfirmware(dlfirmware, buf);
+	if (ret) {
+		/* The update was aborted (protocol/flash/transfer error). Clear
+		 * the in-progress flag so it never sticks: the successful path
+		 * reboots before returning, so a return here always means the
+		 * download did not complete. The identifying fields are left as-is;
+		 * they are meaningful only while running. */
+		k_mutex_lock(&m_dfu_lock, K_FOREVER);
+		m_dfu_status.running = false;
+		k_mutex_unlock(&m_dfu_lock);
+	}
+
+	return ret;
 }

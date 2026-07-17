@@ -79,6 +79,34 @@ __deprecated int hio_cloud_send(const void *buf, size_t len);
 
 int hio_cloud_get_last_seen_ts(int64_t *ts);
 int hio_cloud_firmware_update(const char *firmwareId);
+
+/**
+ * @brief Firmware download progress status.
+ *
+ * All fields except @ref running are meaningful only while @ref running is true.
+ */
+struct hio_cloud_dfu_status {
+	bool running;    /**< True while a firmware download is in progress. */
+	uint32_t offset; /**< Bytes written so far. */
+	uint32_t size;   /**< Total image size in bytes. */
+	char id[37];     /**< Firmware UUID as string (36 chars + NUL). */
+	char target[8];  /**< Firmware target (e.g. "app"). */
+	char type[10];   /**< Firmware chunk type (e.g. "chunk", "swap"). */
+};
+
+/**
+ * @brief Get the firmware download (DFU) status.
+ *
+ * @p running is true between the first accepted firmware chunk and the reboot
+ * that applies the update; false when no update is running or after an aborted
+ * one. @p offset and @p size are raw byte counts — the caller computes progress
+ * as @c offset*100/size (guarding @c size>0). Lock-free.
+ *
+ * @param status Output structure.
+ * @retval 0       Success.
+ * @retval -EINVAL @p status is NULL.
+ */
+int hio_cloud_get_dfu_status(struct hio_cloud_dfu_status *status);
 int hio_cloud_recv(void);
 
 int hio_cloud_cbor_ncellmeas_put(zcbor_state_t *zs, const struct hio_lte_ncellmeas_param *param);
