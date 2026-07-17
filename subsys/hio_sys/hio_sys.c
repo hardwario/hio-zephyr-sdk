@@ -21,8 +21,7 @@
 LOG_MODULE_REGISTER(hio_sys, CONFIG_HIO_SYS_LOG_LEVEL);
 
 uint32_t m_reset_cause = 0;
-hio_sys_reboot_notifier_cb m_reboot_notifier_cb = NULL;
-void *m_reboot_notifier_user_data = NULL;
+static sys_slist_t m_reboot_notifier_list = SYS_SLIST_STATIC_INIT(&m_reboot_notifier_list);
 
 int hio_sys_get_reset_cause(uint32_t *reset_cause)
 {
@@ -77,9 +76,10 @@ char *hio_sys_reset_cause_flag_str(uint32_t flag)
 
 static void reboot(const char *reason)
 {
-	if (m_reboot_notifier_cb) {
+	struct hio_sys_reboot_notifier *notifier;
+	SYS_SLIST_FOR_EACH_CONTAINER(&m_reboot_notifier_list, notifier, node) {
 		LOG_INF("Invoking notifier");
-		m_reboot_notifier_cb(reason, m_reboot_notifier_user_data);
+		notifier->cb(reason, notifier->user_data);
 	}
 
 	if (reason) {
@@ -116,10 +116,31 @@ void hio_sys_reboot_delayed(const char *reason, k_timeout_t delay)
 	k_work_schedule(&m_reboot_work, delay);
 }
 
-void hio_sys_set_reboot_notifier_cb(hio_sys_reboot_notifier_cb cb, void *user_data)
+int hio_sys_add_reboot_notifier(struct hio_sys_reboot_notifier *notifier)
 {
-	m_reboot_notifier_cb = cb;
-	m_reboot_notifier_user_data = user_data;
+	if (!notifier || !notifier->cb) {
+		return -EINVAL;
+	}
+
+	struct hio_sys_reboot_notifier *iter;
+	SYS_SLIST_FOR_EACH_CONTAINER(&m_reboot_notifier_list, iter, node) {
+		if (iter == notifier) {
+			return -EALREADY;
+		}
+	}
+
+	sys_slist_append(&m_reboot_notifier_list, &notifier->node);
+	return 0;
+}
+
+int hio_sys_remove_reboot_notifier(struct hio_sys_reboot_notifier *notifier)
+{
+	if (!notifier) {
+		return -EINVAL;
+	}
+
+	bool removed = sys_slist_find_and_remove(&m_reboot_notifier_list, &notifier->node);
+	return removed ? 0 : -ENOENT;
 }
 
 static int init(void)

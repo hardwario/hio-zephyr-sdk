@@ -61,20 +61,42 @@ void hio_sys_reboot_delayed(const char *reason, k_timeout_t delay);
 typedef void (*hio_sys_reboot_notifier_cb)(const char *reason, void *user_data);
 
 /**
- * @brief Set the reboot notifier callback.
+ * @brief Reboot notifier registration structure.
  *
- * Sets a callback that will be invoked just before the system reboots.
- * This can be used for tasks like flushing buffers or persisting state.
- *
- * Notes:
- *  - Passing NULL removes the callback.
- *  - Only one callback can be set at a time (last call wins).
- *  - The callback cannot prevent the reboot.
- *
- * @param cb        Callback to notify, or NULL to unset.
- * @param user_data User pointer passed back to the callback.
+ * The registrant owns the storage (typically a static variable) and keeps it
+ * alive for as long as the notifier is registered, mirroring @ref hio_lte_cb.
  */
-void hio_sys_set_reboot_notifier_cb(hio_sys_reboot_notifier_cb cb, void *user_data);
+struct hio_sys_reboot_notifier {
+	sys_snode_t node;                /**< Zephyr singly-linked list support. */
+	hio_sys_reboot_notifier_cb cb;   /**< Callback invoked just before reboot. */
+	void *user_data;                 /**< User pointer passed back to the callback. */
+};
+
+/**
+ * @brief Add a reboot notifier.
+ *
+ * Registers a callback invoked just before the system reboots — useful for
+ * flushing buffers or persisting state. Multiple notifiers can be registered;
+ * they are invoked in registration order. The callback cannot prevent the
+ * reboot.
+ *
+ * @param notifier Caller-owned notifier (must outlive the registration) with
+ *                 @c cb set.
+ * @retval 0        Success.
+ * @retval -EINVAL  @p notifier or its callback is NULL.
+ * @retval -EALREADY Notifier already registered.
+ */
+int hio_sys_add_reboot_notifier(struct hio_sys_reboot_notifier *notifier);
+
+/**
+ * @brief Remove a reboot notifier.
+ *
+ * @param notifier Previously registered notifier.
+ * @retval 0        Success.
+ * @retval -EINVAL  @p notifier is NULL.
+ * @retval -ENOENT  Notifier not found.
+ */
+int hio_sys_remove_reboot_notifier(struct hio_sys_reboot_notifier *notifier);
 
 /** @} */
 
