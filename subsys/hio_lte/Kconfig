@@ -41,6 +41,12 @@ config HIO_LTE_THREAD_STACK_SIZE
 	int "HIO_LTE_THREAD_STACK_SIZE"
 	default 4096
 
+config HIO_LTE_NCELLMEAS
+	bool "HIO_LTE_NCELLMEAS"
+	default n
+	help
+		Schedule NCELLMEAS (neighbor cell measurement) request on modem enable.
+
 config HIO_LTE_THREAD_PRIORITY
 	int "HIO_LTE_THREAD_PRIORITY"
 	default 10

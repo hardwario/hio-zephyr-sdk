@@ -25,8 +25,8 @@
 
 LOG_MODULE_REGISTER(hio_lte, CONFIG_HIO_LTE_LOG_LEVEL);
 
-#define SIMDETECTED_TIMEOUT    K_SECONDS(10)
-#define MDMEV_RESET_LOOP_DELAY K_MINUTES(32)
+#define SIMDETECTED_TIMEOUT     K_SECONDS(10)
+#define MDMEV_RESET_LOOP_DELAY  K_MINUTES(32)
 /* The real bound on waiting for the network to grant a connection (CSCON 1) is
  * SNDTIMEO inside the blocking nrf_send (see hio_lte_util_send_timeout_sec). The
  * FSM timer in the send state is only a watchdog: this guard is added on top of
@@ -34,8 +34,8 @@ LOG_MODULE_REGISTER(hio_lte, CONFIG_HIO_LTE_LOG_LEVEL);
  * the pathological case where nrf_send wedges and never returns. It also bounds
  * the brief wait for the SEND event once the send succeeds. */
 #define SEND_WATCHDOG_GUARD_SEC 1
-#define CONEVAL_TIMEOUT        K_SECONDS(30)
-#define NCELLMEAS_TIMEOUT      K_SECONDS(60)
+#define CONEVAL_TIMEOUT         K_SECONDS(30)
+#define NCELLMEAS_TIMEOUT       K_SECONDS(60)
 
 #define WORK_Q_STACK_SIZE 4096
 #define WORK_Q_PRIORITY   K_LOWEST_APPLICATION_THREAD_PRIO
@@ -81,11 +81,11 @@ static K_EVENT_DEFINE(m_states_event);
 #define ATTACHED_BIT  BIT(1)
 #define CONNECTED_BIT BIT(2)
 
-#define FLAG_CSCON         BIT(0)
-#define FLAG_GNSS_ENABLE   BIT(1)
-#define FLAG_CFUN4         BIT(2)
-#define FLAG_NCELLMEAS_REQ BIT(3)
-#define FLAG_DTLS_SAVED    BIT(4)
+#define FLAG_CSCON           BIT(0)
+#define FLAG_GNSS_ENABLE     BIT(1)
+#define FLAG_CFUN4           BIT(2)
+#define FLAG_NCELLMEAS_REQ   BIT(3)
+#define FLAG_DTLS_SAVED      BIT(4)
 /* Bit index passed to atomic_*_bit, not a mask; BIT(5) would be 32 and index
  * past the 32-bit atomic word, so the next free index is used directly. */
 #define FLAG_SOCKET_RECONFIG 5
@@ -688,7 +688,9 @@ static int on_leave_disabled(void)
 	atomic_clear_bit(&m_flag, FLAG_CFUN4);
 	atomic_clear_bit(&m_flag, FLAG_DTLS_SAVED);
 	// atomic_clear_bit(&m_flag, FLAG_NCELLMEAS_REQ);
-	atomic_set_bit(&m_flag, FLAG_NCELLMEAS_REQ);
+	if (IS_ENABLED(CONFIG_HIO_LTE_NCELLMEAS)) {
+		atomic_set_bit(&m_flag, FLAG_NCELLMEAS_REQ);
+	}
 
 	return 0;
 }
@@ -1252,9 +1254,8 @@ static int on_enter_send(void)
 	 * still get the full ceiling. */
 	k_timepoint_t end = sys_timepoint_calc(m_send_recv_param->timeout);
 	k_timeout_t remaining = sys_timepoint_timeout(end);
-	int remaining_sec = K_TIMEOUT_EQ(remaining, K_FOREVER)
-				    ? -1
-				    : k_ticks_to_sec_ceil32(remaining.ticks);
+	int remaining_sec =
+		K_TIMEOUT_EQ(remaining, K_FOREVER) ? -1 : k_ticks_to_sec_ceil32(remaining.ticks);
 	int sndtimeo_sec = hio_lte_util_send_timeout_sec(remaining_sec);
 
 	ret = hio_lte_flow_set_sndtimeo(sndtimeo_sec);
