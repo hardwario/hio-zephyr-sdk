@@ -80,6 +80,7 @@ static K_EVENT_DEFINE(m_states_event);
 #define SEND_RECV_BIT BIT(0)
 #define ATTACHED_BIT  BIT(1)
 #define CONNECTED_BIT BIT(2)
+#define DISABLED_BIT  BIT(3)
 
 #define FLAG_CSCON           BIT(0)
 #define FLAG_GNSS_ENABLE     BIT(1)
@@ -500,6 +501,44 @@ int hio_lte_reconnect(void)
 	return 0;
 }
 
+int hio_lte_disable(void)
+{
+	if (g_hio_lte_config.test) {
+		LOG_WRN("LTE Test mode enabled");
+		return -ENOTSUP;
+	}
+
+	k_mutex_lock(&m_state_lock, K_FOREVER);
+	enum fsm_state current = m_state;
+	k_mutex_unlock(&m_state_lock);
+
+	if (current == FSM_STATE_DISABLED) {
+		/* Already disabled: DISABLED_BIT is already set, so a following
+		 * hio_lte_wait_for_disable() returns immediately. */
+		return 0;
+	}
+
+	/* Clear the ack bit before requesting the transition, so it is set only
+	 * when the FSM reaches DISABLED for THIS request. This keeps the split
+	 * disable()/wait_for_disable() race-free: after disable() returns the bit
+	 * is clean, a DISABLED reached before the caller enters wait_for_disable()
+	 * is still observed there (wait does not clear), and a stale post from a
+	 * previous cycle cannot be mistaken for this one. */
+	k_event_clear(&m_states_event, DISABLED_BIT);
+
+	delegate_event(HIO_LTE_FSM_EVENT_DISABLE);
+
+	return 0;
+}
+
+int hio_lte_wait_for_disable(k_timeout_t timeout)
+{
+	if (k_event_wait(&m_states_event, DISABLED_BIT, false, timeout)) {
+		return 0;
+	}
+	return -ETIMEDOUT;
+}
+
 int hio_lte_is_attached(bool *attached)
 {
 	*attached = k_event_test(&m_states_event, ATTACHED_BIT) ? true : false;
@@ -662,9 +701,25 @@ int hio_lte_schedule_ncellmeas(void)
 	return 0;
 }
 
+/* End any in-flight hio_lte_send_recv transaction towards its caller with the
+ * given result and wake it, instead of leaving it blocked until its own timeout.
+ * Called on entry to states where the transaction can no longer complete. */
+static void abort_pending_send_recv(int result)
+{
+	if (m_send_recv_param) {
+		m_send_recv_result = result;
+		m_send_recv_param = NULL;
+		k_event_post(&m_states_event, SEND_RECV_BIT);
+	}
+}
+
 static int on_enter_disabled(void)
 {
 	int ret;
+
+	/* The modem is being shut down, so any pending transaction can no longer
+	 * complete. Covers every path into DISABLED (explicit disable, reconnect). */
+	abort_pending_send_recv(-ENOTCONN);
 
 	ret = hio_lte_flow_stop();
 	if (ret < 0) {
@@ -674,13 +729,16 @@ static int on_enter_disabled(void)
 	k_event_clear(&m_states_event, ATTACHED_BIT | CONNECTED_BIT);
 	m_error_ctx.flow_check_failures = 0;
 
-	start_timer(K_SECONDS(5));
+	/* Signal callers blocked in hio_lte_disable() that DISABLED is reached. */
+	k_event_post(&m_states_event, DISABLED_BIT);
 
 	return 0;
 }
 
 static int on_leave_disabled(void)
 {
+	k_event_clear(&m_states_event, DISABLED_BIT);
+
 	memset(&m_error_ctx, 0, sizeof(m_error_ctx));
 	m_attach_retry_count = 0;
 
@@ -706,8 +764,20 @@ static int disabled_event_handler(enum hio_lte_fsm_event event)
 		break;
 	case HIO_LTE_FSM_EVENT_DEREGISTERED:
 		break;
+	case HIO_LTE_FSM_EVENT_TIMEOUT:
+		/* No-op. DISABLED arms no timer of its own, but a TIMEOUT armed by
+		 * a previous state may still arrive here (e.g. DISABLE requested
+		 * from ERROR, whose timer is not cancelled on leave). Swallow it:
+		 * falling through to default would return -ENOTSUP and drop the
+		 * FSM into ERROR, reactivating the modem we just shut down. */
+		break;
 	case HIO_LTE_FSM_EVENT_SOCKET_RECONFIG:
 		/* Config already stored; nothing to do while disabled. */
+		break;
+	case HIO_LTE_FSM_EVENT_DISABLE:
+		/* Already disabled: re-post so a caller that requested disable
+		 * exactly while we were entering DISABLED still wakes up. */
+		k_event_post(&m_states_event, DISABLED_BIT);
 		break;
 	default:
 		return -ENOTSUP;
@@ -739,11 +809,7 @@ static int on_enter_error(void)
 	 * (retry open and fallback restart) leave the socket unusable, so end it
 	 * here. The "flow check OK, resume in 5 s" branch returned above and keeps
 	 * the pending param for on_enter_ready() to re-send. */
-	if (m_send_recv_param) {
-		m_send_recv_result = -ENOTCONN;
-		m_send_recv_param = NULL;
-		k_event_post(&m_states_event, SEND_RECV_BIT);
-	}
+	abort_pending_send_recv(-ENOTCONN);
 
 	if (ret == -ENOTSOCK) {
 		m_error_ctx.flow_check_failures++;
@@ -778,11 +844,23 @@ static int on_enter_error(void)
 	return 0;
 }
 
+static int on_leave_error(void)
+{
+	/* on_enter_error always arms a timer; cancel it on leave so a stale ERROR
+	 * timeout cannot fire in the next state (e.g. after ERROR --DISABLE-->
+	 * DISABLED, where it would otherwise reactivate the modem). */
+	stop_timer();
+	return 0;
+}
+
 static int error_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
 	case HIO_LTE_FSM_EVENT_TIMEOUT:
 		transition_state(m_error_ctx.on_timeout_state);
+		break;
+	case HIO_LTE_FSM_EVENT_DISABLE:
+		transition_state(FSM_STATE_DISABLED);
 		break;
 	default:
 		break;
@@ -848,6 +926,9 @@ static int prepare_event_handler(enum hio_lte_fsm_event event)
 	case HIO_LTE_FSM_EVENT_ERROR:
 		transition_state(FSM_STATE_ERROR);
 		break;
+	case HIO_LTE_FSM_EVENT_DISABLE:
+		transition_state(FSM_STATE_DISABLED);
+		break;
 	default:
 		break;
 	}
@@ -887,6 +968,9 @@ static int reset_loop_event_handler(enum hio_lte_fsm_event event)
 		break;
 	case HIO_LTE_FSM_EVENT_ERROR:
 		transition_state(FSM_STATE_ERROR);
+		break;
+	case HIO_LTE_FSM_EVENT_DISABLE:
+		transition_state(FSM_STATE_DISABLED);
 		break;
 	default:
 		break;
@@ -952,6 +1036,9 @@ static int retry_delay_event_handler(enum hio_lte_fsm_event event)
 	case HIO_LTE_FSM_EVENT_ERROR:
 		transition_state(FSM_STATE_ERROR);
 		break;
+	case HIO_LTE_FSM_EVENT_DISABLE:
+		transition_state(FSM_STATE_DISABLED);
+		break;
 	default:
 		break;
 	}
@@ -1015,6 +1102,9 @@ static int attach_event_handler(enum hio_lte_fsm_event event)
 	case HIO_LTE_FSM_EVENT_ERROR:
 		transition_state(FSM_STATE_ERROR);
 		break;
+	case HIO_LTE_FSM_EVENT_DISABLE:
+		transition_state(FSM_STATE_DISABLED);
+		break;
 	default:
 		break;
 	}
@@ -1075,6 +1165,9 @@ static int open_socket_event_handler(enum hio_lte_fsm_event event)
 		break;
 	case HIO_LTE_FSM_EVENT_ERROR:
 		transition_state(FSM_STATE_ERROR);
+		break;
+	case HIO_LTE_FSM_EVENT_DISABLE:
+		transition_state(FSM_STATE_DISABLED);
 		break;
 	default:
 		break;
@@ -1155,6 +1248,9 @@ static int ready_event_handler(enum hio_lte_fsm_event event)
 	case HIO_LTE_FSM_EVENT_ERROR:
 		transition_state(FSM_STATE_ERROR);
 		break;
+	case HIO_LTE_FSM_EVENT_DISABLE:
+		transition_state(FSM_STATE_DISABLED);
+		break;
 	case HIO_LTE_FSM_EVENT_TIMEOUT:
 		if (atomic_test_bit(&m_flag, FLAG_NCELLMEAS_REQ)) {
 			return 0; /* ignore TIMEOUT event, wait for CSCON_0 */
@@ -1219,6 +1315,9 @@ static int sleep_event_handler(enum hio_lte_fsm_event event)
 		break;
 	case HIO_LTE_FSM_EVENT_ERROR:
 		transition_state(FSM_STATE_ERROR);
+		break;
+	case HIO_LTE_FSM_EVENT_DISABLE:
+		transition_state(FSM_STATE_DISABLED);
 		break;
 	default:
 		break;
@@ -1351,6 +1450,9 @@ static int send_event_handler(enum hio_lte_fsm_event event)
 	case HIO_LTE_FSM_EVENT_ERROR:
 		transition_state(FSM_STATE_ERROR);
 		break;
+	case HIO_LTE_FSM_EVENT_DISABLE:
+		transition_state(FSM_STATE_DISABLED);
+		break;
 	default:
 		break;
 	}
@@ -1434,6 +1536,9 @@ static int receive_event_handler(enum hio_lte_fsm_event event)
 	case HIO_LTE_FSM_EVENT_ERROR:
 		transition_state(FSM_STATE_ERROR);
 		break;
+	case HIO_LTE_FSM_EVENT_DISABLE:
+		transition_state(FSM_STATE_DISABLED);
+		break;
 	default:
 		break;
 	}
@@ -1471,6 +1576,9 @@ static int coneval_event_handler(enum hio_lte_fsm_event event)
 	case HIO_LTE_FSM_EVENT_ERROR:
 		transition_state(FSM_STATE_ERROR);
 		break;
+	case HIO_LTE_FSM_EVENT_DISABLE:
+		transition_state(FSM_STATE_DISABLED);
+		break;
 	default:
 		break;
 	}
@@ -1504,6 +1612,9 @@ static int ncellmeas_event_handler(enum hio_lte_fsm_event event)
 	case HIO_LTE_FSM_EVENT_ERROR:
 		transition_state(FSM_STATE_ERROR);
 		break;
+	case HIO_LTE_FSM_EVENT_DISABLE:
+		transition_state(FSM_STATE_DISABLED);
+		break;
 	default:
 		break;
 	}
@@ -1525,7 +1636,7 @@ static int on_leave_ncellmeas(void)
 /* clang-format off */
 static struct fsm_state_desc m_fsm_states[] = {
 	{FSM_STATE_DISABLED, on_enter_disabled, on_leave_disabled, disabled_event_handler},
-	{FSM_STATE_ERROR, on_enter_error, NULL, error_event_handler},
+	{FSM_STATE_ERROR, on_enter_error, on_leave_error, error_event_handler},
 	{FSM_STATE_PREPARE, on_enter_prepare, on_leave_prepare, prepare_event_handler},
 	{FSM_STATE_ATTACH, on_enter_attach, on_leave_attach, attach_event_handler},
 	{FSM_STATE_RETRY_DELAY, on_enter_retry_delay, on_leave_retry_delay, retry_delay_event_handler},

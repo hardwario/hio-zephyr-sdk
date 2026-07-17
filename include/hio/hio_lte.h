@@ -180,6 +180,33 @@ int hio_lte_enable(const struct hio_lte_socket_config *socket_config);
 int hio_lte_reconnect(void);
 
 /**
+ * @brief Request disabling the LTE modem (non-blocking).
+ *
+ * Mirror of @ref hio_lte_enable: only requests the transition and returns
+ * immediately. The FSM then transitions to the disabled state, which sends
+ * AT+CFUN=0 and shuts the modem library down (via @c hio_lte_flow_stop); any
+ * in-flight @ref hio_lte_send_recv transaction is ended towards its caller with
+ * -ENOTCONN. To block until the modem has actually stopped, follow with
+ * @ref hio_lte_wait_for_disable. Returns immediately if already disabled.
+ *
+ * @retval 0        Disable requested (or already disabled).
+ * @retval -ENOTSUP Test mode is enabled.
+ */
+int hio_lte_disable(void);
+
+/**
+ * @brief Wait until the LTE modem has been disabled (blocking).
+ *
+ * Mirror of @ref hio_lte_wait_for_connected, for the disable direction. Pair
+ * with @ref hio_lte_disable.
+ *
+ * @param timeout  Maximum wait duration.
+ * @retval 0          Modem disabled.
+ * @retval -ETIMEDOUT The disabled state was not reached within @p timeout.
+ */
+int hio_lte_wait_for_disable(k_timeout_t timeout);
+
+/**
  * @brief Update socket configuration and reopen the socket.
  *
  * Does NOT trigger network re-attach; only the data socket is closed and
