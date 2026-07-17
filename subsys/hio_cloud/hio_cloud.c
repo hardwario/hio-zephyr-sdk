@@ -222,7 +222,17 @@ static void poll_timer_handler(struct k_timer *timer)
 
 static K_TIMER_DEFINE(m_poll_timer, poll_timer_handler, NULL);
 
-static int transfer(struct hio_buf *buf, k_timeout_t timeout)
+/*
+ * @param defer_downlink  When true, an appended downlink is NOT fetched or
+ *                        processed here; instead the poll worker is scheduled to
+ *                        pull and process it on the work queue. Used by callers
+ *                        running on the application stack (hio_cloud_send_data),
+ *                        so heavy downlink work (config/shell/firmware DFU write,
+ *                        reboot) never runs on the app stack. The FLAP server
+ *                        holds an unprocessed downlink for the next poll, so the
+ *                        re-fetch on the worker is safe.
+ */
+static int transfer(struct hio_buf *buf, k_timeout_t timeout, bool defer_downlink)
 {
 	int ret;
 
@@ -251,6 +261,13 @@ static int transfer(struct hio_buf *buf, k_timeout_t timeout)
 	}
 
 	if (has_downlink) {
+		if (defer_downlink) {
+			/* Do not fetch/process the downlink on the caller's stack;
+			 * let the poll worker pull it (server holds it). */
+			k_work_submit_to_queue(&m_work_q, &m_poll_work);
+			return 0;
+		}
+
 		has_downlink = false;
 
 		ret = m_backend->downlink(buf, &has_downlink, timeout);
@@ -328,7 +345,7 @@ static int create_session(void)
 	LOG_INF("m_transfer_buf.used: %d", hio_buf_get_used(&m_transfer_buf));
 	LOG_INF("m_transfer_buf.free: %d", hio_buf_get_free(&m_transfer_buf));
 
-	ret = transfer(&m_transfer_buf, K_FOREVER);
+	ret = transfer(&m_transfer_buf, K_FOREVER, false);
 	if (ret) {
 		LOG_ERR("Call `transfer` failed: %d", ret);
 		k_mutex_unlock(&m_lock);
@@ -375,7 +392,7 @@ static int upload_decoder(void)
 			return ret;
 		}
 
-		ret = transfer(&m_transfer_buf, K_FOREVER);
+		ret = transfer(&m_transfer_buf, K_FOREVER, false);
 		if (ret) {
 			LOG_ERR("Call `transfer` failed: %d", ret);
 			k_mutex_unlock(&m_lock);
@@ -425,7 +442,7 @@ static int upload_encoder(void)
 			return ret;
 		}
 
-		ret = transfer(&m_transfer_buf, K_FOREVER);
+		ret = transfer(&m_transfer_buf, K_FOREVER, false);
 		if (ret) {
 			LOG_ERR("Call `transfer` failed: %d", ret);
 			k_mutex_unlock(&m_lock);
@@ -478,7 +495,7 @@ static int upload_config(void)
 	if (m_session.config_hash != hash) {
 		LOG_INF("Uploading config hash: %08llx", hash);
 
-		ret = transfer(&m_transfer_buf, K_FOREVER);
+		ret = transfer(&m_transfer_buf, K_FOREVER, false);
 		if (ret) {
 			LOG_ERR("Call `transfer` failed: %d", ret);
 			k_mutex_unlock(&m_lock);
@@ -534,7 +551,7 @@ static int firmware_confirmed(void)
 		return ret;
 	}
 
-	ret = transfer(&m_transfer_buf, K_FOREVER);
+	ret = transfer(&m_transfer_buf, K_FOREVER, false);
 	if (ret) {
 		LOG_ERR("Call `transfer` failed: %d", ret);
 		k_mutex_unlock(&m_lock);
@@ -804,7 +821,7 @@ int hio_cloud_send_data(const void *buf, size_t len, k_timeout_t timeout)
 		return ret;
 	}
 
-	ret = transfer(&m_transfer_buf, timeout);
+	ret = transfer(&m_transfer_buf, timeout, true);
 	if (ret) {
 		LOG_ERR("Call `transfer` failed: %d", ret);
 		k_mutex_unlock(&m_lock);
@@ -833,7 +850,7 @@ int hio_cloud_recv(void)
 
 	hio_buf_reset(&m_transfer_buf);
 
-	ret = transfer(&m_transfer_buf, K_FOREVER);
+	ret = transfer(&m_transfer_buf, K_FOREVER, false);
 
 	if (ret) {
 		LOG_ERR("Call `transfer` failed: %d", ret);
@@ -916,7 +933,7 @@ int hio_cloud_firmware_update(const char *firmware)
 		return ret;
 	}
 
-	ret = transfer(&m_transfer_buf, K_FOREVER);
+	ret = transfer(&m_transfer_buf, K_FOREVER, false);
 
 	if (ret) {
 		LOG_ERR("Call `transfer` failed: %d", ret);
