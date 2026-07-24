@@ -174,6 +174,10 @@ static void dfu_target_callback_handler(enum dfu_target_evt_id evt)
 static uint8_t mcuboot_buf[256] __aligned(4);
 static size_t m_fw_size = 0;
 
+/* Throttle per-chunk progress logging to at most once every 2 seconds. */
+#define FW_LOG_THROTTLE K_SECONDS(2)
+static k_timepoint_t m_log_next;
+
 static int start(const struct hio_atci *atci, char *argv)
 {
 	if (!argv || strlen(argv) == 0) {
@@ -210,6 +214,9 @@ static int start(const struct hio_atci *atci, char *argv)
 
 	m_fw_size = size;
 
+	/* Force the first chunk to log immediately. */
+	m_log_next = sys_timepoint_calc(K_NO_WAIT);
+
 	return 0;
 }
 
@@ -244,8 +251,6 @@ static int chunk(const struct hio_atci *atci, char *argv)
 		return -EINVAL;
 	}
 
-	LOG_INF("Offset %u with length %zu", offset, len);
-
 	int ret = dfu_target_mcuboot_set_buf(mcuboot_buf, sizeof(mcuboot_buf));
 	if (ret) {
 		LOG_ERR("dfu_target_mcuboot_set_buf failed: %d", ret);
@@ -274,13 +279,16 @@ static int chunk(const struct hio_atci *atci, char *argv)
 		return ret;
 	}
 
-	if (m_fw_size > 0) {
+	/* Throttle progress logging to at most once every 2 seconds. */
+	if (m_fw_size > 0 && sys_timepoint_expired(m_log_next)) {
 		int progress = (int)((dfu_offset + len) * 100 / m_fw_size);
 		if (progress > 100) {
 			progress = 100;
 		}
 
 		LOG_INF("Progress: %d%%", progress);
+
+		m_log_next = sys_timepoint_calc(FW_LOG_THROTTLE);
 	}
 
 	return 0;
