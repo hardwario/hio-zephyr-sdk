@@ -233,7 +233,7 @@ static int chunk(const struct hio_atci *atci, char *argv)
 		return -EINVAL;
 	}
 
-	uint8_t buf[128];
+	uint8_t buf[256];
 	size_t len = 0;
 	if (!(p = hio_tok_hex(p, &def, buf, sizeof(buf), &len)) || !def) {
 		hio_atci_error(atci, "\"Invalid hex data\"");
