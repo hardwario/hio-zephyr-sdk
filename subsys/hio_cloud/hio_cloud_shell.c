@@ -205,6 +205,13 @@ static int cmd_psk_set(const struct shell *shell, size_t argc, char **argv)
 		return ret;
 	}
 
+	/* Re-establish the session with the new key right away instead of
+	 * waiting for the next scheduled poll. */
+	ret = hio_cloud_poll_immediately();
+	if (ret) {
+		shell_warn(shell, "hio_cloud_poll_immediately failed: %d", ret);
+	}
+
 	shell_print(shell, "command succeeded");
 
 	return 0;
