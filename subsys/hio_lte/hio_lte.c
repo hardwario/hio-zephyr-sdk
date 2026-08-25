@@ -225,8 +225,21 @@ static int set_psk(const char *identity, const char *psk_hex)
 int hio_lte_set_psk(const char *identity, const char *psk_hex)
 {
 	k_mutex_lock(&m_state_lock, K_FOREVER);
+	bool was_running = (m_state != FSM_STATE_DISABLED);
 	int ret = set_psk(identity, psk_hex);
 	k_mutex_unlock(&m_state_lock);
+
+	if (was_running) {
+		/* Writing %CMNG credentials requires CFUN=4 and set_psk leaves the
+		 * modem there; the saved DTLS session also belongs to the old key.
+		 * Force a full re-attach and a fresh handshake. */
+		atomic_clear_bit(&m_flag, FLAG_DTLS_SAVED);
+		int err = hio_lte_reconnect();
+		if (err) {
+			LOG_ERR("Call `hio_lte_reconnect` failed: %d", err);
+		}
+	}
+
 	return ret;
 }
 
