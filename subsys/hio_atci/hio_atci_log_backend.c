@@ -201,6 +201,11 @@ static void dropped(const struct log_backend *const backend, uint32_t cnt)
 {
 	const struct hio_atci *atci = (const struct hio_atci *)backend->cb->ctx;
 	const struct hio_atci_log_backend *log_backend = atci->log_backend;
+
+	if (atomic_get(&log_backend->ctx->muted)) {
+		return;
+	}
+
 	atomic_add(&log_backend->ctx->dropped_cnt, cnt);
 }
 
@@ -241,6 +246,11 @@ static void process(const struct log_backend *const backend, union log_msg_gener
 	const struct hio_atci *atci = (const struct hio_atci *)backend->cb->ctx;
 	const struct hio_atci_log_backend *log_backend = atci->log_backend;
 	const struct log_output *log_output = log_backend->log_output;
+
+	/* Output switched off at runtime: drop silently (not counted as dropped) */
+	if (atomic_get(&log_backend->ctx->muted)) {
+		return;
+	}
 
 	if (atci->log_backend->ctx->state == STATE_ENABLED) {
 
@@ -296,6 +306,35 @@ static void panic(const struct log_backend *const backend)
 	} else {
 		hio_atci_log_backend_disable(atci->log_backend);
 	}
+}
+
+int hio_atci_log_enable(const struct hio_atci *atci, bool enable)
+{
+	if (!atci) {
+		STRUCT_SECTION_FOREACH(hio_atci, item) {
+			if (item->log_backend) {
+				atomic_set(&item->log_backend->ctx->muted, !enable);
+			}
+		}
+		return 0;
+	}
+
+	if (!atci->log_backend) {
+		return -ENOTSUP;
+	}
+
+	atomic_set(&atci->log_backend->ctx->muted, !enable);
+
+	return 0;
+}
+
+bool hio_atci_log_is_enabled(const struct hio_atci *atci)
+{
+	if (!atci || !atci->log_backend) {
+		return false;
+	}
+
+	return !atomic_get(&atci->log_backend->ctx->muted);
 }
 
 const struct log_backend_api hio_atci_log_backend_api = {

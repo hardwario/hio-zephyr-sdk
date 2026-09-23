@@ -20,12 +20,6 @@ extern "C" {
 
 struct hio_atci;
 
-struct hio_atci_login_config {
-	char passphrase_hash[HIO_ATCI_LOGIN_HASH_SIZE];
-};
-
-extern struct hio_atci_login_config g_hio_atci_login_config;
-
 /**
  * @brief Query whether the given ATCI instance has an authenticated session.
  *
