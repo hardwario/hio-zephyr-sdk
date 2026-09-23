@@ -44,12 +44,31 @@ config HIO_ATCI_CMD_REBOOT_AUTH_FLAGS
 	  Authentication flags for ATCI command reboot.
 	  It is used to restrict access to the reboot command.
 
+config HIO_ATCI_CONFIG
+	bool "ATCI configuration"
+	depends on HIO_CONFIG
+	depends on HIO_ATCI_LOG_BACKEND || HIO_ATCI_LOGIN
+	default y
+	help
+	  Register the "atci" hio_config module holding persistent ATCI
+	  settings (log output, login passphrase hash) and the "atci" shell
+	  command.
+
+config HIO_ATCI_CONFIG_INIT_PRIORITY
+	int "ATCI configuration init priority"
+	depends on HIO_ATCI_CONFIG
+	default 99
+	help
+	  Initialization priority for registering the ATCI configuration
+	  module. Must run after the HIO_CONFIG subsystem is initialized.
+
 config HIO_ATCI_LOGIN
 	bool "ATCI login authentication"
 	select HIO_CONFIG
+	select HIO_ATCI_CONFIG
 	help
-	  Enable ATCI login authentication. Registers a hio_config module with
-	  a "passphrase-hash" item (SHA-256 hash hex string), the
+	  Enable ATCI login authentication. Adds a "passphrase-hash" item
+	  (SHA-256 hash hex string) to the "atci" hio_config module, the
 	  AT$LOGIN/AT$LOGOUT commands, and an ATCI auth-check callback that
 	  gates commands with non-zero auth flags behind an authenticated
 	  session.
@@ -94,14 +113,6 @@ config HIO_ATCI_LOGIN_COOLDOWN
 	help
 	  Authentication attempts are rejected for this many seconds after
 	  too many consecutive failed attempts.
-
-config HIO_ATCI_LOGIN_INIT_PRIORITY
-	int "ATCI login init priority"
-	depends on HIO_ATCI_LOGIN
-	default 99
-	help
-	  Initialization priority for registering the ATCI login configuration
-	  module. Must run after the HIO_CONFIG subsystem is initialized.
 
 choice HIO_ATCI_LOGIN_HASH
 	prompt "Login password hash backend"
@@ -183,6 +194,24 @@ config HIO_ATCI_LOG_BACKEND
 	bool "ATCI log backend"
 	select LOG_OUTPUT
 	default y if LOG
+
+config HIO_ATCI_LOG_DEFAULT
+	bool "Log output enabled by default"
+	depends on HIO_ATCI_LOG_BACKEND
+	default y
+	help
+	  Default state of the "@LOG:" output on ATCI. With HIO_ATCI_CONFIG it
+	  is the default of the persistent "atci log" config item, otherwise
+	  the state after boot. It can be changed at runtime with AT$LOG or the
+	  "atci log" shell command.
+
+config HIO_ATCI_CMD_LOG_AUTH_FLAGS
+	int "ATCI command log authentication flags"
+	depends on HIO_ATCI_LOG_BACKEND
+	default 1 if HIO_ATCI_LOGIN
+	default 0
+	help
+	  Authentication flags for ATCI command AT$LOG.
 
 config HIO_ATCI_LOG_FORMAT_TIMESTAMP
 	bool "Format timestamp"
