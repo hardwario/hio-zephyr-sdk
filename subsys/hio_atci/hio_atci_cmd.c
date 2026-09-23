@@ -232,3 +232,32 @@ static int at_reboot_action(const struct hio_atci *atci)
 HIO_ATCI_CMD_REGISTER(reboot, "$REBOOT", CONFIG_HIO_ATCI_CMD_REBOOT_AUTH_FLAGS, at_reboot_action,
 		      NULL, NULL, NULL, "Reboot the system");
 #endif /* CONFIG_HIO_ATCI_CMD_REBOOT */
+
+#if defined(CONFIG_HIO_ATCI_LOG_BACKEND)
+
+static int at_log_set(const struct hio_atci *atci, char *argv)
+{
+	if (!argv || strlen(argv) != 1 || (argv[0] != '0' && argv[0] != '1')) {
+		return -EINVAL;
+	}
+
+	return hio_atci_log_enable(atci, argv[0] == '1');
+}
+
+static int at_log_read(const struct hio_atci *atci)
+{
+	hio_atci_printfln(atci, "$LOG: %d", hio_atci_log_is_enabled(atci) ? 1 : 0);
+
+	return 0;
+}
+
+static int at_log_test(const struct hio_atci *atci)
+{
+	hio_atci_printfln(atci, "$LOG: (0,1)");
+
+	return 0;
+}
+
+HIO_ATCI_CMD_REGISTER(log, "$LOG", CONFIG_HIO_ATCI_CMD_LOG_AUTH_FLAGS, NULL, at_log_set,
+		      at_log_read, at_log_test, "Log output (runtime, AT$LOG=0|1)");
+#endif /* CONFIG_HIO_ATCI_LOG_BACKEND */

@@ -17,6 +17,10 @@
 #include <zephyr/sys/mpsc_pbuf.h>
 #include <zephyr/sys/atomic.h>
 
+/* Standard includes */
+#include <errno.h>
+#include <stdbool.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -221,12 +225,22 @@ extern const struct log_backend_api hio_atci_log_backend_api;
 
 int hio_atci_log_backend_output_func(uint8_t *data, size_t length, void *ctx);
 
+/* Initial output state of the log backend. With the "atci" config module the
+ * output stays muted until the stored "log" item is applied at boot. */
+#if defined(CONFIG_HIO_ATCI_CONFIG)
+#define HIO_ATCI_LOG_BACKEND_INIT_MUTED 1
+#else
+#define HIO_ATCI_LOG_BACKEND_INIT_MUTED (!IS_ENABLED(CONFIG_HIO_ATCI_LOG_DEFAULT))
+#endif
+
 #define HIO_ATCI_LOG_BACKEND_DEFINE(_name, _queue_size, _timeout)                                  \
 	LOG_BACKEND_DEFINE(_name##_backend, hio_atci_log_backend_api, false);                      \
 	static uint8_t _name##_out_buffer[CONFIG_HIO_ATCI_PRINTF_BUFF_SIZE];                       \
 	LOG_OUTPUT_DEFINE(_name##_log_output, hio_atci_log_backend_output_func,                    \
 			  _name##_out_buffer, ARRAY_SIZE(_name##_out_buffer));                     \
-	static struct hio_atci_log_backend_ctx _name##_log_backend_ctx;                            \
+	static struct hio_atci_log_backend_ctx _name##_log_backend_ctx = {                         \
+		.muted = ATOMIC_INIT(HIO_ATCI_LOG_BACKEND_INIT_MUTED),                             \
+	};                                                                                         \
 	static uint32_t                                                                            \
 		__aligned(Z_LOG_MSG_ALIGNMENT) _name##_mpsc_buf[_queue_size / sizeof(uint32_t)];   \
 	const struct mpsc_pbuf_buffer_config _name##_mpsc_buffer_config = {                        \
@@ -434,6 +448,7 @@ void hio_atci_set_auth_check_cb(hio_atci_auth_check_cb cb, void *user_data);
 /** @brief Internal context of an ATCI log backend instance. */
 struct hio_atci_log_backend_ctx {
 	atomic_t dropped_cnt;
+	atomic_t muted; /**< Log output suppressed (runtime on/off switch). */
 	uint8_t state;
 };
 
@@ -454,6 +469,29 @@ int hio_atci_log_backend_enable(const struct hio_atci_log_backend *backend,
 int hio_atci_log_backend_disable(const struct hio_atci_log_backend *backend);
 int hio_atci_log_backend_process(const struct hio_atci_log_backend *backend);
 
+/**
+ * @brief Enable or disable the log output ("@LOG:" lines) of an ATCI instance.
+ *
+ * Runtime switch only, the persistent default is the "atci log" config item.
+ * The log levels (runtime filters) are not touched.
+ *
+ * @param[in] atci   Pointer to the ATCI instance, or NULL for all instances.
+ * @param[in] enable true to enable the output, false to suppress it.
+ *
+ * @retval 0 on success.
+ * @retval -ENOTSUP if the instance has no log backend.
+ */
+int hio_atci_log_enable(const struct hio_atci *atci, bool enable);
+
+/**
+ * @brief Query whether the log output of an ATCI instance is enabled.
+ *
+ * @param[in] atci Pointer to the ATCI instance.
+ *
+ * @return true if enabled, false if suppressed or no log backend is present.
+ */
+bool hio_atci_log_is_enabled(const struct hio_atci *atci);
+
 #else /* CONFIG_HIO_ATCI_LOG_BACKEND */
 
 /* Stubs so the core compiles and links without the log backend; the calls are
@@ -473,6 +511,16 @@ static inline int hio_atci_log_backend_disable(const struct hio_atci_log_backend
 static inline int hio_atci_log_backend_process(const struct hio_atci_log_backend *backend)
 {
 	return 0;
+}
+
+static inline int hio_atci_log_enable(const struct hio_atci *atci, bool enable)
+{
+	return -ENOTSUP;
+}
+
+static inline bool hio_atci_log_is_enabled(const struct hio_atci *atci)
+{
+	return false;
 }
 
 #endif /* CONFIG_HIO_ATCI_LOG_BACKEND */
