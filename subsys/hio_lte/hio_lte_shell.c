@@ -126,6 +126,67 @@ static int cmd_fw_version(const struct shell *shell, size_t argc, char **argv)
 	return 0;
 }
 
+static void print_cereg_event(const struct shell *shell, const char *label,
+			      const struct hio_lte_cereg_event *e)
+{
+	uint32_t ago = k_uptime_seconds() - e->uptime_s;
+
+	if (e->reject_cause) {
+		shell_print(shell,
+			    "%s%u s ago, %s, act: %s, plmn: %u, tac: %04X, cell: %08X, emm: %u (%s)",
+			    label, ago, hio_lte_str_cereg_stat(e->stat), hio_lte_str_act(e->act),
+			    e->plmn, e->tac, e->cid, e->reject_cause,
+			    hio_lte_str_emm_cause(e->reject_cause));
+	} else {
+		shell_print(shell, "%s%u s ago, %s, act: %s, plmn: %u, tac: %04X, cell: %08X", label,
+			    ago, hio_lte_str_cereg_stat(e->stat), hio_lte_str_act(e->act), e->plmn,
+			    e->tac, e->cid);
+	}
+}
+
+static void print_last_reject(const struct shell *shell)
+{
+	struct hio_lte_cereg_event e;
+
+	if (hio_lte_get_last_reject(&e)) {
+		return;
+	}
+
+	print_cereg_event(shell, "last-reject: ", &e);
+
+	const char *hint = hio_lte_str_emm_cause_hint(e.reject_cause);
+	if (hint) {
+		shell_print(shell, "last-reject-hint: %s", hint);
+	}
+}
+
+static int cmd_history(const struct shell *shell, size_t argc, char **argv)
+{
+	static struct hio_lte_cereg_event events[CONFIG_HIO_LTE_CEREG_HISTORY];
+	size_t count;
+
+	if (argc > 1) {
+		shell_error(shell, "command not found: %s", argv[1]);
+		shell_help(shell);
+		return -EINVAL;
+	}
+
+	int ret = hio_lte_get_cereg_history(events, ARRAY_SIZE(events), &count);
+	if (ret) {
+		shell_error(shell, "command failed");
+		return ret;
+	}
+
+	/* Oldest first, the newest ends up next to the prompt. */
+	for (size_t i = count; i > 0; i--) {
+		print_cereg_event(shell, "", &events[i - 1]);
+	}
+
+	print_last_reject(shell);
+
+	return 0;
+}
+
 static int cmd_state(const struct shell *shell, size_t argc, char **argv)
 {
 	int ret;
@@ -175,6 +236,8 @@ static int cmd_state(const struct shell *shell, size_t argc, char **argv)
 	if (!hio_lte_get_ceer(&ceer)) {
 		shell_print(shell, "last-ceer: %s", ceer);
 	}
+
+	print_last_reject(shell);
 
 	const char *fsm_state = "not available";
 	hio_lte_get_fsm_state(&fsm_state);
@@ -402,6 +465,8 @@ static int print_scan_result(const struct shell *shell)
 		shell_print(shell, "no scan yet");
 		return 0;
 	}
+
+	print_last_reject(shell);
 
 	shell_print(shell, "last scan: %lld s ago (%s)",
 		    (k_uptime_get() - result.uptime_ms) / MSEC_PER_SEC,
@@ -768,6 +833,11 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(reconnect, NULL,
 	              "Reconnect LTE modem.",
 	              cmd_reconnect, 1, 0),
+
+	SHELL_CMD_ARG(history, NULL,
+	              "Show recent registration changes (CEREG, oldest first) and the "
+	              "last reject.",
+	              cmd_history, 1, 0),
 
 	SHELL_CMD_ARG(scan, &sub_lte_scan,
 	              "Scan cells and networks, interrupts attach and reconnects "

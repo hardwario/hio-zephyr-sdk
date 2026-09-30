@@ -42,6 +42,11 @@ void hio_lte_state_set_rai_param(const struct hio_lte_rai_param *param);
 int hio_lte_state_get_ncellmeas_param(struct hio_lte_ncellmeas_param *param);
 void hio_lte_state_set_ncellmeas_param(const struct hio_lte_ncellmeas_param *param);
 
+void hio_lte_state_add_cereg_event(const struct hio_lte_cereg_param *param);
+int hio_lte_state_get_cereg_history(struct hio_lte_cereg_event *events, size_t max,
+				    size_t *count);
+int hio_lte_state_get_last_reject(struct hio_lte_cereg_event *event);
+
 int hio_lte_state_get_scan_result(struct hio_lte_scan_result *result);
 void hio_lte_state_set_scan_result(const struct hio_lte_scan_result *result);
 

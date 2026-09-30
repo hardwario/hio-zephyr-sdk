@@ -479,6 +479,42 @@ int hio_lte_get_ncellmeas_param(struct hio_lte_ncellmeas_param *param);
 int hio_lte_schedule_ncellmeas(void);
 
 /**
+ * @brief One registration status change (CEREG).
+ */
+struct hio_lte_cereg_event {
+	uint32_t uptime_s;    /**< Uptime of the change. */
+	uint32_t cid;         /**< Cell ID, 0 if not reported. */
+	uint32_t plmn;        /**< PLMN (MCCMNC) from the last %RAI, 0 if unknown. */
+	uint16_t tac;         /**< Tracking area code, 0 if not reported. */
+	uint8_t stat;         /**< @ref hio_lte_cereg_param_stat. */
+	uint8_t act;          /**< @ref hio_lte_cereg_param_act. */
+	uint8_t reject_cause; /**< EMM cause, 0 if none. */
+};
+
+/**
+ * @brief Get the last registration status changes, newest first.
+ *
+ * @param events Output array.
+ * @param max    Size of @p events.
+ * @param count  Number of events written.
+ *
+ * @retval 0       Success.
+ * @retval -EINVAL Invalid argument.
+ */
+int hio_lte_get_cereg_history(struct hio_lte_cereg_event *events, size_t max, size_t *count);
+
+/**
+ * @brief Get the last registration reject (CEREG with an EMM cause).
+ *
+ * Kept separately, so it survives the history rolling over.
+ *
+ * @retval 0        Success.
+ * @retval -EINVAL  Invalid argument.
+ * @retval -ENODATA No reject since boot.
+ */
+int hio_lte_get_last_reject(struct hio_lte_cereg_event *event);
+
+/**
  * @brief One network found by a network scan.
  */
 struct hio_lte_scan_entry {
