@@ -795,6 +795,16 @@ int hio_lte_get_scan_result(struct hio_lte_scan_result *result)
 	return hio_lte_state_get_scan_result(result);
 }
 
+int hio_lte_get_cereg_history(struct hio_lte_cereg_event *events, size_t max, size_t *count)
+{
+	return hio_lte_state_get_cereg_history(events, max, count);
+}
+
+int hio_lte_get_last_reject(struct hio_lte_cereg_event *event)
+{
+	return hio_lte_state_get_last_reject(event);
+}
+
 /* The scan drops registration (CFUN=2), so it ends with a reattach unless it
  * runs within the attach retry delay. */
 static int begin_scan(bool to_retry_delay)

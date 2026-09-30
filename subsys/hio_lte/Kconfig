@@ -58,6 +58,14 @@ config HIO_LTE_CAUSE_STR
 		Human-readable EMM/ESM cause texts in logs and shell (about 2 kB
 		of flash). Without it only the numbers are shown.
 
+config HIO_LTE_CEREG_HISTORY
+	int "HIO_LTE_CEREG_HISTORY"
+	default 10
+	range 1 50
+	help
+		Registration status changes (CEREG) kept for 'lte history', e.g. to
+		see a device hopping between cells or getting rejected.
+
 config HIO_LTE_SCAN_MAX_ENTRIES
 	int "HIO_LTE_SCAN_MAX_ENTRIES"
 	default 10
