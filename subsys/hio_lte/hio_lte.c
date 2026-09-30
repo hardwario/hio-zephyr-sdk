@@ -120,6 +120,64 @@ struct hio_lte_send_recv_param *m_send_recv_param = NULL;
 static int m_send_recv_result;
 static int m_send_attempt;
 
+/* The caller may drop m_send_recv_param while the FSM is blocked in send or
+ * recv. The FSM works on its own copy (m_txn) and ends the transaction only if
+ * it is still the one it took (m_txn_gen changes on publish, drop and end). */
+static struct k_spinlock m_txn_lock;
+static uint32_t m_txn_gen;
+static uint32_t m_txn_gen_taken;
+static struct hio_lte_send_recv_param m_txn;
+static size_t m_txn_recv_len;
+
+static bool txn_take(void)
+{
+	bool taken = false;
+	k_spinlock_key_t key = k_spin_lock(&m_txn_lock);
+
+	if (m_send_recv_param) {
+		m_txn = *m_send_recv_param;
+		m_txn_recv_len = 0;
+		m_txn.recv_len = &m_txn_recv_len;
+		m_txn_gen_taken = m_txn_gen;
+		taken = true;
+	}
+
+	k_spin_unlock(&m_txn_lock, key);
+	return taken;
+}
+
+static bool txn_current(void)
+{
+	k_spinlock_key_t key = k_spin_lock(&m_txn_lock);
+	bool current = m_send_recv_param && m_txn_gen == m_txn_gen_taken;
+
+	k_spin_unlock(&m_txn_lock, key);
+	return current;
+}
+
+/* End the transaction; only_taken skips it when the caller has moved on. */
+static void txn_end(int result, bool only_taken, bool with_recv_len)
+{
+	bool ended = false;
+	k_spinlock_key_t key = k_spin_lock(&m_txn_lock);
+
+	if (m_send_recv_param && (!only_taken || m_txn_gen == m_txn_gen_taken)) {
+		if (with_recv_len) {
+			*m_send_recv_param->recv_len = m_txn_recv_len;
+		}
+		m_send_recv_result = result;
+		m_send_recv_param = NULL;
+		m_txn_gen++;
+		ended = true;
+	}
+
+	k_spin_unlock(&m_txn_lock, key);
+
+	if (ended) {
+		k_event_post(&m_states_event, SEND_RECV_BIT);
+	}
+}
+
 struct hio_lte_metrics m_metrics;
 K_MUTEX_DEFINE(m_metrics_lock);
 static uint32_t m_start = 0;
@@ -638,9 +696,12 @@ int hio_lte_send_recv(const struct hio_lte_send_recv_param *param)
 
 	LOG_DBG("locked");
 
+	k_spinlock_key_t key = k_spin_lock(&m_txn_lock);
 	m_send_recv_param = (struct hio_lte_send_recv_param *)param;
 	m_send_recv_result = 0;
 	m_send_attempt = 0;
+	m_txn_gen++;
+	k_spin_unlock(&m_txn_lock, key);
 
 	k_event_clear(&m_states_event, SEND_RECV_BIT);
 
@@ -651,14 +712,14 @@ int hio_lte_send_recv(const struct hio_lte_send_recv_param *param)
 	k_event_wait(&m_states_event, SEND_RECV_BIT, false, sys_timepoint_timeout(end));
 
 	if (sys_timepoint_expired(end)) {
-		/* param is the caller's stack struct, and the FSM is still holding
-		 * it: drop the handle before that frame is reused, or a later
-		 * on_enter_send() transmits from whatever now occupies it. Needs
-		 * the exchange to outlast the caller's deadline, so it only shows
-		 * up where nrf_send() blocks for tens of seconds waiting on RRC.
-		 * Dropping rather than retrying is per the layering — the cloud
-		 * transfer layer owns retransmission. */
-		m_send_recv_param = NULL;
+		/* param is the caller's stack struct: drop it before that frame is
+		 * reused. The cloud transfer layer owns retransmission. */
+		key = k_spin_lock(&m_txn_lock);
+		if (m_send_recv_param == param) {
+			m_send_recv_param = NULL;
+			m_txn_gen++;
+		}
+		k_spin_unlock(&m_txn_lock, key);
 
 		k_mutex_unlock(&m_send_recv_lock);
 		delegate_event(HIO_LTE_FSM_EVENT_TIMEOUT);
@@ -819,11 +880,7 @@ static int begin_scan(bool to_retry_delay)
  * Called on entry to states where the transaction can no longer complete. */
 static void abort_pending_send_recv(int result)
 {
-	if (m_send_recv_param) {
-		m_send_recv_result = result;
-		m_send_recv_param = NULL;
-		k_event_post(&m_states_event, SEND_RECV_BIT);
-	}
+	txn_end(result, false, false);
 }
 
 static int on_enter_disabled(void)
@@ -1501,14 +1558,14 @@ static int on_enter_send(void)
 {
 	int ret;
 
-	if (!m_send_recv_param) {
+	if (!txn_take()) {
 		delegate_event(HIO_LTE_FSM_EVENT_READY);
 		return 0;
 	}
 
 	k_mutex_lock(&m_metrics_lock, K_FOREVER);
 	m_metrics.uplink_count++;
-	m_metrics.uplink_bytes += m_send_recv_param->send_len;
+	m_metrics.uplink_bytes += m_txn.send_len;
 	ret = hio_rtc_get_ts(&m_metrics.uplink_last_ts);
 	if (ret) {
 		LOG_ERR("Call `hio_rtc_get_ts` failed: %d", ret);
@@ -1523,7 +1580,7 @@ static int on_enter_send(void)
 	 * caller's remaining deadline, capped at the hard ceiling: a send must
 	 * never block past the caller's own deadline, but K_FOREVER transfers
 	 * still get the full ceiling. */
-	k_timepoint_t end = sys_timepoint_calc(m_send_recv_param->timeout);
+	k_timepoint_t end = sys_timepoint_calc(m_txn.timeout);
 	k_timeout_t remaining = sys_timepoint_timeout(end);
 	int remaining_sec =
 		K_TIMEOUT_EQ(remaining, K_FOREVER) ? -1 : k_ticks_to_sec_ceil32(remaining.ticks);
@@ -1542,7 +1599,7 @@ static int on_enter_send(void)
 	 * The normal path stops this timer right after the send returns. */
 	start_timer(K_SECONDS(sndtimeo_sec + SEND_WATCHDOG_GUARD_SEC));
 
-	ret = hio_lte_flow_send(m_send_recv_param);
+	ret = hio_lte_flow_send(&m_txn);
 	if (ret < 0) {
 		stop_timer();
 		LOG_ERR("Call `hio_lte_flow_send` failed: %d", ret);
@@ -1576,16 +1633,15 @@ static int send_event_handler(enum hio_lte_fsm_event event)
 		__fallthrough;
 	case HIO_LTE_FSM_EVENT_SEND:
 		stop_timer();
-		if (m_send_recv_param) {
+		if (txn_current()) {
 			LOG_INF("Send event on send state");
-			if (m_send_recv_param->recv_buf) {
+			if (m_txn.recv_buf) {
 				transition_state(FSM_STATE_RECEIVE);
 			} else {
-				if (m_send_recv_param->rai) {
+				if (m_txn.rai) {
 					k_sleep(K_MSEC(500));
 				}
-				m_send_recv_param = NULL;
-				k_event_post(&m_states_event, SEND_RECV_BIT);
+				txn_end(0, true, false);
 				transition_state(FSM_STATE_CONEVAL);
 			}
 		} else {
@@ -1607,12 +1663,10 @@ static int send_event_handler(enum hio_lte_fsm_event event)
 		 * did not let us transmit" from "we transmitted but the reply was
 		 * lost" and back off differently. First attempt is
 		 * m_send_attempt == 1, so the budget is 1 + retry_count. */
-		if (m_send_recv_param && m_send_attempt > m_send_recv_param->retry_count) {
+		if (txn_current() && m_send_attempt > m_txn.retry_count) {
 			LOG_WRN("Send gave up after %d attempt(s): no connection granted",
 				m_send_attempt);
-			m_send_recv_result = -ENOTCONN;
-			m_send_recv_param = NULL;
-			k_event_post(&m_states_event, SEND_RECV_BIT);
+			txn_end(-ENOTCONN, true, false);
 		}
 		transition_state(FSM_STATE_READY);
 		break;
@@ -1642,7 +1696,7 @@ static int on_enter_receive(void)
 	int ret;
 	LOG_INF("on_enter_receive");
 
-	if (!m_send_recv_param) {
+	if (!txn_current()) {
 		delegate_event(HIO_LTE_FSM_EVENT_READY);
 		return 0;
 	}
@@ -1655,7 +1709,7 @@ static int on_enter_receive(void)
 	}
 	k_mutex_unlock(&m_metrics_lock);
 
-	ret = hio_lte_flow_recv(m_send_recv_param);
+	ret = hio_lte_flow_recv(&m_txn);
 	if (ret < 0) {
 		LOG_ERR("Call `hio_lte_flow_recv` failed: %d", ret);
 
@@ -1668,22 +1722,19 @@ static int on_enter_receive(void)
 		 * FSM recover and silently re-send the pending param forever; the
 		 * cloud transfer layer owns the retransmission. Do this before
 		 * returning into the ERROR recovery path. */
-		m_send_recv_result = -ETIMEDOUT;
-		m_send_recv_param = NULL;
-		k_event_post(&m_states_event, SEND_RECV_BIT);
+		txn_end(-ETIMEDOUT, true, false);
 
 		return ret;
 	}
 
 	k_mutex_lock(&m_metrics_lock, K_FOREVER);
-	m_metrics.downlink_bytes += *m_send_recv_param->recv_len;
+	m_metrics.downlink_bytes += m_txn_recv_len;
 	k_mutex_unlock(&m_metrics_lock);
 
 	k_sleep(K_MSEC(100));
 	delegate_event(HIO_LTE_FSM_EVENT_RECV);
 
-	m_send_recv_param = NULL;
-	k_event_post(&m_states_event, SEND_RECV_BIT);
+	txn_end(0, true, true);
 
 	return 0;
 }

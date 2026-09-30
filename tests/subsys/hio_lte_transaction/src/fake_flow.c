@@ -58,10 +58,19 @@ int hio_lte_flow_send(const struct hio_lte_send_recv_param *param)
 	return 0;
 }
 
+/* Non-zero: block for fake_flow_recv_block_ms, then receive this many bytes. */
+size_t fake_flow_recv_len;
+uint32_t fake_flow_recv_block_ms;
+
 int hio_lte_flow_recv(const struct hio_lte_send_recv_param *param)
 {
-	ARG_UNUSED(param);
-	return -ETIMEDOUT;
+	if (!fake_flow_recv_len) {
+		return -ETIMEDOUT;
+	}
+
+	k_sleep(K_MSEC(fake_flow_recv_block_ms));
+	*param->recv_len += fake_flow_recv_len;
+	return 0;
 }
 
 int hio_lte_flow_start(void)
