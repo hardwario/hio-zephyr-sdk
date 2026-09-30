@@ -930,30 +930,9 @@ static int disabled_event_handler(enum hio_lte_fsm_event event)
 	case HIO_LTE_FSM_EVENT_ENABLE:
 		transition_state(FSM_STATE_PREPARE);
 		break;
-	case HIO_LTE_FSM_EVENT_ERROR:
-		transition_state(FSM_STATE_ERROR);
-		break;
-	case HIO_LTE_FSM_EVENT_DEREGISTERED:
-		break;
-	case HIO_LTE_FSM_EVENT_TIMEOUT:
-		/* No-op. DISABLED arms no timer of its own, but a TIMEOUT armed by
-		 * a previous state may still arrive here (e.g. DISABLE requested
-		 * from ERROR, whose timer is not cancelled on leave). Swallow it:
-		 * falling through to default would return -ENOTSUP and drop the
-		 * FSM into ERROR, reactivating the modem we just shut down. */
-		break;
-	case HIO_LTE_FSM_EVENT_SOCKET_RECONFIG:
-		/* Config already stored; nothing to do while disabled. */
-		break;
-	case HIO_LTE_FSM_EVENT_READY:
-		/* Stale, e.g. from CONEVAL when DISABLE overtook it. */
-		break;
 	case HIO_LTE_FSM_EVENT_SEND:
-		/* Fail the transaction; default would go to ERROR and wake the modem. */
+		/* Fail the transaction instead of waking the modem for it. */
 		abort_pending_send_recv(-ENOTCONN);
-		break;
-	case HIO_LTE_FSM_EVENT_SCAN:
-	case HIO_LTE_FSM_EVENT_COPS_DONE:
 		break;
 	case HIO_LTE_FSM_EVENT_DISABLE:
 		/* Already disabled: re-post so a caller that requested disable
@@ -961,7 +940,9 @@ static int disabled_event_handler(enum hio_lte_fsm_event event)
 		k_event_post(&m_states_event, DISABLED_BIT);
 		break;
 	default:
-		return -ENOTSUP;
+		/* Anything else is stale (timers, URCs, READY from CONEVAL, ...).
+		 * Only ENABLE may power the modem up again. */
+		break;
 	}
 	return 0;
 }

@@ -241,3 +241,21 @@ ZTEST(hio_lte_transaction, test_send_while_disabled_fails_without_waking_fsm)
 	zassert_equal(atomic_get(&fake_flow_start_count), 0, "FSM powered the modem up");
 	zassert_ok(hio_lte_wait_for_disable(K_NO_WAIT), "FSM left DISABLED");
 }
+
+/* Stray events (late URCs, timers, ERROR from the previous state) must not
+ * power the modem up again. */
+ZTEST(hio_lte_transaction, test_stray_events_keep_fsm_disabled)
+{
+	static const enum hio_lte_fsm_event stray[] = {
+		HIO_LTE_FSM_EVENT_ERROR,     HIO_LTE_FSM_EVENT_TIMEOUT, HIO_LTE_FSM_EVENT_READY,
+		HIO_LTE_FSM_EVENT_NCELLMEAS, HIO_LTE_FSM_EVENT_CSCON_0, HIO_LTE_FSM_EVENT_REGISTERED,
+	};
+
+	for (size_t i = 0; i < ARRAY_SIZE(stray); i++) {
+		fake_flow_event_cb(stray[i]);
+		k_sleep(K_MSEC(20));
+	}
+
+	zassert_equal(atomic_get(&fake_flow_start_count), 0, "FSM powered the modem up");
+	zassert_ok(hio_lte_wait_for_disable(K_NO_WAIT), "FSM left DISABLED");
+}
