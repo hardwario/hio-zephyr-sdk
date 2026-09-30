@@ -990,8 +990,14 @@ int hio_lte_flow_send(const struct hio_lte_send_recv_param *param)
 	 *
 	 * One datagram per call: on a UDP socket nrf_send transmits the whole
 	 * datagram or fails, so a single send maps to a single FLAP packet on
-	 * the wire. */
-	ssize_t sentb = nrf_send(m_socket_fd, param->send_buf, param->send_len, NRF_MSG_WAITACK);
+	 * the wire.
+	 *
+	 * Validate against a snapshot, never by re-reading param: this call
+	 * blocks for the whole time-to-CSCON-1, so the post-send check must
+	 * compare against the length actually handed to the modem. */
+	const size_t send_len = param->send_len;
+
+	ssize_t sentb = nrf_send(m_socket_fd, param->send_buf, send_len, NRF_MSG_WAITACK);
 	if (sentb == -1) {
 		ret = -errno;
 		if (ret == -NRF_EAGAIN) {
@@ -1001,8 +1007,8 @@ int hio_lte_flow_send(const struct hio_lte_send_recv_param *param)
 		LOG_ERR("Failed to send data: %d", ret);
 		return ret;
 	}
-	if (sentb != param->send_len) {
-		LOG_ERR("Partial datagram send: %zd of %u", sentb, param->send_len);
+	if (sentb != send_len) {
+		LOG_ERR("Partial datagram send: %zd of %u", sentb, send_len);
 		return -EIO;
 	}
 

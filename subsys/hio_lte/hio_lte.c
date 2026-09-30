@@ -597,7 +597,13 @@ int hio_lte_send_recv(const struct hio_lte_send_recv_param *param)
 
 	k_timepoint_t end = sys_timepoint_calc(param->timeout);
 
-	k_mutex_lock(&m_send_recv_lock, sys_timepoint_timeout(end));
+	int lock_ret = k_mutex_lock(&m_send_recv_lock, sys_timepoint_timeout(end));
+	if (lock_ret) {
+		/* Never proceed without the lock: assigning m_send_recv_param
+		 * would retarget an exchange another caller is still blocked on. */
+		LOG_WRN("Transaction already in progress, giving up: %d", lock_ret);
+		return -EBUSY;
+	}
 
 	LOG_DBG("locked");
 
@@ -614,6 +620,15 @@ int hio_lte_send_recv(const struct hio_lte_send_recv_param *param)
 	k_event_wait(&m_states_event, SEND_RECV_BIT, false, sys_timepoint_timeout(end));
 
 	if (sys_timepoint_expired(end)) {
+		/* param is the caller's stack struct, and the FSM is still holding
+		 * it: drop the handle before that frame is reused, or a later
+		 * on_enter_send() transmits from whatever now occupies it. Needs
+		 * the exchange to outlast the caller's deadline, so it only shows
+		 * up where nrf_send() blocks for tens of seconds waiting on RRC.
+		 * Dropping rather than retrying is per the layering — the cloud
+		 * transfer layer owns retransmission. */
+		m_send_recv_param = NULL;
+
 		k_mutex_unlock(&m_send_recv_lock);
 		delegate_event(HIO_LTE_FSM_EVENT_TIMEOUT);
 		return -ETIMEDOUT;
