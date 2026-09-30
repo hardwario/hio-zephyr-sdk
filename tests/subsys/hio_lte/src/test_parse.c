@@ -523,4 +523,82 @@ ZTEST(parser, test_urc_ncellmeas_complex_b)
 	zassert_equal(param.cells[6].neighbor_count, 0, "cells[6].neighbor_count mismatch");
 }
 
+/* Captured from msm200 on the bench (AT+COPS=?). */
+ZTEST(parser, test_cops_list_ok)
+{
+	struct hio_lte_scan_entry e[4];
+	size_t count;
+
+	int ret = hio_lte_parse_cops_list("(2,\"\",\"\",\"23002\",7),(1,\"\",\"\",\"23003\",7),"
+					  "(1,\"\",\"\",\"23001\",7)",
+					  e, ARRAY_SIZE(e), &count);
+	zassert_ok(ret);
+	zassert_equal(count, 3);
+	zassert_equal(e[0].stat, 2);
+	zassert_str_equal(e[0].plmn, "23002");
+	zassert_equal(e[0].act, 7);
+	zassert_equal(e[2].stat, 1);
+	zassert_str_equal(e[2].plmn, "23001");
+}
+
+ZTEST(parser, test_cops_list_names_and_3digit_mnc)
+{
+	struct hio_lte_scan_entry e[2];
+	size_t count;
+
+	int ret = hio_lte_parse_cops_list("(3,\"CHN-UNICOM\",\"UNICOM\",\"460001\",9)", e,
+					  ARRAY_SIZE(e), &count);
+	zassert_ok(ret);
+	zassert_equal(count, 1);
+	zassert_equal(e[0].stat, 3);
+	zassert_str_equal(e[0].plmn, "460001");
+	zassert_equal(e[0].act, 9);
+}
+
+/* 3GPP allows the supported modes/formats lists after ",,". */
+ZTEST(parser, test_cops_list_trailing_lists)
+{
+	struct hio_lte_scan_entry e[2];
+	size_t count;
+
+	int ret = hio_lte_parse_cops_list("(1,\"\",\"\",\"23003\",7),,(0,1,2,3,4),(0,1,2)", e,
+					  ARRAY_SIZE(e), &count);
+	zassert_ok(ret);
+	zassert_equal(count, 1);
+}
+
+ZTEST(parser, test_cops_list_empty)
+{
+	struct hio_lte_scan_entry e[2];
+	size_t count = 99;
+
+	zassert_ok(hio_lte_parse_cops_list("", e, ARRAY_SIZE(e), &count));
+	zassert_equal(count, 0);
+}
+
+/* Only max entries are stored, but all are counted. */
+ZTEST(parser, test_cops_list_more_than_max)
+{
+	struct hio_lte_scan_entry e[1];
+	size_t count;
+
+	int ret = hio_lte_parse_cops_list("(2,\"\",\"\",\"23002\",7),(1,\"\",\"\",\"23003\",7)", e,
+					  ARRAY_SIZE(e), &count);
+	zassert_ok(ret);
+	zassert_equal(count, 2);
+	zassert_str_equal(e[0].plmn, "23002");
+}
+
+ZTEST(parser, test_cops_list_malformed)
+{
+	struct hio_lte_scan_entry e[2];
+	size_t count;
+
+	zassert_equal(hio_lte_parse_cops_list("(2,\"\",\"\",23002,7)", e, ARRAY_SIZE(e), &count),
+		      -EBADMSG);
+	zassert_equal(hio_lte_parse_cops_list("(2,\"\",\"\",\"23002\"", e, ARRAY_SIZE(e), &count),
+		      -EBADMSG);
+	zassert_equal(hio_lte_parse_cops_list(NULL, e, ARRAY_SIZE(e), &count), -EINVAL);
+}
+
 ZTEST_SUITE(parser, NULL, NULL, NULL, NULL, NULL);

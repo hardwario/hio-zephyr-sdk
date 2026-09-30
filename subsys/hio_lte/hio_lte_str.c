@@ -134,6 +134,10 @@ const char *hio_lte_str_fsm_event(enum hio_lte_fsm_event event)
 		return "NCELLMEAS";
 	case HIO_LTE_FSM_EVENT_SOCKET_RECONFIG:
 		return "SOCKET_RECONFIG";
+	case HIO_LTE_FSM_EVENT_SCAN:
+		return "SCAN";
+	case HIO_LTE_FSM_EVENT_COPS_DONE:
+		return "COPS_DONE";
 	case HIO_LTE_FSM_EVENT_DISABLE:
 		return "DISABLE";
 	case HIO_LTE_FSM_EVENT_COUNT:

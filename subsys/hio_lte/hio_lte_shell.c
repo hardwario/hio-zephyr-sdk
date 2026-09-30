@@ -327,6 +327,190 @@ static int cmd_test_cmd(const struct shell *shell, size_t argc, char **argv)
 	return 0;
 }
 
+static const char *cops_stat_str(int stat)
+{
+	switch (stat) {
+	case 1:
+		return "available";
+	case 2:
+		return "current";
+	case 3:
+		return "forbidden";
+	default:
+		return "unknown";
+	}
+}
+
+static const char *cops_act_str(int act)
+{
+	switch (act) {
+	case 7:
+		return "lte-m";
+	case 9:
+		return "nb-iot";
+	default:
+		return "unknown";
+	}
+}
+
+static const char *scan_status_str(int status)
+{
+	switch (status) {
+	case 0:
+		return "ok";
+	case -ENODATA:
+		return "not run";
+	case -EINTR:
+		return "partial";
+	case -EBUSY:
+		return "radio busy";
+	default:
+		return "error";
+	}
+}
+
+/* nRF91x1 index to dBm ("reported value of RSRP - 141"). */
+static int rsrp_dbm(int16_t index)
+{
+	return index - 141;
+}
+
+static void print_scan_cells(const struct shell *shell, const struct hio_lte_scan_result *result)
+{
+	for (size_t i = 0; i < result->cell_count; i++) {
+		const struct hio_lte_ncellmeas_cell_param *c = &result->cells[i];
+
+		shell_print(shell,
+			    "cell: %08X, plmn: %03u%02u, tac: %04X, earfcn: %u, pci: %u, rsrp: %d dBm",
+			    c->eci, c->mcc, c->mnc, c->tac, c->earfcn, c->pci, rsrp_dbm(c->rsrp));
+	}
+
+	shell_print(shell, "cells: %u", result->cell_count);
+}
+
+static int print_scan_result(const struct shell *shell)
+{
+	struct hio_lte_scan_result result;
+
+	int ret = hio_lte_get_scan_result(&result);
+	if (ret) {
+		shell_error(shell, "command failed");
+		return ret;
+	}
+
+	if (!result.valid) {
+		shell_print(shell, "no scan yet");
+		return 0;
+	}
+
+	shell_print(shell, "last scan: %lld s ago (%s)",
+		    (k_uptime_get() - result.uptime_ms) / MSEC_PER_SEC,
+		    result.auto_triggered ? "auto" : "request");
+
+	if (result.mode != HIO_LTE_SCAN_PLMN) {
+		shell_print(shell, "cell search: %s (%d)", scan_status_str(result.cells_status),
+			    result.cells_status);
+		if (!result.cells_status) {
+			print_scan_cells(shell, &result);
+		}
+	}
+
+	if (result.mode != HIO_LTE_SCAN_CELLS) {
+		shell_print(shell, "network search: %s (%d)", scan_status_str(result.plmn_status),
+			    result.plmn_status);
+
+		size_t stored = MIN(result.count, ARRAY_SIZE(result.entries));
+		for (size_t i = 0; i < stored; i++) {
+			shell_print(shell, "plmn: %s, act: %s, stat: %s", result.entries[i].plmn,
+				    cops_act_str(result.entries[i].act),
+				    cops_stat_str(result.entries[i].stat));
+		}
+
+		if (stored < result.count) {
+			shell_print(shell, "networks: %u (showing %zu)", result.count, stored);
+		} else {
+			shell_print(shell, "networks: %u", result.count);
+		}
+	}
+
+	return 0;
+}
+
+/* Test mode: no FSM, run the steps directly in the current CFUN mode. */
+static void scan_test_mode(enum hio_lte_scan_mode mode)
+{
+	hio_lte_flow_scan_begin(mode, false);
+
+	if (mode != HIO_LTE_SCAN_PLMN && !hio_lte_flow_scan_cells_start()) {
+		hio_lte_flow_scan_cells_wait(K_FOREVER);
+	}
+
+	if (mode != HIO_LTE_SCAN_CELLS) {
+		hio_lte_flow_scan_plmn_start();
+		hio_lte_flow_scan_plmn_wait(K_FOREVER);
+	}
+
+	hio_lte_flow_scan_end();
+}
+
+static int cmd_scan(const struct shell *shell, size_t argc, char **argv)
+{
+	int ret;
+	enum hio_lte_scan_mode mode = HIO_LTE_SCAN_ALL;
+
+	if (argc > 2) {
+		shell_error(shell, "only one argument is accepted");
+		shell_help(shell);
+		return -EINVAL;
+	}
+
+	if (argc == 2) {
+		if (!strcmp(argv[1], "all")) {
+			mode = HIO_LTE_SCAN_ALL;
+		} else if (!strcmp(argv[1], "plmn")) {
+			mode = HIO_LTE_SCAN_PLMN;
+		} else if (!strcmp(argv[1], "cells")) {
+			mode = HIO_LTE_SCAN_CELLS;
+		} else {
+			shell_error(shell, "unknown mode: %s", argv[1]);
+			shell_help(shell);
+			return -EINVAL;
+		}
+	}
+
+	if (g_hio_lte_config.test) {
+		shell_print(shell, "scanning (can take minutes)...");
+		scan_test_mode(mode);
+		return print_scan_result(shell);
+	}
+
+	ret = hio_lte_scan(mode);
+	if (ret == -EALREADY) {
+		shell_warn(shell, "scan already in progress");
+		return 0;
+	}
+	if (ret) {
+		shell_error(shell, "command failed: %d", ret);
+		return ret;
+	}
+
+	shell_print(shell, "scan requested, see: lte scan show");
+	shell_info(shell, "command succeeded");
+
+	return 0;
+}
+
+static int cmd_scan_show(const struct shell *shell, size_t argc, char **argv)
+{
+	if (argc > 1) {
+		shell_error(shell, "command not found: %s", argv[1]);
+		shell_help(shell);
+		return -EINVAL;
+	}
+
+	return print_scan_result(shell);
+}
+
 static int cmd_test_prepare(const struct shell *shell, size_t argc, char **argv)
 {
 	int ret;
@@ -539,6 +723,16 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 );
 
 SHELL_STATIC_SUBCMD_SET_CREATE(
+	sub_lte_scan,
+
+	SHELL_CMD_ARG(show, NULL,
+	              "Show the last scan result.",
+	              cmd_scan_show, 1, 0),
+
+	SHELL_SUBCMD_SET_END
+);
+
+SHELL_STATIC_SUBCMD_SET_CREATE(
 	sub_lte,
 
 	HIO_CONFIG_SHELL_CMD_ARG,
@@ -574,6 +768,11 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(reconnect, NULL,
 	              "Reconnect LTE modem.",
 	              cmd_reconnect, 1, 0),
+
+	SHELL_CMD_ARG(scan, &sub_lte_scan,
+	              "Scan cells and networks, interrupts attach and reconnects "
+	              "(format: [all|plmn|cells]). Cells cover the preferred RAT only.",
+	              cmd_scan, 1, 1),
 
 	SHELL_CMD_ARG(ncellmeas-schedule, NULL,
 	              "Schedule NCELLMEAS measurement.",

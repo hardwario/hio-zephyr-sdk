@@ -22,6 +22,7 @@ static struct hio_lte_conn_param m_conn_param = {0};
 static struct hio_lte_cereg_param m_cereg_param = {0};
 static struct hio_lte_rai_param m_rai_param = {0};
 static struct hio_lte_ncellmeas_param m_ncellmeas_param = {0};
+static struct hio_lte_scan_result m_scan_result = {0};
 static int m_dtls_ciphersuite_used = 0;
 
 int hio_lte_state_get_imei(uint64_t *imei)
@@ -253,6 +254,30 @@ int hio_lte_state_get_ncellmeas_param(struct hio_lte_ncellmeas_param *param)
 
 	k_mutex_unlock(&m_lock);
 	return 0;
+}
+
+int hio_lte_state_get_scan_result(struct hio_lte_scan_result *result)
+{
+	if (!result) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&m_lock, K_FOREVER);
+	memcpy(result, &m_scan_result, sizeof(m_scan_result));
+	k_mutex_unlock(&m_lock);
+
+	return 0;
+}
+
+void hio_lte_state_set_scan_result(const struct hio_lte_scan_result *result)
+{
+	if (!result) {
+		return;
+	}
+
+	k_mutex_lock(&m_lock, K_FOREVER);
+	memcpy(&m_scan_result, result, sizeof(m_scan_result));
+	k_mutex_unlock(&m_lock);
 }
 
 void hio_lte_state_set_ncellmeas_param(const struct hio_lte_ncellmeas_param *param)

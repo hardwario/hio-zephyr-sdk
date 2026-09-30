@@ -66,6 +66,52 @@ static struct cgdcont_param m_cgdcont;
 
 static int m_socket_fd = -1;
 
+/* Scan result being assembled; published by hio_lte_flow_scan_end(). */
+static struct hio_lte_scan_result m_scan;
+static K_SEM_DEFINE(m_scan_cells_sem, 0, 1);
+static K_SEM_DEFINE(m_scan_plmn_sem, 0, 1);
+static bool m_scan_cells_pending;
+
+static void process_urc_ncellmeas(const char *line)
+{
+	struct hio_lte_ncellmeas_param ncellmeas_param = {0};
+
+	int ret = hio_lte_parse_urc_ncellmeas(line, 5, &ncellmeas_param);
+	if (ret) {
+		LOG_WRN("Call `hio_lte_parse_urc_ncellmeas` failed: %d", ret);
+	}
+
+	if (ncellmeas_param.valid) {
+		LOG_INF("NCELLMEAS: %d cells, %d ncells", ncellmeas_param.num_cells,
+			ncellmeas_param.num_ncells);
+		hio_lte_state_set_ncellmeas_param(&ncellmeas_param);
+
+		if (m_scan_cells_pending) {
+			m_scan.cells_status = 0;
+			m_scan.cell_count = MIN(ncellmeas_param.num_cells, ARRAY_SIZE(m_scan.cells));
+			memcpy(m_scan.cells, ncellmeas_param.cells,
+			       m_scan.cell_count * sizeof(m_scan.cells[0]));
+			for (size_t i = 0; i < m_scan.cell_count; i++) {
+				m_scan.cells[i].ncells = NULL;
+			}
+		}
+	} else {
+		LOG_WRN("NCELLMEAS data not valid");
+		if (m_scan_cells_pending) {
+			m_scan.cells_status = -EIO;
+		}
+	}
+
+	/* Invalid data only ends a scan step; NCELLMEAS state keeps waiting. */
+	bool notify = ncellmeas_param.valid || m_scan_cells_pending;
+
+	m_scan_cells_pending = false;
+	k_sem_give(&m_scan_cells_sem);
+	if (notify && !g_hio_lte_config.test) {
+		m_event_delegate_cb(HIO_LTE_FSM_EVENT_NCELLMEAS);
+	}
+}
+
 static void process_urc(const char *line, void *user_data)
 {
 	int ret;
@@ -77,7 +123,11 @@ static void process_urc(const char *line, void *user_data)
 	}
 
 	if (g_hio_lte_config.test) {
-		return; /* Test mode active, ignoring URC */
+		/* Test mode: only feed 'lte scan', never the FSM. */
+		if (!strncmp(line, "%NCELLMEAS: ", 12)) {
+			process_urc_ncellmeas(line + 12);
+		}
+		return;
 	}
 
 	LOG_INF("URC: %s", line);
@@ -140,20 +190,7 @@ static void process_urc(const char *line, void *user_data)
 
 		hio_lte_state_set_rai_param(&rai_param);
 	} else if (!strncmp(line, "%NCELLMEAS: ", 12)) {
-		struct hio_lte_ncellmeas_param ncellmeas_param = {0};
-		ret = hio_lte_parse_urc_ncellmeas(line + 12, 5, &ncellmeas_param);
-		if (ret) {
-			LOG_WRN("Call `hio_lte_parse_urc_ncellmeas` failed: %d", ret);
-		}
-		if (ncellmeas_param.valid) {
-			LOG_INF("NCELLMEAS: %d cells, %d ncells", ncellmeas_param.num_cells,
-				ncellmeas_param.num_ncells);
-		} else {
-			LOG_WRN("NCELLMEAS data not valid");
-			return;
-		}
-		hio_lte_state_set_ncellmeas_param(&ncellmeas_param);
-		m_event_delegate_cb(HIO_LTE_FSM_EVENT_NCELLMEAS);
+		process_urc_ncellmeas(line + 12);
 	}
 }
 
@@ -1146,6 +1183,117 @@ int hio_lte_flow_cmd(const char *s)
 	}
 
 	return 0;
+}
+
+static void scan_plmn_work_handler(struct k_work *work)
+{
+	LOG_INF("PLMN scan done: %d, networks: %u", m_scan.plmn_status, m_scan.count);
+
+	k_sem_give(&m_scan_plmn_sem);
+	m_event_delegate_cb(HIO_LTE_FSM_EVENT_COPS_DONE);
+}
+
+static K_WORK_DEFINE(m_scan_plmn_work, scan_plmn_work_handler);
+
+/* ISR context: parse only, no locks. */
+static void scan_plmn_resp_handler(const char *resp)
+{
+	size_t count = 0;
+	int ret = 0;
+
+	const char *list = strstr(resp, "%COPS: ");
+	if (list) {
+		ret = hio_lte_parse_cops_list(list + strlen("%COPS: "), m_scan.entries,
+					      ARRAY_SIZE(m_scan.entries), &count);
+	}
+	m_scan.count = MIN(count, UINT8_MAX);
+
+	const char *cme = strstr(resp, "+CME ERROR: ");
+	if (cme) {
+		int code = atoi(cme + strlen("+CME ERROR: "));
+		m_scan.plmn_status = code == 521 ? -EINTR : code == 516 ? -EBUSY : -EIO;
+	} else if (strstr(resp, "ERROR")) {
+		m_scan.plmn_status = -EIO;
+	} else {
+		m_scan.plmn_status = ret;
+	}
+
+	k_work_submit(&m_scan_plmn_work);
+}
+
+void hio_lte_flow_scan_begin(enum hio_lte_scan_mode mode, bool auto_triggered)
+{
+	memset(&m_scan, 0, sizeof(m_scan));
+	m_scan.mode = mode;
+	m_scan.auto_triggered = auto_triggered;
+	m_scan.cells_status = -ENODATA;
+	m_scan.plmn_status = -ENODATA;
+}
+
+void hio_lte_flow_scan_end(void)
+{
+	m_scan.valid = true;
+	m_scan.uptime_ms = k_uptime_get();
+	hio_lte_state_set_scan_result(&m_scan);
+
+	LOG_INF("Scan done, cells: %d, networks: %d (%u)", m_scan.cells_status,
+		m_scan.plmn_status, m_scan.count);
+	for (size_t i = 0; i < MIN(m_scan.count, ARRAY_SIZE(m_scan.entries)); i++) {
+		LOG_INF("plmn: %s, act: %u, stat: %u", m_scan.entries[i].plmn,
+			m_scan.entries[i].act, m_scan.entries[i].stat);
+	}
+}
+
+/* Result arrives as a %NCELLMEAS URC. */
+int hio_lte_flow_scan_cells_start(void)
+{
+	int ret = -ENOTCONN;
+
+	k_sem_reset(&m_scan_cells_sem);
+	m_scan_cells_pending = true;
+
+	if (nrf_modem_is_initialized()) {
+		ret = hio_lte_talk_ncellmeas(5, HIO_LTE_NCELLMEAS_CELL_MAX);
+	}
+
+	if (ret) {
+		LOG_ERR("Cell search not started: %d", ret);
+		m_scan_cells_pending = false;
+		m_scan.cells_status = ret;
+	}
+
+	return ret;
+}
+
+int hio_lte_flow_scan_cells_wait(k_timeout_t timeout)
+{
+	return k_sem_take(&m_scan_cells_sem, timeout);
+}
+
+/* Always completes through COPS_DONE, also when it fails to start. */
+int hio_lte_flow_scan_plmn_start(void)
+{
+	int ret = -ENOTCONN;
+
+	k_sem_reset(&m_scan_plmn_sem);
+
+	if (nrf_modem_is_initialized()) {
+		ret = hio_lte_talk_at_pcops_list_async(scan_plmn_resp_handler);
+		if (!ret) {
+			return 0;
+		}
+	}
+
+	LOG_ERR("PLMN scan not started: %d", ret);
+	m_scan.plmn_status = ret;
+	k_work_submit(&m_scan_plmn_work);
+
+	return ret;
+}
+
+int hio_lte_flow_scan_plmn_wait(k_timeout_t timeout)
+{
+	return k_sem_take(&m_scan_plmn_sem, timeout);
 }
 
 int hio_lte_flow_xmodemtrace(int lvl)

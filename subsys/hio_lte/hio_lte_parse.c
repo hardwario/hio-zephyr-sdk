@@ -204,6 +204,87 @@ int hio_lte_parse_plmn(const char *str, int *plmn, int16_t *mcc, int16_t *mnc)
 	return 0;
 }
 
+/* Parses a quoted string at p into out (skipped if out is NULL); returns the
+ * position after the closing quote or NULL. */
+static const char *parse_quoted(const char *p, char *out, size_t size)
+{
+	if (*p != '"') {
+		return NULL;
+	}
+
+	const char *end = strchr(p + 1, '"');
+	if (!end) {
+		return NULL;
+	}
+
+	if (out) {
+		size_t len = end - (p + 1);
+		if (len >= size) {
+			return NULL;
+		}
+		memcpy(out, p + 1, len);
+		out[len] = '\0';
+	}
+
+	return end + 1;
+}
+
+int hio_lte_parse_cops_list(const char *str, struct hio_lte_scan_entry *entries, size_t max,
+			    size_t *count)
+{
+	if (!str || !entries || !count) {
+		return -EINVAL;
+	}
+
+	*count = 0;
+
+	const char *p = str;
+
+	while (*p == '(') {
+		struct hio_lte_scan_entry e;
+		char *end;
+
+		e.stat = (uint8_t)strtol(p + 1, &end, 10);
+		if (end == p + 1 || *end != ',') {
+			return -EBADMSG;
+		}
+
+		/* Long and short operator names are skipped. */
+		p = parse_quoted(end + 1, NULL, 0);
+		if (!p || *p != ',') {
+			return -EBADMSG;
+		}
+		p = parse_quoted(p + 1, NULL, 0);
+		if (!p || *p != ',') {
+			return -EBADMSG;
+		}
+		p = parse_quoted(p + 1, e.plmn, sizeof(e.plmn));
+		if (!p || *p != ',') {
+			return -EBADMSG;
+		}
+
+		e.act = (uint8_t)strtol(p + 1, &end, 10);
+		if (end == p + 1 || *end != ')') {
+			return -EBADMSG;
+		}
+
+		if (*count < max) {
+			entries[*count] = e;
+		}
+		(*count)++;
+
+		p = end + 1;
+
+		/* ",," starts the supported modes/formats lists. */
+		if (*p != ',' || p[1] != '(') {
+			break;
+		}
+		p++;
+	}
+
+	return 0;
+}
+
 int hio_lte_parse_urc_cereg(const char *line, struct hio_lte_cereg_param *param)
 {
 	/*
