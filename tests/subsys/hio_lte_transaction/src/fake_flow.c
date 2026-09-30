@@ -4,12 +4,8 @@
  * SPDX-License-Identifier: LicenseRef-HARDWARIO-5-Clause
  */
 
-/* Link-level fakes for everything hio_lte.c calls outside its own module, so
- * the transaction handshake in hio_lte_send_recv() can be exercised on
- * native_sim. The FSM is left in FSM_STATE_DISABLED (the test never calls
- * hio_lte_enable), so none of the flow entry points below are expected to run
- * during these tests; they exist to satisfy the linker and to record calls if a
- * future test does drive the FSM. */
+/* Link-level fakes for hio_lte.c's dependencies. Flow calls succeed; modem
+ * events are injected by the test via fake_flow_event_cb. */
 
 #include "hio_lte_config.h"
 #include "hio_lte_flow.h"
@@ -34,6 +30,11 @@ const struct hio_lte_send_recv_param *fake_flow_last_send_param;
  * still published, which is the condition the transfer needs to go wrong. */
 uint32_t fake_flow_send_block_ms;
 
+/* Counts FSM entries into PREPARE (modem power-up). */
+atomic_t fake_flow_start_count = ATOMIC_INIT(0);
+
+HIO_LTE_FSM_EVENT_delegate_cb fake_flow_event_cb;
+
 int hio_lte_config_init(void)
 {
 	return 0;
@@ -41,7 +42,7 @@ int hio_lte_config_init(void)
 
 int hio_lte_flow_init(HIO_LTE_FSM_EVENT_delegate_cb cb)
 {
-	ARG_UNUSED(cb);
+	fake_flow_event_cb = cb;
 	return 0;
 }
 
@@ -65,6 +66,7 @@ int hio_lte_flow_recv(const struct hio_lte_send_recv_param *param)
 
 int hio_lte_flow_start(void)
 {
+	atomic_inc(&fake_flow_start_count);
 	return 0;
 }
 
@@ -137,16 +139,20 @@ int hio_lte_flow_set_psk(const char *identity, const char *psk_hex)
 	return 0;
 }
 
+/* Long enough for the test to inject REGISTERED before attach times out. */
+#define FAKE_ATTACH_TIMEOUT K_SECONDS(60)
+
 struct hio_lte_attach_timeout hio_lte_flow_attach_policy_periodic(int attempt, k_timeout_t pause)
 {
 	ARG_UNUSED(attempt);
-	return (struct hio_lte_attach_timeout){.attach_timeout = pause, .retry_delay = pause};
+	return (struct hio_lte_attach_timeout){.attach_timeout = FAKE_ATTACH_TIMEOUT,
+					       .retry_delay = pause};
 }
 
 struct hio_lte_attach_timeout hio_lte_flow_attach_policy_progressive(int attempt)
 {
 	ARG_UNUSED(attempt);
-	return (struct hio_lte_attach_timeout){.attach_timeout = K_SECONDS(1),
+	return (struct hio_lte_attach_timeout){.attach_timeout = FAKE_ATTACH_TIMEOUT,
 					       .retry_delay = K_SECONDS(1)};
 }
 
