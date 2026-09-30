@@ -387,6 +387,7 @@ enum hio_lte_event {
 	HIO_LTE_EVENT_CSCON_0 = 0,    /**< Connection Status (Idle). */
 	HIO_LTE_EVENT_CSCON_1,        /**< Connection Status (Connected). */
 	HIO_LTE_EVENT_NCELLMEAS_DONE, /**< Neighbor Cell Measurement completed. */
+	HIO_LTE_EVENT_SCAN_DONE,      /**< Network scan completed. */
 };
 
 /**
@@ -476,6 +477,64 @@ int hio_lte_get_ncellmeas_param(struct hio_lte_ncellmeas_param *param);
  * @retval -ENOTSUP  Test mode is enabled.
  */
 int hio_lte_schedule_ncellmeas(void);
+
+/**
+ * @brief One network found by a network scan.
+ */
+struct hio_lte_scan_entry {
+	uint8_t stat; /**< 0 unknown, 1 available, 2 current, 3 forbidden. */
+	uint8_t act;  /**< 7 LTE-M, 9 NB-IoT. */
+	char plmn[7]; /**< MCC and MNC, e.g. "23002". */
+};
+
+/**
+ * @brief What a network scan covers.
+ */
+enum hio_lte_scan_mode {
+	HIO_LTE_SCAN_ALL = 0, /**< Cells, then networks. */
+	HIO_LTE_SCAN_PLMN,    /**< Networks only (AT%COPS=?). */
+	HIO_LTE_SCAN_CELLS,   /**< Cells only (GCI AT%NCELLMEAS). */
+};
+
+/**
+ * @brief Result of the last network scan.
+ */
+struct hio_lte_scan_result {
+	bool valid;          /**< A scan has completed. */
+	bool auto_triggered; /**< Started by the attach retry logic, not by a request. */
+	uint8_t mode;        /**< @ref hio_lte_scan_mode. */
+	int64_t uptime_ms;   /**< Uptime when the scan completed. */
+	int cells_status;    /**< 0 ok, -ENODATA not run, other error. */
+	uint8_t cell_count;  /**< Cells found by the GCI search. */
+	/** Cells; neighbour lists are not kept (ncells is NULL). */
+	struct hio_lte_ncellmeas_cell_param cells[HIO_LTE_NCELLMEAS_CELL_MAX];
+	int plmn_status;     /**< 0 ok, -EINTR partial, -EBUSY, -ENODATA not run, other error. */
+	uint8_t count;       /**< Networks found; entries holds at most the first ones. */
+	struct hio_lte_scan_entry entries[CONFIG_HIO_LTE_SCAN_MAX_ENTRIES];
+};
+
+/**
+ * @brief Request a network scan.
+ *
+ * Runs in receive-only mode (CFUN=2) and takes priority over an ongoing
+ * attach; the connection is re-established after it. Completion is signalled
+ * by @ref HIO_LTE_EVENT_SCAN_DONE.
+ *
+ * @retval 0         Scan requested.
+ * @retval -EALREADY A scan is already requested or running.
+ * @retval -EINVAL   Invalid mode.
+ * @retval -ENODEV   LTE is disabled.
+ * @retval -ENOTSUP  Test mode is enabled.
+ */
+int hio_lte_scan(enum hio_lte_scan_mode mode);
+
+/**
+ * @brief Get the result of the last network scan.
+ *
+ * @retval 0       Success (check @c valid).
+ * @retval -EINVAL Invalid argument.
+ */
+int hio_lte_get_scan_result(struct hio_lte_scan_result *result);
 
 /* -------- Utility functions -------- */
 

@@ -80,9 +80,11 @@ int hio_lte_flow_prepare(void)
 	return 0;
 }
 
+int fake_flow_last_cfun = -1;
+
 int hio_lte_flow_cfun(int cfun)
 {
-	ARG_UNUSED(cfun);
+	fake_flow_last_cfun = cfun;
 	return 0;
 }
 
@@ -139,21 +141,60 @@ int hio_lte_flow_set_psk(const char *identity, const char *psk_hex)
 	return 0;
 }
 
-/* Long enough for the test to inject REGISTERED before attach times out. */
-#define FAKE_ATTACH_TIMEOUT K_SECONDS(60)
+/* Default is long enough for the test to inject REGISTERED in time. */
+uint32_t fake_attach_timeout_ms = 60000;
+/* Delay after every third attempt, like the periodic policy. */
+uint32_t fake_retry_delay_ms;
 
 struct hio_lte_attach_timeout hio_lte_flow_attach_policy_periodic(int attempt, k_timeout_t pause)
 {
-	ARG_UNUSED(attempt);
-	return (struct hio_lte_attach_timeout){.attach_timeout = FAKE_ATTACH_TIMEOUT,
-					       .retry_delay = pause};
+	ARG_UNUSED(pause);
+	return (struct hio_lte_attach_timeout){
+		.attach_timeout = K_MSEC(fake_attach_timeout_ms),
+		.retry_delay = attempt % 3 == 2 ? K_MSEC(fake_retry_delay_ms) : K_NO_WAIT};
 }
 
 struct hio_lte_attach_timeout hio_lte_flow_attach_policy_progressive(int attempt)
 {
-	ARG_UNUSED(attempt);
-	return (struct hio_lte_attach_timeout){.attach_timeout = FAKE_ATTACH_TIMEOUT,
-					       .retry_delay = K_SECONDS(1)};
+	return hio_lte_flow_attach_policy_periodic(attempt, K_NO_WAIT);
+}
+
+atomic_t fake_flow_scan_cells_count = ATOMIC_INIT(0);
+atomic_t fake_flow_scan_plmn_count = ATOMIC_INIT(0);
+bool fake_flow_scan_auto;
+
+void hio_lte_flow_scan_begin(enum hio_lte_scan_mode mode, bool auto_triggered)
+{
+	ARG_UNUSED(mode);
+	fake_flow_scan_auto = auto_triggered;
+}
+
+void hio_lte_flow_scan_end(void)
+{
+}
+
+int hio_lte_flow_scan_cells_start(void)
+{
+	atomic_inc(&fake_flow_scan_cells_count);
+	return 0;
+}
+
+int hio_lte_flow_scan_cells_wait(k_timeout_t timeout)
+{
+	ARG_UNUSED(timeout);
+	return 0;
+}
+
+int hio_lte_flow_scan_plmn_start(void)
+{
+	atomic_inc(&fake_flow_scan_plmn_count);
+	return 0;
+}
+
+int hio_lte_flow_scan_plmn_wait(k_timeout_t timeout)
+{
+	ARG_UNUSED(timeout);
+	return 0;
 }
 
 int hio_lte_talk_ncellmeas(int p1, int p2)

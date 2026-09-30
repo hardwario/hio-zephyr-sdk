@@ -37,6 +37,8 @@ enum hio_lte_fsm_event {
 	HIO_LTE_FSM_EVENT_NCELLMEAS,
 	HIO_LTE_FSM_EVENT_SOCKET_RECONFIG,
 	HIO_LTE_FSM_EVENT_DISABLE,
+	HIO_LTE_FSM_EVENT_SCAN,
+	HIO_LTE_FSM_EVENT_COPS_DONE,
 	HIO_LTE_FSM_EVENT_COUNT /* Must be last */
 };
 
@@ -69,6 +71,12 @@ int hio_lte_flow_recv(const struct hio_lte_send_recv_param *param);
 
 int hio_lte_flow_coneval(void);
 int hio_lte_flow_cmd(const char *cmd);
+void hio_lte_flow_scan_begin(enum hio_lte_scan_mode mode, bool auto_triggered);
+void hio_lte_flow_scan_end(void);
+int hio_lte_flow_scan_cells_start(void);
+int hio_lte_flow_scan_cells_wait(k_timeout_t timeout);
+int hio_lte_flow_scan_plmn_start(void);
+int hio_lte_flow_scan_plmn_wait(k_timeout_t timeout);
 int hio_lte_flow_xmodemtrace(int lvl);
 
 int hio_lte_flow_set_psk(const char *identity, const char *psk_hex);

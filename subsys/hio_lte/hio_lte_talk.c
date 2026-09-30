@@ -375,6 +375,20 @@ int hio_lte_talk_at_cops_q(char *buf, size_t size)
 	return gather_prefix_values("+COPS: ", buf, size, 1) == 1 ? 0 : -EILSEQ;
 }
 
+/* The response is delivered to cb in ISR context. */
+int hio_lte_talk_at_pcops_list_async(nrf_modem_at_resp_handler_t cb)
+{
+	LOG_INF("AT%%COPS=?");
+
+	int ret = nrf_modem_at_cmd_async(cb, "AT%%COPS=?");
+	if (ret < 0) {
+		LOG_ERR("Call `nrf_modem_at_cmd_async` failed: %d", ret);
+		return ret;
+	}
+
+	return ret > 0 ? -EILSEQ : 0;
+}
+
 int hio_lte_talk_at_cops(int p1, int *p2, const char *p3)
 {
 	int ret;

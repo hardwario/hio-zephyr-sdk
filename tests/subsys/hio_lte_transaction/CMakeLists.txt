@@ -9,6 +9,9 @@ project(test)
 # hio_lte.c needs at compile time (defaults taken from subsys/hio_lte/Kconfig).
 add_compile_definitions(CONFIG_HIO_LTE_LOG_LEVEL=3)
 add_compile_definitions(CONFIG_HIO_LTE_INIT_PRIORITY=99)
+add_compile_definitions(CONFIG_HIO_LTE_SCAN_MAX_ENTRIES=10)
+add_compile_definitions(CONFIG_HIO_LTE_SCAN_AUTO=1)
+add_compile_definitions(CONFIG_HIO_LTE_SCAN_AUTO_EVERY=1)
 
 set(HIO_LTE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../subsys/hio_lte)
 
@@ -25,3 +28,4 @@ target_sources(app PRIVATE ${HIO_LTE_DIR}/hio_lte_str.c)
 target_sources(app PRIVATE ${HIO_LTE_DIR}/hio_lte_util.c)
 target_sources(app PRIVATE src/fake_flow.c)
 target_sources(app PRIVATE src/test_transaction.c)
+target_sources(app PRIVATE src/test_scan.c)

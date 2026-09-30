@@ -16,8 +16,7 @@
  * hio_lte_flow_send() (fake_flow_send_block_ms) for longer than the caller's
  * deadline, which is what nrf_send() does while it waits for RRC. */
 
-#include "hio_lte_config.h"
-#include "hio_lte_flow.h"
+#include "fsm_helpers.h"
 
 #include <hio/hio_lte.h>
 
@@ -31,7 +30,6 @@ extern atomic_t fake_flow_send_count;
 extern const struct hio_lte_send_recv_param *fake_flow_last_send_param;
 extern uint32_t fake_flow_send_block_ms;
 extern atomic_t fake_flow_start_count;
-extern HIO_LTE_FSM_EVENT_delegate_cb fake_flow_event_cb;
 
 #define UPLINK_LEN 481
 
@@ -68,18 +66,6 @@ static void reset_fakes(void *fixture)
 
 ZTEST_SUITE(hio_lte_transaction, NULL, NULL, reset_fakes, NULL, NULL);
 
-/* Drive the FSM to READY, playing the modem's URCs. */
-static void fsm_bring_up(void)
-{
-	static const struct hio_lte_socket_config cfg = {.port = 5002, .addr = "192.0.2.1"};
-
-	zassert_ok(hio_lte_enable(&cfg));
-	k_sleep(K_MSEC(50));
-	fake_flow_event_cb(HIO_LTE_FSM_EVENT_SIMDETECTED);
-	k_sleep(K_MSEC(50));
-	fake_flow_event_cb(HIO_LTE_FSM_EVENT_REGISTERED);
-	zassert_ok(hio_lte_wait_for_connected(K_SECONDS(1)), "FSM did not reach READY");
-}
 
 /* A caller that gives up must take its handle with it. */
 ZTEST(hio_lte_transaction, test_timeout_releases_caller_param)
