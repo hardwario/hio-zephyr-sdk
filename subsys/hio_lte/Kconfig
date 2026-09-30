@@ -51,6 +51,13 @@ config HIO_LTE_THREAD_PRIORITY
 	int "HIO_LTE_THREAD_PRIORITY"
 	default 10
 
+config HIO_LTE_CAUSE_STR
+	bool "HIO_LTE_CAUSE_STR"
+	default y
+	help
+		Human-readable EMM/ESM cause texts in logs and shell (about 2 kB
+		of flash). Without it only the numbers are shown.
+
 config HIO_LTE_SCAN_MAX_ENTRIES
 	int "HIO_LTE_SCAN_MAX_ENTRIES"
 	default 10

@@ -7,6 +7,7 @@ project(test)
 
 add_compile_definitions(CONFIG_HIO_LTE_LOG_LEVEL=3)
 add_compile_definitions(CONFIG_HIO_LTE_SCAN_MAX_ENTRIES=10)
+add_compile_definitions(CONFIG_HIO_LTE_CAUSE_STR=1)
 
 set(HIO_LTE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../subsys/hio_lte)
 
@@ -14,6 +15,8 @@ include_directories(${HIO_LTE_DIR})
 target_sources(app PRIVATE ${HIO_LTE_DIR}/hio_lte_parse.c)
 target_sources(app PRIVATE ${HIO_LTE_DIR}/hio_lte_state.c)
 target_sources(app PRIVATE ${HIO_LTE_DIR}/hio_lte_util.c)
+target_sources(app PRIVATE ${HIO_LTE_DIR}/hio_lte_str.c)
 target_sources(app PRIVATE src/test_parse.c)
 target_sources(app PRIVATE src/test_state.c)
 target_sources(app PRIVATE src/test_util.c)
+target_sources(app PRIVATE src/test_str.c)

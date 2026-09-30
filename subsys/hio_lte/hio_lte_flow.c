@@ -112,6 +112,22 @@ static void process_urc_ncellmeas(const char *line)
 	}
 }
 
+static void log_emm_cause(const char *what, int cause)
+{
+	const char *hint = hio_lte_str_emm_cause_hint(cause);
+
+	LOG_WRN("%s: EMM cause %d (%s)%s%s", what, cause, hio_lte_str_emm_cause(cause),
+		hint ? ": " : "", hint ? hint : "");
+}
+
+static void log_esm_cause(int cause)
+{
+	const char *hint = hio_lte_str_esm_cause_hint(cause);
+
+	LOG_WRN("ESM cause %d (%s)%s%s", cause, hio_lte_str_esm_cause(cause), hint ? ": " : "",
+		hint ? hint : "");
+}
+
 static void process_urc(const char *line, void *user_data)
 {
 	int ret;
@@ -154,6 +170,15 @@ static void process_urc(const char *line, void *user_data)
 
 		hio_lte_state_set_cereg_param(&cereg_param);
 
+		/* cause_type 0 is an EMM cause, 1 is manufacturer specific. */
+		if (cereg_param.cause_type == 0 && cereg_param.reject_cause) {
+			char what[48];
+
+			snprintf(what, sizeof(what), "Registration rejected, tac %s, cell %08X",
+				 cereg_param.tac, cereg_param.cid);
+			log_emm_cause(what, cereg_param.reject_cause);
+		}
+
 		if (cereg_param.stat == HIO_LTE_CEREG_PARAM_STAT_REGISTERED_HOME ||
 		    cereg_param.stat == HIO_LTE_CEREG_PARAM_STAT_REGISTERED_ROAMING) {
 			m_event_delegate_cb(HIO_LTE_FSM_EVENT_REGISTERED);
@@ -191,6 +216,10 @@ static void process_urc(const char *line, void *user_data)
 		hio_lte_state_set_rai_param(&rai_param);
 	} else if (!strncmp(line, "%NCELLMEAS: ", 12)) {
 		process_urc_ncellmeas(line + 12);
+	} else if (!strncmp(line, "+CNEC_EMM: ", 11)) {
+		log_emm_cause("Network", atoi(line + 11));
+	} else if (!strncmp(line, "+CNEC_ESM: ", 11)) {
+		log_esm_cause(atoi(line + 11));
 	}
 }
 
