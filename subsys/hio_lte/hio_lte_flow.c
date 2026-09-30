@@ -71,6 +71,14 @@ static struct hio_lte_scan_result m_scan;
 static K_SEM_DEFINE(m_scan_cells_sem, 0, 1);
 static K_SEM_DEFINE(m_scan_plmn_sem, 0, 1);
 static bool m_scan_cells_pending;
+static uint8_t m_scan_cells_act;
+
+/* Status field of the cell search in progress. */
+static int *scan_cells_status(void)
+{
+	return m_scan_cells_act == HIO_LTE_CEREG_PARAM_ACT_NBIOT ? &m_scan.cells_nbiot_status
+								  : &m_scan.cells_ltem_status;
+}
 static bool m_scan_plmn_pending;
 
 static void process_urc_ncellmeas(const char *line)
@@ -88,18 +96,29 @@ static void process_urc_ncellmeas(const char *line)
 		hio_lte_state_set_ncellmeas_param(&ncellmeas_param);
 
 		if (m_scan_cells_pending) {
-			m_scan.cells_status = 0;
-			m_scan.cell_count = MIN(ncellmeas_param.num_cells, ARRAY_SIZE(m_scan.cells));
-			memcpy(m_scan.cells, ncellmeas_param.cells,
-			       m_scan.cell_count * sizeof(m_scan.cells[0]));
-			for (size_t i = 0; i < m_scan.cell_count; i++) {
-				m_scan.cells[i].ncells = NULL;
+			*scan_cells_status() = 0;
+			for (size_t i = 0; i < ncellmeas_param.num_cells &&
+					   m_scan.cell_count < ARRAY_SIZE(m_scan.cells);
+			     i++) {
+				const struct hio_lte_ncellmeas_cell_param *c = &ncellmeas_param.cells[i];
+
+				m_scan.cells[m_scan.cell_count++] = (struct hio_lte_scan_cell){
+					.eci = c->eci,
+					.earfcn = c->earfcn,
+					.mcc = c->mcc,
+					.mnc = c->mnc,
+					.tac = c->tac,
+					.pci = c->pci,
+					.rsrp = c->rsrp,
+					.rsrq = c->rsrq,
+					.act = m_scan_cells_act,
+				};
 			}
 		}
 	} else {
 		LOG_WRN("NCELLMEAS data not valid");
 		if (m_scan_cells_pending) {
-			m_scan.cells_status = -EIO;
+			*scan_cells_status() = -EIO;
 		}
 	}
 
@@ -1271,7 +1290,7 @@ static K_WORK_DEFINE(m_scan_cells_fail_work, scan_cells_fail_work_handler);
 static void scan_cells_resp_handler(const char *resp)
 {
 	if (strstr(resp, "ERROR")) {
-		m_scan.cells_status = -EIO;
+		*scan_cells_status() = -EIO;
 		k_work_submit(&m_scan_cells_fail_work);
 	}
 }
@@ -1283,7 +1302,8 @@ void hio_lte_flow_scan_begin(enum hio_lte_scan_mode mode, bool auto_triggered)
 	memset(&m_scan, 0, sizeof(m_scan));
 	m_scan.mode = mode;
 	m_scan.auto_triggered = auto_triggered;
-	m_scan.cells_status = -ENODATA;
+	m_scan.cells_ltem_status = -ENODATA;
+	m_scan.cells_nbiot_status = -ENODATA;
 	m_scan.plmn_status = -ENODATA;
 }
 
@@ -1293,7 +1313,8 @@ void hio_lte_flow_scan_end(void)
 	m_scan.uptime_ms = k_uptime_get();
 	hio_lte_state_set_scan_result(&m_scan);
 
-	LOG_INF("Scan done, cells: %d, networks: %d (%u)", m_scan.cells_status,
+	LOG_INF("Scan done, cells lte-m: %d, nb-iot: %d (%u), networks: %d (%u)",
+		m_scan.cells_ltem_status, m_scan.cells_nbiot_status, m_scan.cell_count,
 		m_scan.plmn_status, m_scan.count);
 	for (size_t i = 0; i < MIN(m_scan.count, ARRAY_SIZE(m_scan.entries)); i++) {
 		LOG_INF("plmn: %s, act: %u, stat: %u", m_scan.entries[i].plmn,
@@ -1301,12 +1322,33 @@ void hio_lte_flow_scan_end(void)
 	}
 }
 
-/* Result arrives as a %NCELLMEAS URC. */
-int hio_lte_flow_scan_cells_start(void)
+/* RX only (CFUN=2) with the given access technologies. XSYSTEMMODE needs
+ * CFUN=4, and the modem refuses CFUN=2 from CFUN=1. */
+int hio_lte_flow_scan_rat(bool lte_m, bool nb_iot)
+{
+	int ret = hio_lte_flow_cfun(4);
+	if (ret < 0) {
+		return ret;
+	}
+
+	k_sleep(K_SECONDS(1));
+
+	ret = hio_lte_talk_at_xsystemmode(lte_m, nb_iot, 0, 0);
+	if (ret < 0) {
+		LOG_ERR("Call `hio_lte_talk_at_xsystemmode` failed: %d", ret);
+		return ret;
+	}
+
+	return hio_lte_flow_cfun(2);
+}
+
+/* Result arrives as a %NCELLMEAS URC; cells are tagged with act. */
+int hio_lte_flow_scan_cells_start(uint8_t act)
 {
 	int ret = -ENOTCONN;
 
 	k_sem_reset(&m_scan_cells_sem);
+	m_scan_cells_act = act;
 	m_scan_cells_pending = true;
 
 	if (nrf_modem_is_initialized()) {
@@ -1317,7 +1359,7 @@ int hio_lte_flow_scan_cells_start(void)
 	if (ret) {
 		LOG_ERR("Cell search not started: %d", ret);
 		m_scan_cells_pending = false;
-		m_scan.cells_status = ret;
+		*scan_cells_status() = ret;
 	}
 
 	return ret;
@@ -1361,7 +1403,7 @@ void hio_lte_flow_scan_abort(void)
 {
 	if (m_scan_cells_pending) {
 		m_scan_cells_pending = false;
-		m_scan.cells_status = -ECANCELED;
+		*scan_cells_status() = -ECANCELED;
 		hio_lte_flow_cmd("AT%NCELLMEASSTOP");
 	}
 

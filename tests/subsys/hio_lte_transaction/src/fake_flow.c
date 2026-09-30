@@ -182,8 +182,22 @@ void hio_lte_flow_scan_end(void)
 {
 }
 
-int hio_lte_flow_scan_cells_start(void)
+uint8_t fake_flow_scan_cells_act;
+atomic_t fake_flow_scan_rat_count = ATOMIC_INIT(0);
+bool fake_flow_scan_rat_lte_m;
+bool fake_flow_scan_rat_nb_iot;
+
+int hio_lte_flow_scan_rat(bool lte_m, bool nb_iot)
 {
+	fake_flow_scan_rat_lte_m = lte_m;
+	fake_flow_scan_rat_nb_iot = nb_iot;
+	atomic_inc(&fake_flow_scan_rat_count);
+	return 0;
+}
+
+int hio_lte_flow_scan_cells_start(uint8_t act)
+{
+	fake_flow_scan_cells_act = act;
 	atomic_inc(&fake_flow_scan_cells_count);
 	return 0;
 }

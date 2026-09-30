@@ -103,14 +103,18 @@ atomic_t m_flag = ATOMIC_INIT(0);
 /* A full scan takes minutes; shorter retry delays would be extended by it. */
 #define SCAN_AUTO_MIN_DELAY K_MINUTES(10)
 
-enum scan_phase {
-	SCAN_PHASE_SETTLE,
-	SCAN_PHASE_CELLS,
-	SCAN_PHASE_PLMN,
+/* In this order; each step first switches the RAT and settles. */
+enum scan_step {
+	SCAN_STEP_NONE,
+	SCAN_STEP_LTEM_CELLS,
+	SCAN_STEP_NBIOT_CELLS,
+	SCAN_STEP_PLMN,
+	SCAN_STEP_DONE,
 };
 
 static enum hio_lte_scan_mode m_scan_mode;
-static enum scan_phase m_scan_phase;
+static enum scan_step m_scan_step;
+static bool m_scan_settling;
 static bool m_scan_to_retry_delay;
 static bool m_scan_finished;
 static k_timepoint_t m_scan_timer_end;
@@ -1886,24 +1890,81 @@ static void scan_finish(void)
 	transition_state(FSM_STATE_PREPARE);
 }
 
+static bool scan_config_has(const char *rat)
+{
+	return strstr(g_hio_lte_config.mode, rat) != NULL;
+}
+
+/* Steps follow the LTE mode config: a cell search per configured RAT, then
+ * networks over all of them. */
+static bool scan_step_wanted(enum scan_step step)
+{
+	switch (step) {
+	case SCAN_STEP_LTEM_CELLS:
+		return m_scan_mode != HIO_LTE_SCAN_PLMN && scan_config_has("lte-m");
+	case SCAN_STEP_NBIOT_CELLS:
+		return m_scan_mode != HIO_LTE_SCAN_PLMN && scan_config_has("nb-iot");
+	case SCAN_STEP_PLMN:
+		return m_scan_mode != HIO_LTE_SCAN_CELLS;
+	default:
+		return false;
+	}
+}
+
 static void scan_next(void)
 {
-	if (m_scan_phase < SCAN_PHASE_CELLS && m_scan_mode != HIO_LTE_SCAN_PLMN) {
-		m_scan_phase = SCAN_PHASE_CELLS;
-		scan_arm(SCAN_WATCHDOG_TIMEOUT);
-		if (!hio_lte_flow_scan_cells_start()) {
-			return;
-		}
-	}
+	do {
+		m_scan_step++;
+	} while (m_scan_step < SCAN_STEP_DONE && !scan_step_wanted(m_scan_step));
 
-	if (m_scan_phase < SCAN_PHASE_PLMN && m_scan_mode != HIO_LTE_SCAN_CELLS) {
-		m_scan_phase = SCAN_PHASE_PLMN;
-		scan_arm(SCAN_WATCHDOG_TIMEOUT);
-		hio_lte_flow_scan_plmn_start();
+	if (m_scan_step == SCAN_STEP_DONE) {
+		scan_finish();
 		return;
 	}
 
-	scan_finish();
+	bool lte_m = m_scan_step == SCAN_STEP_LTEM_CELLS ||
+		     (m_scan_step == SCAN_STEP_PLMN && scan_config_has("lte-m"));
+	bool nb_iot = m_scan_step == SCAN_STEP_NBIOT_CELLS ||
+		      (m_scan_step == SCAN_STEP_PLMN && scan_config_has("nb-iot"));
+
+	int ret = hio_lte_flow_scan_rat(lte_m, nb_iot);
+	if (ret < 0) {
+		LOG_ERR("Call `hio_lte_flow_scan_rat` failed: %d", ret);
+	}
+
+	m_scan_settling = true;
+	scan_arm(SCAN_SETTLE_DELAY);
+}
+
+static void scan_step_start(void)
+{
+	m_scan_settling = false;
+	scan_arm(SCAN_WATCHDOG_TIMEOUT);
+
+	switch (m_scan_step) {
+	case SCAN_STEP_LTEM_CELLS:
+		if (hio_lte_flow_scan_cells_start(HIO_LTE_CEREG_PARAM_ACT_LTE)) {
+			scan_next();
+		}
+		break;
+	case SCAN_STEP_NBIOT_CELLS:
+		if (hio_lte_flow_scan_cells_start(HIO_LTE_CEREG_PARAM_ACT_NBIOT)) {
+			scan_next();
+		}
+		break;
+	case SCAN_STEP_PLMN:
+		/* Completes through COPS_DONE, also on failure. */
+		hio_lte_flow_scan_plmn_start();
+		break;
+	default:
+		break;
+	}
+}
+
+static bool scan_in_cells_step(void)
+{
+	return !m_scan_settling &&
+	       (m_scan_step == SCAN_STEP_LTEM_CELLS || m_scan_step == SCAN_STEP_NBIOT_CELLS);
 }
 
 static int on_enter_scan(void)
@@ -1921,23 +1982,10 @@ static int on_enter_scan(void)
 	k_event_clear(&m_states_event, ATTACHED_BIT | CONNECTED_BIT);
 	abort_pending_send_recv(-EBUSY);
 
-	/* RX only: no attach attempts, and the search is not limited to the
-	 * camped RAT as it is in CFUN=1. The modem refuses CFUN=2 from CFUN=1,
-	 * so go through CFUN=4. */
-	int ret = hio_lte_flow_cfun(4);
-	if (ret < 0) {
-		LOG_ERR("Call `hio_lte_flow_cfun` failed: %d", ret);
-	}
-
-	k_sleep(K_SECONDS(1));
-
-	ret = hio_lte_flow_cfun(2);
-	if (ret < 0) {
-		LOG_ERR("Call `hio_lte_flow_cfun` failed: %d", ret);
-	}
-
-	m_scan_phase = SCAN_PHASE_SETTLE;
-	scan_arm(SCAN_SETTLE_DELAY);
+	/* Steps run in RX only mode (CFUN=2): no attach attempts, and the
+	 * search is not limited to the camped RAT as it is in CFUN=1. */
+	m_scan_step = SCAN_STEP_NONE;
+	scan_next();
 
 	return 0;
 }
@@ -1963,9 +2011,9 @@ static int scan_event_handler(enum hio_lte_fsm_event event)
 		if (!sys_timepoint_expired(m_scan_timer_end)) {
 			break;
 		}
-		if (m_scan_phase == SCAN_PHASE_SETTLE) {
-			scan_next();
-		} else if (m_scan_phase == SCAN_PHASE_CELLS) {
+		if (m_scan_settling) {
+			scan_step_start();
+		} else if (scan_in_cells_step()) {
 			LOG_WRN("Cell search did not finish, stopping it");
 			hio_lte_flow_cmd("AT%NCELLMEASSTOP");
 			scan_next();
@@ -1980,12 +2028,12 @@ static int scan_event_handler(enum hio_lte_fsm_event event)
 		abort_pending_send_recv(-EBUSY);
 		break;
 	case HIO_LTE_FSM_EVENT_NCELLMEAS:
-		if (m_scan_phase == SCAN_PHASE_CELLS) {
+		if (scan_in_cells_step()) {
 			scan_next();
 		}
 		break;
 	case HIO_LTE_FSM_EVENT_COPS_DONE:
-		if (m_scan_phase == SCAN_PHASE_PLMN) {
+		if (!m_scan_settling && m_scan_step == SCAN_STEP_PLMN) {
 			scan_next();
 		}
 		break;

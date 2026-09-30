@@ -524,6 +524,21 @@ struct hio_lte_scan_entry {
 };
 
 /**
+ * @brief One cell found by a scan cell search.
+ */
+struct hio_lte_scan_cell {
+	uint32_t eci;    /**< E-UTRA cell identifier. */
+	uint32_t earfcn; /**< EARFCN. */
+	uint16_t mcc;    /**< Mobile country code. */
+	uint16_t mnc;    /**< Mobile network code. */
+	uint16_t tac;    /**< Tracking area code. */
+	uint16_t pci;    /**< Physical cell ID. */
+	int16_t rsrp;    /**< RSRP index (dBm = index - 141). */
+	int16_t rsrq;    /**< RSRQ index. */
+	uint8_t act;     /**< @ref hio_lte_cereg_param_act. */
+};
+
+/**
  * @brief What a network scan covers.
  */
 enum hio_lte_scan_mode {
@@ -540,10 +555,10 @@ struct hio_lte_scan_result {
 	bool auto_triggered; /**< Started by the attach retry logic, not by a request. */
 	uint8_t mode;        /**< @ref hio_lte_scan_mode. */
 	int64_t uptime_ms;   /**< Uptime when the scan completed. */
-	int cells_status;    /**< 0 ok, -ENODATA not run, other error. */
-	uint8_t cell_count;  /**< Cells found by the GCI search. */
-	/** Cells; neighbour lists are not kept (ncells is NULL). */
-	struct hio_lte_ncellmeas_cell_param cells[HIO_LTE_NCELLMEAS_CELL_MAX];
+	int cells_ltem_status;  /**< LTE-M cell search: 0 ok, -ENODATA not run, error. */
+	int cells_nbiot_status; /**< NB-IoT cell search: 0 ok, -ENODATA not run, error. */
+	uint8_t cell_count;     /**< Cells found by both searches. */
+	struct hio_lte_scan_cell cells[CONFIG_HIO_LTE_SCAN_MAX_CELLS];
 	int plmn_status;     /**< 0 ok, -EINTR partial, -EBUSY, -ENODATA not run, other error. */
 	uint8_t count;       /**< Networks found; entries holds at most the first ones. */
 	struct hio_lte_scan_entry entries[CONFIG_HIO_LTE_SCAN_MAX_ENTRIES];
@@ -553,7 +568,8 @@ struct hio_lte_scan_result {
  * @brief Request a network scan.
  *
  * Runs in receive-only mode (CFUN=2) and takes priority over an ongoing
- * attach; the connection is re-established after it. Completion is signalled
+ * attach; the connection is re-established after it. Covers the access
+ * technologies of the LTE mode config, a cell search for each. Completion is signalled
  * by @ref HIO_LTE_EVENT_SCAN_DONE.
  *
  * @retval 0         Scan requested.
