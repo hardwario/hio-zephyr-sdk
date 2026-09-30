@@ -24,6 +24,9 @@ struct cgdcont_param {
 };
 
 int hio_lte_parse_plmn(const char *str, int *plmn, int16_t *mcc, int16_t *mnc);
+/* Stores up to max entries; count is the total found. */
+int hio_lte_parse_cops_list(const char *str, struct hio_lte_scan_entry *entries, size_t max,
+			    size_t *count);
 int hio_lte_parse_urc_cereg(const char *line, struct hio_lte_cereg_param *param);
 int hio_lte_parse_urc_xmodemsleep(const char *line, int *p1, int *p2);
 int hio_lte_parse_urc_rai(const char *line, struct hio_lte_rai_param *param);

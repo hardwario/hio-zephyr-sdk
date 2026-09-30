@@ -31,6 +31,8 @@ int hio_lte_talk_at_cmee(int p1);
 int hio_lte_talk_at_cnec(int p1);
 int hio_lte_talk_at_coneval(char *buf, size_t size);
 int hio_lte_talk_at_cops_q(char *buf, size_t size);
+int hio_lte_talk_at_pcops_list_async(nrf_modem_at_resp_handler_t cb);
+int hio_lte_talk_ncellmeas_cb(int p1, int p2, nrf_modem_at_resp_handler_t cb);
 int hio_lte_talk_at_cops(int p1, int *p2, const char *p3);
 int hio_lte_talk_at_cpsms(int *p1, const char *p2, const char *p3);
 int hio_lte_talk_at_cscon(int p1);

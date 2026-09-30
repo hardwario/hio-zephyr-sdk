@@ -57,6 +57,7 @@ enum fsm_state {
 	FSM_STATE_RECEIVE,
 	FSM_STATE_CONEVAL,
 	FSM_STATE_NCELLMEAS,
+	FSM_STATE_SCAN,
 };
 
 struct fsm_state_desc {
@@ -81,6 +82,7 @@ static K_EVENT_DEFINE(m_states_event);
 #define ATTACHED_BIT  BIT(1)
 #define CONNECTED_BIT BIT(2)
 #define DISABLED_BIT  BIT(3)
+#define SCAN_DONE_BIT BIT(4)
 
 #define FLAG_CSCON           BIT(0)
 #define FLAG_GNSS_ENABLE     BIT(1)
@@ -90,12 +92,99 @@ static K_EVENT_DEFINE(m_states_event);
 /* Bit index passed to atomic_*_bit, not a mask; BIT(5) would be 32 and index
  * past the 32-bit atomic word, so the next free index is used directly. */
 #define FLAG_SOCKET_RECONFIG 5
+#define FLAG_SCAN_REQ        6
+#define FLAG_SCAN_AUTO       7
 atomic_t m_flag = ATOMIC_INIT(0);
+
+/* Safety net if a scan step never completes; the scan itself has no timeout. */
+#define SCAN_WATCHDOG_TIMEOUT K_MINUTES(15)
+/* Let the modem settle in CFUN=2 before the first scan step. */
+#define SCAN_SETTLE_DELAY K_SECONDS(2)
+/* A full scan takes minutes; shorter retry delays would be extended by it. */
+#define SCAN_AUTO_MIN_DELAY K_MINUTES(10)
+
+/* In this order; each step first switches the RAT and settles. */
+enum scan_step {
+	SCAN_STEP_NONE,
+	SCAN_STEP_LTEM_CELLS,
+	SCAN_STEP_NBIOT_CELLS,
+	SCAN_STEP_PLMN,
+	SCAN_STEP_DONE,
+};
+
+static enum hio_lte_scan_mode m_scan_mode;
+static enum scan_step m_scan_step;
+static bool m_scan_settling;
+static bool m_scan_to_retry_delay;
+static bool m_scan_finished;
+static k_timepoint_t m_scan_timer_end;
+/* Set while RETRY_DELAY is left for a scan, so its delay resumes after it. */
+static bool m_retry_resume;
+static k_timepoint_t m_retry_end;
+static int m_scan_auto_count;
 
 K_MUTEX_DEFINE(m_send_recv_lock);
 struct hio_lte_send_recv_param *m_send_recv_param = NULL;
 static int m_send_recv_result;
 static int m_send_attempt;
+
+/* The caller may drop m_send_recv_param while the FSM is blocked in send or
+ * recv. The FSM works on its own copy (m_txn) and ends the transaction only if
+ * it is still the one it took (m_txn_gen changes on publish, drop and end). */
+static struct k_spinlock m_txn_lock;
+static uint32_t m_txn_gen;
+static uint32_t m_txn_gen_taken;
+static struct hio_lte_send_recv_param m_txn;
+static size_t m_txn_recv_len;
+
+static bool txn_take(void)
+{
+	bool taken = false;
+	k_spinlock_key_t key = k_spin_lock(&m_txn_lock);
+
+	if (m_send_recv_param) {
+		m_txn = *m_send_recv_param;
+		m_txn_recv_len = 0;
+		m_txn.recv_len = &m_txn_recv_len;
+		m_txn_gen_taken = m_txn_gen;
+		taken = true;
+	}
+
+	k_spin_unlock(&m_txn_lock, key);
+	return taken;
+}
+
+static bool txn_current(void)
+{
+	k_spinlock_key_t key = k_spin_lock(&m_txn_lock);
+	bool current = m_send_recv_param && m_txn_gen == m_txn_gen_taken;
+
+	k_spin_unlock(&m_txn_lock, key);
+	return current;
+}
+
+/* End the transaction; only_taken skips it when the caller has moved on. */
+static void txn_end(int result, bool only_taken, bool with_recv_len)
+{
+	bool ended = false;
+	k_spinlock_key_t key = k_spin_lock(&m_txn_lock);
+
+	if (m_send_recv_param && (!only_taken || m_txn_gen == m_txn_gen_taken)) {
+		if (with_recv_len) {
+			*m_send_recv_param->recv_len = m_txn_recv_len;
+		}
+		m_send_recv_result = result;
+		m_send_recv_param = NULL;
+		m_txn_gen++;
+		ended = true;
+	}
+
+	k_spin_unlock(&m_txn_lock, key);
+
+	if (ended) {
+		k_event_post(&m_states_event, SEND_RECV_BIT);
+	}
+}
 
 struct hio_lte_metrics m_metrics;
 K_MUTEX_DEFINE(m_metrics_lock);
@@ -272,6 +361,8 @@ const char *fsm_state_str(enum fsm_state state)
 		return "coneval";
 	case FSM_STATE_NCELLMEAS:
 		return "ncellmeas";
+	case FSM_STATE_SCAN:
+		return "scan";
 	}
 	return "unknown";
 }
@@ -593,17 +684,32 @@ int hio_lte_get_ceer(char **ceer)
 
 int hio_lte_send_recv(const struct hio_lte_send_recv_param *param)
 {
+	/* Test mode: the modem belongs to the shell, keep the FSM down. */
+	if (g_hio_lte_config.test) {
+		LOG_WRN("LTE Test mode enabled");
+		return -ENOTSUP;
+	}
+
 	LOG_INF("send_len: %u", param->send_len);
 
 	k_timepoint_t end = sys_timepoint_calc(param->timeout);
 
-	k_mutex_lock(&m_send_recv_lock, sys_timepoint_timeout(end));
+	int lock_ret = k_mutex_lock(&m_send_recv_lock, sys_timepoint_timeout(end));
+	if (lock_ret) {
+		/* Never proceed without the lock: assigning m_send_recv_param
+		 * would retarget an exchange another caller is still blocked on. */
+		LOG_WRN("Transaction already in progress, giving up: %d", lock_ret);
+		return -EBUSY;
+	}
 
 	LOG_DBG("locked");
 
+	k_spinlock_key_t key = k_spin_lock(&m_txn_lock);
 	m_send_recv_param = (struct hio_lte_send_recv_param *)param;
 	m_send_recv_result = 0;
 	m_send_attempt = 0;
+	m_txn_gen++;
+	k_spin_unlock(&m_txn_lock, key);
 
 	k_event_clear(&m_states_event, SEND_RECV_BIT);
 
@@ -614,6 +720,15 @@ int hio_lte_send_recv(const struct hio_lte_send_recv_param *param)
 	k_event_wait(&m_states_event, SEND_RECV_BIT, false, sys_timepoint_timeout(end));
 
 	if (sys_timepoint_expired(end)) {
+		/* param is the caller's stack struct: drop it before that frame is
+		 * reused. The cloud transfer layer owns retransmission. */
+		key = k_spin_lock(&m_txn_lock);
+		if (m_send_recv_param == param) {
+			m_send_recv_param = NULL;
+			m_txn_gen++;
+		}
+		k_spin_unlock(&m_txn_lock, key);
+
 		k_mutex_unlock(&m_send_recv_lock);
 		delegate_event(HIO_LTE_FSM_EVENT_TIMEOUT);
 		return -ETIMEDOUT;
@@ -714,16 +829,79 @@ int hio_lte_schedule_ncellmeas(void)
 	return 0;
 }
 
+int hio_lte_scan(enum hio_lte_scan_mode mode)
+{
+	if (mode > HIO_LTE_SCAN_CELLS) {
+		return -EINVAL;
+	}
+
+	if (g_hio_lte_config.test) {
+		LOG_WRN("LTE Test mode enabled");
+		return -ENOTSUP;
+	}
+
+	k_mutex_lock(&m_state_lock, K_FOREVER);
+	enum fsm_state current = m_state;
+	k_mutex_unlock(&m_state_lock);
+
+	if (current == FSM_STATE_DISABLED) {
+		return -ENODEV;
+	}
+
+	if (current == FSM_STATE_SCAN) {
+		return -EALREADY;
+	}
+
+	/* Before the flag: the FSM may pick the request up right after it. */
+	m_scan_mode = mode;
+	atomic_clear_bit(&m_flag, FLAG_SCAN_AUTO);
+
+	if (atomic_test_and_set_bit(&m_flag, FLAG_SCAN_REQ)) {
+		return -EALREADY;
+	}
+
+	k_event_clear(&m_states_event, SCAN_DONE_BIT);
+
+	delegate_event(HIO_LTE_FSM_EVENT_SCAN);
+
+	return 0;
+}
+
+int hio_lte_wait_for_scan(k_timeout_t timeout)
+{
+	return k_event_wait(&m_states_event, SCAN_DONE_BIT, false, timeout) ? 0 : -ETIMEDOUT;
+}
+
+int hio_lte_get_scan_result(struct hio_lte_scan_result *result)
+{
+	return hio_lte_state_get_scan_result(result);
+}
+
+int hio_lte_get_cereg_history(struct hio_lte_cereg_event *events, size_t max, size_t *count)
+{
+	return hio_lte_state_get_cereg_history(events, max, count);
+}
+
+int hio_lte_get_last_reject(struct hio_lte_cereg_event *event)
+{
+	return hio_lte_state_get_last_reject(event);
+}
+
+/* The scan drops registration (CFUN=2), so it ends with a reattach unless it
+ * runs within the attach retry delay. */
+static int begin_scan(bool to_retry_delay)
+{
+	m_scan_to_retry_delay = to_retry_delay;
+	transition_state(FSM_STATE_SCAN);
+	return 0;
+}
+
 /* End any in-flight hio_lte_send_recv transaction towards its caller with the
  * given result and wake it, instead of leaving it blocked until its own timeout.
  * Called on entry to states where the transaction can no longer complete. */
 static void abort_pending_send_recv(int result)
 {
-	if (m_send_recv_param) {
-		m_send_recv_result = result;
-		m_send_recv_param = NULL;
-		k_event_post(&m_states_event, SEND_RECV_BIT);
-	}
+	txn_end(result, false, false);
 }
 
 static int on_enter_disabled(void)
@@ -742,6 +920,13 @@ static int on_enter_disabled(void)
 	k_event_clear(&m_states_event, ATTACHED_BIT | CONNECTED_BIT);
 	m_error_ctx.flow_check_failures = 0;
 
+	/* A request must not survive into the next enable; release its waiter. */
+	if (atomic_test_and_clear_bit(&m_flag, FLAG_SCAN_REQ)) {
+		k_event_post(&m_states_event, SCAN_DONE_BIT);
+	}
+	atomic_clear_bit(&m_flag, FLAG_SCAN_AUTO);
+	m_retry_resume = false;
+
 	/* Signal callers blocked in hio_lte_disable() that DISABLED is reached. */
 	k_event_post(&m_states_event, DISABLED_BIT);
 
@@ -754,6 +939,7 @@ static int on_leave_disabled(void)
 
 	memset(&m_error_ctx, 0, sizeof(m_error_ctx));
 	m_attach_retry_count = 0;
+	m_scan_auto_count = 0;
 
 	atomic_clear_bit(&m_flag, FLAG_CSCON);
 	atomic_clear_bit(&m_flag, FLAG_CFUN4);
@@ -772,20 +958,9 @@ static int disabled_event_handler(enum hio_lte_fsm_event event)
 	case HIO_LTE_FSM_EVENT_ENABLE:
 		transition_state(FSM_STATE_PREPARE);
 		break;
-	case HIO_LTE_FSM_EVENT_ERROR:
-		transition_state(FSM_STATE_ERROR);
-		break;
-	case HIO_LTE_FSM_EVENT_DEREGISTERED:
-		break;
-	case HIO_LTE_FSM_EVENT_TIMEOUT:
-		/* No-op. DISABLED arms no timer of its own, but a TIMEOUT armed by
-		 * a previous state may still arrive here (e.g. DISABLE requested
-		 * from ERROR, whose timer is not cancelled on leave). Swallow it:
-		 * falling through to default would return -ENOTSUP and drop the
-		 * FSM into ERROR, reactivating the modem we just shut down. */
-		break;
-	case HIO_LTE_FSM_EVENT_SOCKET_RECONFIG:
-		/* Config already stored; nothing to do while disabled. */
+	case HIO_LTE_FSM_EVENT_SEND:
+		/* Fail the transaction instead of waking the modem for it. */
+		abort_pending_send_recv(-ENOTCONN);
 		break;
 	case HIO_LTE_FSM_EVENT_DISABLE:
 		/* Already disabled: re-post so a caller that requested disable
@@ -793,7 +968,9 @@ static int disabled_event_handler(enum hio_lte_fsm_event event)
 		k_event_post(&m_states_event, DISABLED_BIT);
 		break;
 	default:
-		return -ENOTSUP;
+		/* Anything else is stale (timers, URCs, READY from CONEVAL, ...).
+		 * Only ENABLE may power the modem up again. */
+		break;
 	}
 	return 0;
 }
@@ -801,6 +978,8 @@ static int disabled_event_handler(enum hio_lte_fsm_event event)
 static int on_enter_error(void)
 {
 	m_error_ctx.on_timeout_state = FSM_STATE_PREPARE; /* Default timeout state */
+	/* A scan left for ERROR does not return to its retry delay. */
+	m_retry_resume = false;
 
 	int ret = hio_lte_flow_check();
 	if (ret == 0) {
@@ -969,6 +1148,7 @@ static int on_enter_reset_loop(void)
 	start_timer(MDMEV_RESET_LOOP_DELAY);
 
 	m_attach_retry_count = 0;
+	m_scan_auto_count = 0;
 
 	return 0;
 }
@@ -1028,14 +1208,36 @@ static int on_enter_retry_delay(void)
 
 	k_sleep(K_SECONDS(5));
 
+	if (m_retry_resume) {
+		m_retry_resume = false;
+		LOG_INF("Resuming attach retry delay");
+		start_timer(sys_timepoint_timeout(m_retry_end));
+		return 0;
+	}
+
 	struct hio_lte_attach_timeout timeout = get_attach_timeout(m_attach_retry_count);
 
 	LOG_INF("Waiting %lld minutes before attach retry",
 		k_ticks_to_ms_floor64(timeout.retry_delay.ticks) / MSEC_PER_SEC / 60);
 
+	m_retry_end = sys_timepoint_calc(timeout.retry_delay);
 	start_timer(timeout.retry_delay);
 
 	m_start = k_uptime_get_32();
+
+#if defined(CONFIG_HIO_LTE_SCAN_AUTO)
+	/* The scan fills the delay, so it only runs in a long enough one. */
+	if (timeout.retry_delay.ticks >= SCAN_AUTO_MIN_DELAY.ticks &&
+	    m_scan_auto_count++ % CONFIG_HIO_LTE_SCAN_AUTO_EVERY == 0 &&
+	    !atomic_test_and_set_bit(&m_flag, FLAG_SCAN_REQ)) {
+		m_scan_mode = HIO_LTE_SCAN_ALL;
+		atomic_set_bit(&m_flag, FLAG_SCAN_AUTO);
+	}
+#endif
+
+	if (atomic_test_bit(&m_flag, FLAG_SCAN_REQ)) {
+		delegate_event(HIO_LTE_FSM_EVENT_SCAN);
+	}
 
 	return 0;
 }
@@ -1046,6 +1248,10 @@ static int retry_delay_event_handler(enum hio_lte_fsm_event event)
 	case HIO_LTE_FSM_EVENT_TIMEOUT:
 		transition_state(FSM_STATE_PREPARE);
 		break;
+	case HIO_LTE_FSM_EVENT_SCAN: {
+		m_retry_resume = true;
+		return begin_scan(true);
+	}
 	case HIO_LTE_FSM_EVENT_ERROR:
 		transition_state(FSM_STATE_ERROR);
 		break;
@@ -1061,7 +1267,9 @@ static int retry_delay_event_handler(enum hio_lte_fsm_event event)
 static int on_leave_retry_delay(void)
 {
 	stop_timer();
-	m_attach_retry_count++; /* Increment retry count */
+	if (!m_retry_resume) {
+		m_attach_retry_count++; /* Increment retry count */
+	}
 	return 0;
 }
 
@@ -1086,14 +1294,21 @@ static int on_enter_attach(void)
 
 	start_timer(timeout.attach_timeout);
 
+	if (atomic_test_bit(&m_flag, FLAG_SCAN_REQ)) {
+		delegate_event(HIO_LTE_FSM_EVENT_SCAN);
+	}
+
 	return 0;
 }
 
 static int attach_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
+	case HIO_LTE_FSM_EVENT_SCAN:
+		return begin_scan(false);
 	case HIO_LTE_FSM_EVENT_REGISTERED:
 		m_attach_retry_count = 0;
+		m_scan_auto_count = 0;
 		k_mutex_lock(&m_metrics_lock, K_FOREVER);
 		m_metrics.attach_last_duration_ms = k_uptime_get_32() - m_start;
 		m_metrics.attach_duration_ms += m_metrics.attach_last_duration_ms;
@@ -1215,6 +1430,10 @@ static int on_enter_ready(void)
 		return 0;
 	}
 
+	if (atomic_test_bit(&m_flag, FLAG_SCAN_REQ)) {
+		delegate_event(HIO_LTE_FSM_EVENT_SCAN);
+	}
+
 	if (m_send_recv_param) {
 		delegate_event(HIO_LTE_FSM_EVENT_SEND);
 	}
@@ -1227,6 +1446,8 @@ static int on_enter_ready(void)
 static int ready_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
+	case HIO_LTE_FSM_EVENT_SCAN:
+		return begin_scan(false);
 	case HIO_LTE_FSM_EVENT_SOCKET_RECONFIG:
 		if (atomic_test_and_clear_bit(&m_flag, FLAG_SOCKET_RECONFIG)) {
 			stop_timer();
@@ -1297,6 +1518,10 @@ static int on_leave_ready(void)
 
 static int on_enter_sleep(void)
 {
+	if (atomic_test_bit(&m_flag, FLAG_SCAN_REQ)) {
+		delegate_event(HIO_LTE_FSM_EVENT_SCAN);
+	}
+
 	if (m_send_recv_param) {
 		delegate_event(HIO_LTE_FSM_EVENT_SEND);
 	}
@@ -1307,6 +1532,8 @@ static int on_enter_sleep(void)
 static int sleep_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
+	case HIO_LTE_FSM_EVENT_SCAN:
+		return begin_scan(false);
 	case HIO_LTE_FSM_EVENT_SEND:
 		__fallthrough;
 	case HIO_LTE_FSM_EVENT_READY:
@@ -1342,14 +1569,14 @@ static int on_enter_send(void)
 {
 	int ret;
 
-	if (!m_send_recv_param) {
+	if (!txn_take()) {
 		delegate_event(HIO_LTE_FSM_EVENT_READY);
 		return 0;
 	}
 
 	k_mutex_lock(&m_metrics_lock, K_FOREVER);
 	m_metrics.uplink_count++;
-	m_metrics.uplink_bytes += m_send_recv_param->send_len;
+	m_metrics.uplink_bytes += m_txn.send_len;
 	ret = hio_rtc_get_ts(&m_metrics.uplink_last_ts);
 	if (ret) {
 		LOG_ERR("Call `hio_rtc_get_ts` failed: %d", ret);
@@ -1364,7 +1591,7 @@ static int on_enter_send(void)
 	 * caller's remaining deadline, capped at the hard ceiling: a send must
 	 * never block past the caller's own deadline, but K_FOREVER transfers
 	 * still get the full ceiling. */
-	k_timepoint_t end = sys_timepoint_calc(m_send_recv_param->timeout);
+	k_timepoint_t end = sys_timepoint_calc(m_txn.timeout);
 	k_timeout_t remaining = sys_timepoint_timeout(end);
 	int remaining_sec =
 		K_TIMEOUT_EQ(remaining, K_FOREVER) ? -1 : k_ticks_to_sec_ceil32(remaining.ticks);
@@ -1383,7 +1610,7 @@ static int on_enter_send(void)
 	 * The normal path stops this timer right after the send returns. */
 	start_timer(K_SECONDS(sndtimeo_sec + SEND_WATCHDOG_GUARD_SEC));
 
-	ret = hio_lte_flow_send(m_send_recv_param);
+	ret = hio_lte_flow_send(&m_txn);
 	if (ret < 0) {
 		stop_timer();
 		LOG_ERR("Call `hio_lte_flow_send` failed: %d", ret);
@@ -1417,16 +1644,15 @@ static int send_event_handler(enum hio_lte_fsm_event event)
 		__fallthrough;
 	case HIO_LTE_FSM_EVENT_SEND:
 		stop_timer();
-		if (m_send_recv_param) {
+		if (txn_current()) {
 			LOG_INF("Send event on send state");
-			if (m_send_recv_param->recv_buf) {
+			if (m_txn.recv_buf) {
 				transition_state(FSM_STATE_RECEIVE);
 			} else {
-				if (m_send_recv_param->rai) {
+				if (m_txn.rai) {
 					k_sleep(K_MSEC(500));
 				}
-				m_send_recv_param = NULL;
-				k_event_post(&m_states_event, SEND_RECV_BIT);
+				txn_end(0, true, false);
 				transition_state(FSM_STATE_CONEVAL);
 			}
 		} else {
@@ -1448,12 +1674,10 @@ static int send_event_handler(enum hio_lte_fsm_event event)
 		 * did not let us transmit" from "we transmitted but the reply was
 		 * lost" and back off differently. First attempt is
 		 * m_send_attempt == 1, so the budget is 1 + retry_count. */
-		if (m_send_recv_param && m_send_attempt > m_send_recv_param->retry_count) {
+		if (txn_current() && m_send_attempt > m_txn.retry_count) {
 			LOG_WRN("Send gave up after %d attempt(s): no connection granted",
 				m_send_attempt);
-			m_send_recv_result = -ENOTCONN;
-			m_send_recv_param = NULL;
-			k_event_post(&m_states_event, SEND_RECV_BIT);
+			txn_end(-ENOTCONN, true, false);
 		}
 		transition_state(FSM_STATE_READY);
 		break;
@@ -1483,7 +1707,7 @@ static int on_enter_receive(void)
 	int ret;
 	LOG_INF("on_enter_receive");
 
-	if (!m_send_recv_param) {
+	if (!txn_current()) {
 		delegate_event(HIO_LTE_FSM_EVENT_READY);
 		return 0;
 	}
@@ -1496,7 +1720,7 @@ static int on_enter_receive(void)
 	}
 	k_mutex_unlock(&m_metrics_lock);
 
-	ret = hio_lte_flow_recv(m_send_recv_param);
+	ret = hio_lte_flow_recv(&m_txn);
 	if (ret < 0) {
 		LOG_ERR("Call `hio_lte_flow_recv` failed: %d", ret);
 
@@ -1509,22 +1733,19 @@ static int on_enter_receive(void)
 		 * FSM recover and silently re-send the pending param forever; the
 		 * cloud transfer layer owns the retransmission. Do this before
 		 * returning into the ERROR recovery path. */
-		m_send_recv_result = -ETIMEDOUT;
-		m_send_recv_param = NULL;
-		k_event_post(&m_states_event, SEND_RECV_BIT);
+		txn_end(-ETIMEDOUT, true, false);
 
 		return ret;
 	}
 
 	k_mutex_lock(&m_metrics_lock, K_FOREVER);
-	m_metrics.downlink_bytes += *m_send_recv_param->recv_len;
+	m_metrics.downlink_bytes += m_txn_recv_len;
 	k_mutex_unlock(&m_metrics_lock);
 
 	k_sleep(K_MSEC(100));
 	delegate_event(HIO_LTE_FSM_EVENT_RECV);
 
-	m_send_recv_param = NULL;
-	k_event_post(&m_states_event, SEND_RECV_BIT);
+	txn_end(0, true, true);
 
 	return 0;
 }
@@ -1646,6 +1867,188 @@ static int on_leave_ncellmeas(void)
 	return 0;
 }
 
+static void scan_arm(k_timeout_t timeout)
+{
+	/* start_timer() does not replace a pending timer. */
+	stop_timer();
+	m_scan_timer_end = sys_timepoint_calc(timeout);
+	start_timer(timeout);
+}
+
+static void scan_finish(void)
+{
+	hio_lte_flow_scan_end();
+	m_scan_finished = true;
+	k_event_post(&m_states_event, SCAN_DONE_BIT);
+	hio_lte_notify(HIO_LTE_EVENT_SCAN_DONE);
+
+	if (m_scan_to_retry_delay) {
+		transition_state(FSM_STATE_RETRY_DELAY);
+		return;
+	}
+
+	transition_state(FSM_STATE_PREPARE);
+}
+
+static bool scan_config_has(const char *rat)
+{
+	return strstr(g_hio_lte_config.mode, rat) != NULL;
+}
+
+/* Steps follow the LTE mode config: a cell search per configured RAT, then
+ * networks over all of them. */
+static bool scan_step_wanted(enum scan_step step)
+{
+	switch (step) {
+	case SCAN_STEP_LTEM_CELLS:
+		return m_scan_mode != HIO_LTE_SCAN_PLMN && scan_config_has("lte-m");
+	case SCAN_STEP_NBIOT_CELLS:
+		return m_scan_mode != HIO_LTE_SCAN_PLMN && scan_config_has("nb-iot");
+	case SCAN_STEP_PLMN:
+		return m_scan_mode != HIO_LTE_SCAN_CELLS;
+	default:
+		return false;
+	}
+}
+
+static void scan_next(void)
+{
+	do {
+		m_scan_step++;
+	} while (m_scan_step < SCAN_STEP_DONE && !scan_step_wanted(m_scan_step));
+
+	if (m_scan_step == SCAN_STEP_DONE) {
+		scan_finish();
+		return;
+	}
+
+	bool lte_m = m_scan_step == SCAN_STEP_LTEM_CELLS ||
+		     (m_scan_step == SCAN_STEP_PLMN && scan_config_has("lte-m"));
+	bool nb_iot = m_scan_step == SCAN_STEP_NBIOT_CELLS ||
+		      (m_scan_step == SCAN_STEP_PLMN && scan_config_has("nb-iot"));
+
+	int ret = hio_lte_flow_scan_rat(lte_m, nb_iot);
+	if (ret < 0) {
+		LOG_ERR("Call `hio_lte_flow_scan_rat` failed: %d", ret);
+	}
+
+	m_scan_settling = true;
+	scan_arm(SCAN_SETTLE_DELAY);
+}
+
+static void scan_step_start(void)
+{
+	m_scan_settling = false;
+	scan_arm(SCAN_WATCHDOG_TIMEOUT);
+
+	switch (m_scan_step) {
+	case SCAN_STEP_LTEM_CELLS:
+		if (hio_lte_flow_scan_cells_start(HIO_LTE_CEREG_PARAM_ACT_LTE)) {
+			scan_next();
+		}
+		break;
+	case SCAN_STEP_NBIOT_CELLS:
+		if (hio_lte_flow_scan_cells_start(HIO_LTE_CEREG_PARAM_ACT_NBIOT)) {
+			scan_next();
+		}
+		break;
+	case SCAN_STEP_PLMN:
+		/* Completes through COPS_DONE, also on failure. */
+		hio_lte_flow_scan_plmn_start();
+		break;
+	default:
+		break;
+	}
+}
+
+static bool scan_in_cells_step(void)
+{
+	return !m_scan_settling &&
+	       (m_scan_step == SCAN_STEP_LTEM_CELLS || m_scan_step == SCAN_STEP_NBIOT_CELLS);
+}
+
+static int on_enter_scan(void)
+{
+	atomic_clear_bit(&m_flag, FLAG_SCAN_REQ);
+	/* Superseded: the scan ends with a reattach or in RETRY_DELAY. */
+	atomic_clear_bit(&m_flag, FLAG_CFUN4);
+
+	hio_lte_flow_scan_begin(m_scan_mode, atomic_test_and_clear_bit(&m_flag, FLAG_SCAN_AUTO));
+	m_scan_finished = false;
+
+	/* Not connected while scanning: callers wait in wait_for_connected()
+	 * instead of each timing out on a SEND the scan ignores. -EBUSY is a
+	 * local refusal, not counted towards cloud address failover. */
+	k_event_clear(&m_states_event, ATTACHED_BIT | CONNECTED_BIT);
+	abort_pending_send_recv(-EBUSY);
+
+	/* Steps run in RX only mode (CFUN=2): no attach attempts, and the
+	 * search is not limited to the camped RAT as it is in CFUN=1. */
+	m_scan_step = SCAN_STEP_NONE;
+	scan_next();
+
+	return 0;
+}
+
+static int on_leave_scan(void)
+{
+	stop_timer();
+
+	if (!m_scan_finished) {
+		hio_lte_flow_scan_abort();
+		k_event_post(&m_states_event, SCAN_DONE_BIT);
+		hio_lte_notify(HIO_LTE_EVENT_SCAN_DONE);
+	}
+
+	return 0;
+}
+
+static int scan_event_handler(enum hio_lte_fsm_event event)
+{
+	switch (event) {
+	case HIO_LTE_FSM_EVENT_TIMEOUT:
+		/* Ignore a stale timeout queued by the previous state. */
+		if (!sys_timepoint_expired(m_scan_timer_end)) {
+			break;
+		}
+		if (m_scan_settling) {
+			scan_step_start();
+		} else if (scan_in_cells_step()) {
+			LOG_WRN("Cell search did not finish, stopping it");
+			hio_lte_flow_cmd("AT%NCELLMEASSTOP");
+			scan_next();
+		} else {
+			/* Any AT command would now wait for %COPS=? forever. */
+			LOG_ERR("PLMN scan response did not arrive, shutting the modem down");
+			hio_lte_flow_abort();
+			transition_state(FSM_STATE_ERROR);
+		}
+		break;
+	case HIO_LTE_FSM_EVENT_SEND:
+		abort_pending_send_recv(-EBUSY);
+		break;
+	case HIO_LTE_FSM_EVENT_NCELLMEAS:
+		if (scan_in_cells_step()) {
+			scan_next();
+		}
+		break;
+	case HIO_LTE_FSM_EVENT_COPS_DONE:
+		if (!m_scan_settling && m_scan_step == SCAN_STEP_PLMN) {
+			scan_next();
+		}
+		break;
+	case HIO_LTE_FSM_EVENT_ERROR:
+		transition_state(FSM_STATE_ERROR);
+		break;
+	case HIO_LTE_FSM_EVENT_DISABLE:
+		transition_state(FSM_STATE_DISABLED);
+		break;
+	default:
+		break;
+	}
+	return 0;
+}
+
 /* clang-format off */
 static struct fsm_state_desc m_fsm_states[] = {
 	{FSM_STATE_DISABLED, on_enter_disabled, on_leave_disabled, disabled_event_handler},
@@ -1661,6 +2064,7 @@ static struct fsm_state_desc m_fsm_states[] = {
 	{FSM_STATE_RECEIVE, on_enter_receive, NULL, receive_event_handler},
 	{FSM_STATE_CONEVAL, on_enter_coneval, NULL, coneval_event_handler},
 	{FSM_STATE_NCELLMEAS, on_enter_ncellmeas, on_leave_ncellmeas, ncellmeas_event_handler},
+	{FSM_STATE_SCAN, on_enter_scan, on_leave_scan, scan_event_handler},
 };
 /* clang-format on */
 
@@ -1698,6 +2102,8 @@ static int init(void)
 	}
 
 	m_state = FSM_STATE_DISABLED;
+	/* on_enter_disabled() does not run for the initial state. */
+	k_event_post(&m_states_event, DISABLED_BIT);
 
 	k_work_queue_init(&m_work_q);
 

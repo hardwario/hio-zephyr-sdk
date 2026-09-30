@@ -3,6 +3,7 @@ config HIO_LTE
 	select HIO_CONFIG
 	select HIO_BUF
 	select HIO_RTC
+	select HIO_UTIL
 	select AT_MONITOR
 	select EVENTS
 	select NRF_MODEM_LIB
@@ -50,6 +51,53 @@ config HIO_LTE_NCELLMEAS
 config HIO_LTE_THREAD_PRIORITY
 	int "HIO_LTE_THREAD_PRIORITY"
 	default 10
+
+config HIO_LTE_CAUSE_STR
+	bool "HIO_LTE_CAUSE_STR"
+	default y
+	help
+		Human-readable EMM/ESM cause texts in logs and shell (about 2 kB
+		of flash). Without it only the numbers are shown.
+
+config HIO_LTE_CEREG_HISTORY
+	int "HIO_LTE_CEREG_HISTORY"
+	default 10
+	range 1 50
+	help
+		Registration status changes (CEREG) kept for 'lte history', e.g. to
+		see a device hopping between cells or getting rejected.
+
+config HIO_LTE_SCAN_MAX_ENTRIES
+	int "HIO_LTE_SCAN_MAX_ENTRIES"
+	default 10
+	range 1 32
+	help
+		Networks stored from the last network scan (AT%COPS=?). More are
+		counted but not stored.
+
+config HIO_LTE_SCAN_MAX_CELLS
+	int "HIO_LTE_SCAN_MAX_CELLS"
+	default 14
+	range 1 30
+	help
+		Cells stored from the scan cell searches (up to 7 per access
+		technology).
+
+config HIO_LTE_SCAN_AUTO
+	bool "HIO_LTE_SCAN_AUTO"
+	default y
+	help
+		Scan networks during the attach retry delay when attach keeps
+		failing, so the result is available for diagnostics.
+
+config HIO_LTE_SCAN_AUTO_EVERY
+	int "HIO_LTE_SCAN_AUTO_EVERY"
+	default 1
+	range 1 100
+	depends on HIO_LTE_SCAN_AUTO
+	help
+		Scan on every N-th non-zero attach retry delay, starting with the
+		first one.
 
 config HEAP_MEM_POOL_SIZE
 	int "HEAP_MEM_POOL_SIZE"
