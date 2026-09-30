@@ -79,6 +79,7 @@ ZTEST(hio_lte_scan, test_from_ready_runs_both_and_reattaches)
 	zassert_true(fsm_in("scan"));
 	zassert_equal(fake_flow_last_cfun, 2);
 	zassert_equal(hio_lte_scan(HIO_LTE_SCAN_ALL), -EALREADY);
+	zassert_equal(hio_lte_wait_for_scan(K_NO_WAIT), -ETIMEDOUT);
 
 	k_sleep(K_MSEC(SETTLE_MS - 1100));
 	zassert_equal(atomic_get(&fake_flow_scan_cells_count), 1);
@@ -92,6 +93,7 @@ ZTEST(hio_lte_scan, test_from_ready_runs_both_and_reattaches)
 	fake_flow_event_cb(HIO_LTE_FSM_EVENT_COPS_DONE);
 	k_sleep(K_MSEC(50));
 	zassert_true(fsm_in("prepare"));
+	zassert_ok(hio_lte_wait_for_scan(K_NO_WAIT));
 
 	fake_flow_event_cb(HIO_LTE_FSM_EVENT_SIMDETECTED);
 	k_sleep(K_MSEC(50));
@@ -231,6 +233,7 @@ ZTEST(hio_lte_scan, test_disable_during_scan)
 	zassert_ok(hio_lte_disable());
 	zassert_ok(hio_lte_wait_for_disable(K_SECONDS(2)));
 	zassert_equal(atomic_get(&fake_flow_scan_abort_count), 1);
+	zassert_ok(hio_lte_wait_for_scan(K_NO_WAIT), "waiter not released");
 
 	/* A late cell search result must not wake the modem. */
 	fake_flow_event_cb(HIO_LTE_FSM_EVENT_NCELLMEAS);

@@ -82,6 +82,7 @@ static K_EVENT_DEFINE(m_states_event);
 #define ATTACHED_BIT  BIT(1)
 #define CONNECTED_BIT BIT(2)
 #define DISABLED_BIT  BIT(3)
+#define SCAN_DONE_BIT BIT(4)
 
 #define FLAG_CSCON           BIT(0)
 #define FLAG_GNSS_ENABLE     BIT(1)
@@ -855,9 +856,16 @@ int hio_lte_scan(enum hio_lte_scan_mode mode)
 		return -EALREADY;
 	}
 
+	k_event_clear(&m_states_event, SCAN_DONE_BIT);
+
 	delegate_event(HIO_LTE_FSM_EVENT_SCAN);
 
 	return 0;
+}
+
+int hio_lte_wait_for_scan(k_timeout_t timeout)
+{
+	return k_event_wait(&m_states_event, SCAN_DONE_BIT, false, timeout) ? 0 : -ETIMEDOUT;
 }
 
 int hio_lte_get_scan_result(struct hio_lte_scan_result *result)
@@ -908,8 +916,10 @@ static int on_enter_disabled(void)
 	k_event_clear(&m_states_event, ATTACHED_BIT | CONNECTED_BIT);
 	m_error_ctx.flow_check_failures = 0;
 
-	/* A request must not survive into the next enable. */
-	atomic_clear_bit(&m_flag, FLAG_SCAN_REQ);
+	/* A request must not survive into the next enable; release its waiter. */
+	if (atomic_test_and_clear_bit(&m_flag, FLAG_SCAN_REQ)) {
+		k_event_post(&m_states_event, SCAN_DONE_BIT);
+	}
 	atomic_clear_bit(&m_flag, FLAG_SCAN_AUTO);
 	m_retry_resume = false;
 
@@ -1865,6 +1875,7 @@ static void scan_finish(void)
 {
 	hio_lte_flow_scan_end();
 	m_scan_finished = true;
+	k_event_post(&m_states_event, SCAN_DONE_BIT);
 	hio_lte_notify(HIO_LTE_EVENT_SCAN_DONE);
 
 	if (m_scan_to_retry_delay) {
@@ -1937,6 +1948,7 @@ static int on_leave_scan(void)
 
 	if (!m_scan_finished) {
 		hio_lte_flow_scan_abort();
+		k_event_post(&m_states_event, SCAN_DONE_BIT);
 		hio_lte_notify(HIO_LTE_EVENT_SCAN_DONE);
 	}
 
