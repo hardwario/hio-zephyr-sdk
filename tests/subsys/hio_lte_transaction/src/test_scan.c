@@ -19,6 +19,7 @@ extern bool fake_flow_scan_auto;
 extern int fake_flow_last_cfun;
 extern uint32_t fake_attach_timeout_ms;
 extern uint32_t fake_retry_delay_ms;
+extern atomic_t fake_flow_scan_abort_count;
 
 /* Past the CFUN=4 -> CFUN=2 step and SCAN_SETTLE_DELAY. */
 #define SETTLE_MS 3200
@@ -47,6 +48,7 @@ static void scan_before(void *fixture)
 	fake_flow_scan_auto = false;
 	atomic_clear(&fake_flow_scan_cells_count);
 	atomic_clear(&fake_flow_scan_plmn_count);
+	atomic_clear(&fake_flow_scan_abort_count);
 }
 
 ZTEST_SUITE(hio_lte_scan, NULL, NULL, scan_before, scan_after, NULL);
@@ -166,7 +168,8 @@ ZTEST(hio_lte_scan, test_auto_scan_in_retry_delay)
 	static const struct hio_lte_socket_config cfg = {.port = 5002, .addr = "192.0.2.1"};
 
 	fake_attach_timeout_ms = 100;
-	fake_retry_delay_ms = 60000;
+	/* Above SCAN_AUTO_MIN_DELAY. */
+	fake_retry_delay_ms = 20 * 60 * 1000;
 
 	zassert_ok(hio_lte_enable(&cfg));
 	m_sim_ticking = true;
@@ -191,4 +194,46 @@ ZTEST(hio_lte_scan, test_auto_scan_in_retry_delay)
 	int attempt;
 	zassert_ok(hio_lte_get_curr_attach_info(&attempt, NULL, NULL, NULL));
 	zassert_equal(attempt, 3, "scan counted as an attach attempt");
+}
+
+/* While scanning the device is not connected: a transfer is refused at once
+ * (-EBUSY, not counted as a server failure) instead of timing out. */
+ZTEST(hio_lte_scan, test_send_during_scan_is_refused)
+{
+	static uint8_t uplink[16];
+
+	fsm_bring_up();
+	zassert_ok(hio_lte_scan(HIO_LTE_SCAN_PLMN));
+	k_sleep(K_MSEC(1100));
+	zassert_true(fsm_in("scan"));
+	zassert_equal(hio_lte_wait_for_connected(K_NO_WAIT), -ETIMEDOUT,
+		      "still reported as connected");
+
+	struct hio_lte_send_recv_param param = {
+		.send_buf = uplink,
+		.send_len = sizeof(uplink),
+		.timeout = K_SECONDS(5),
+	};
+
+	int64_t start = k_uptime_get();
+	zassert_equal(hio_lte_send_recv(&param), -EBUSY);
+	zassert_true(k_uptime_get() - start < 1000, "caller waited for its deadline");
+}
+
+/* Leaving the scan early publishes what it has; the request is gone after it. */
+ZTEST(hio_lte_scan, test_disable_during_scan)
+{
+	fsm_bring_up();
+	zassert_ok(hio_lte_scan(HIO_LTE_SCAN_ALL));
+	k_sleep(K_MSEC(1100));
+	zassert_true(fsm_in("scan"));
+
+	zassert_ok(hio_lte_disable());
+	zassert_ok(hio_lte_wait_for_disable(K_SECONDS(2)));
+	zassert_equal(atomic_get(&fake_flow_scan_abort_count), 1);
+
+	/* A late cell search result must not wake the modem. */
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_NCELLMEAS);
+	k_sleep(K_MSEC(50));
+	zassert_true(fsm_in("disabled"));
 }

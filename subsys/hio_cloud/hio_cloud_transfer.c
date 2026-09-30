@@ -283,8 +283,9 @@ static int transfer(struct hio_cloud_packet *pck_send, struct hio_cloud_packet *
 		/* Feed the failover counter with every attempt (outside the
 		 * metrics lock). A switch aborts this exchange so the caller can
 		 * restart the logical transfer against the new address. -ENOTSUP
-		 * is a local refusal (test mode), not a server failure. */
-		if (ret != -ENOTSUP && failover_report_attempt(ret == 0)) {
+		 * (test mode) and -EBUSY (busy, LTE scan) are local refusals, not
+		 * server failures. */
+		if (ret != -ENOTSUP && ret != -EBUSY && failover_report_attempt(ret == 0)) {
 			return TRANSFER_ADDR_SWITCHED;
 		}
 

@@ -77,6 +77,8 @@ int hio_lte_flow_scan_cells_start(void);
 int hio_lte_flow_scan_cells_wait(k_timeout_t timeout);
 int hio_lte_flow_scan_plmn_start(void);
 int hio_lte_flow_scan_plmn_wait(k_timeout_t timeout);
+void hio_lte_flow_scan_abort(void);
+int hio_lte_flow_abort(void);
 int hio_lte_flow_xmodemtrace(int lvl);
 
 int hio_lte_flow_set_psk(const char *identity, const char *psk_hex);
