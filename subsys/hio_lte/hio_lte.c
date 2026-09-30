@@ -808,6 +808,9 @@ static int disabled_event_handler(enum hio_lte_fsm_event event)
 	case HIO_LTE_FSM_EVENT_SOCKET_RECONFIG:
 		/* Config already stored; nothing to do while disabled. */
 		break;
+	case HIO_LTE_FSM_EVENT_READY:
+		/* Stale, e.g. from CONEVAL when DISABLE overtook it. */
+		break;
 	case HIO_LTE_FSM_EVENT_SEND:
 		/* Fail the transaction; default would go to ERROR and wake the modem. */
 		abort_pending_send_recv(-ENOTCONN);
