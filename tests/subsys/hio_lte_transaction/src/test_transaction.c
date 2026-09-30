@@ -16,6 +16,9 @@
  * hio_lte_flow_send() (fake_flow_send_block_ms) for longer than the caller's
  * deadline, which is what nrf_send() does while it waits for RRC. */
 
+#include "hio_lte_config.h"
+#include "hio_lte_flow.h"
+
 #include <hio/hio_lte.h>
 
 #include <zephyr/kernel.h>
@@ -27,6 +30,8 @@ extern struct hio_lte_send_recv_param *m_send_recv_param;
 extern atomic_t fake_flow_send_count;
 extern const struct hio_lte_send_recv_param *fake_flow_last_send_param;
 extern uint32_t fake_flow_send_block_ms;
+extern atomic_t fake_flow_start_count;
+extern HIO_LTE_FSM_EVENT_delegate_cb fake_flow_event_cb;
 
 #define UPLINK_LEN 481
 
@@ -51,16 +56,35 @@ static void reset_fakes(void *fixture)
 	 * bookkeeping cannot leak into this one. */
 	k_sleep(K_MSEC(SEND_BLOCK_MS * 2));
 
+	g_hio_lte_config.test = false;
+	zassert_ok(hio_lte_disable());
+	zassert_ok(hio_lte_wait_for_disable(K_SECONDS(2)));
+
 	fake_flow_send_block_ms = 0;
 	fake_flow_last_send_param = NULL;
 	atomic_clear(&fake_flow_send_count);
+	atomic_clear(&fake_flow_start_count);
 }
 
 ZTEST_SUITE(hio_lte_transaction, NULL, NULL, reset_fakes, NULL, NULL);
 
+/* Drive the FSM to READY, playing the modem's URCs. */
+static void fsm_bring_up(void)
+{
+	static const struct hio_lte_socket_config cfg = {.port = 5002, .addr = "192.0.2.1"};
+
+	zassert_ok(hio_lte_enable(&cfg));
+	k_sleep(K_MSEC(50));
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_SIMDETECTED);
+	k_sleep(K_MSEC(50));
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_REGISTERED);
+	zassert_ok(hio_lte_wait_for_connected(K_SECONDS(1)), "FSM did not reach READY");
+}
+
 /* A caller that gives up must take its handle with it. */
 ZTEST(hio_lte_transaction, test_timeout_releases_caller_param)
 {
+	fsm_bring_up();
 	fake_flow_send_block_ms = SEND_BLOCK_MS;
 
 	struct hio_lte_send_recv_param param = {
@@ -82,6 +106,7 @@ ZTEST(hio_lte_transaction, test_timeout_releases_caller_param)
  * and validates its result against — whatever now occupies that stack slot. */
 ZTEST(hio_lte_transaction, test_abandoned_param_is_never_sent_again)
 {
+	fsm_bring_up();
 	fake_flow_send_block_ms = SEND_BLOCK_MS;
 
 	struct hio_lte_send_recv_param param = {
@@ -95,6 +120,7 @@ ZTEST(hio_lte_transaction, test_abandoned_param_is_never_sent_again)
 		      ret);
 
 	int sends_at_giveup = atomic_get(&fake_flow_send_count);
+	fake_flow_last_send_param = NULL;
 
 	/* Long enough for the FSM to finish the in-flight send and come back
 	 * round through ERROR/READY to another send attempt. */
@@ -102,7 +128,7 @@ ZTEST(hio_lte_transaction, test_abandoned_param_is_never_sent_again)
 
 	zassert_equal(atomic_get(&fake_flow_send_count), sends_at_giveup,
 		      "FSM transmitted again after the caller abandoned the transaction");
-	zassert_not_equal(fake_flow_last_send_param, &param,
+	zassert_is_null(fake_flow_last_send_param,
 			  "FSM is still using the abandoned caller param");
 }
 
@@ -121,6 +147,10 @@ static void holder_entry(void *p1, void *p2, void *p3)
  * buffers while the first caller is still blocked waiting for its own. */
 ZTEST(hio_lte_transaction, test_concurrent_caller_does_not_steal_transaction)
 {
+	fsm_bring_up();
+	/* Keeps the holder in flight past the intruder's attempt. */
+	fake_flow_send_block_ms = SEND_BLOCK_MS;
+
 	m_holder_param = (struct hio_lte_send_recv_param){
 		.send_buf = m_uplink,
 		.send_len = sizeof(m_uplink),
@@ -150,4 +180,43 @@ ZTEST(hio_lte_transaction, test_concurrent_caller_does_not_steal_transaction)
 	zassert_ok(k_thread_join(&m_holder_thread, K_SECONDS(5)), "holder did not finish");
 	zassert_equal(m_holder_ret, -ETIMEDOUT, "holder should end on its own deadline, got %d",
 		      m_holder_ret);
+}
+
+/* Test mode: the transaction is refused and the FSM stays down. */
+ZTEST(hio_lte_transaction, test_test_mode_refuses_without_waking_fsm)
+{
+	g_hio_lte_config.test = true;
+
+	struct hio_lte_send_recv_param param = {
+		.send_buf = m_uplink,
+		.send_len = sizeof(m_uplink),
+		.timeout = K_SECONDS(1),
+	};
+
+	zassert_equal(hio_lte_send_recv(&param), -ENOTSUP);
+	zassert_is_null(m_send_recv_param);
+
+	k_sleep(K_SECONDS(1));
+	zassert_equal(atomic_get(&fake_flow_start_count), 0, "FSM powered the modem up");
+	zassert_equal(atomic_get(&fake_flow_send_count), 0, "FSM transmitted");
+}
+
+/* SEND while DISABLED fails fast and must not wake the modem. */
+ZTEST(hio_lte_transaction, test_send_while_disabled_fails_without_waking_fsm)
+{
+	struct hio_lte_send_recv_param param = {
+		.send_buf = m_uplink,
+		.send_len = sizeof(m_uplink),
+		.timeout = K_SECONDS(5),
+	};
+
+	int64_t start = k_uptime_get();
+	int ret = hio_lte_send_recv(&param);
+
+	zassert_equal(ret, -ENOTCONN, "got %d", ret);
+	zassert_true(k_uptime_get() - start < 1000, "caller was left waiting for its deadline");
+
+	k_sleep(K_SECONDS(1));
+	zassert_equal(atomic_get(&fake_flow_start_count), 0, "FSM powered the modem up");
+	zassert_ok(hio_lte_wait_for_disable(K_NO_WAIT), "FSM left DISABLED");
 }

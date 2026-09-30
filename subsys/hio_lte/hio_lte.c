@@ -593,6 +593,12 @@ int hio_lte_get_ceer(char **ceer)
 
 int hio_lte_send_recv(const struct hio_lte_send_recv_param *param)
 {
+	/* Test mode: the modem belongs to the shell, keep the FSM down. */
+	if (g_hio_lte_config.test) {
+		LOG_WRN("LTE Test mode enabled");
+		return -ENOTSUP;
+	}
+
 	LOG_INF("send_len: %u", param->send_len);
 
 	k_timepoint_t end = sys_timepoint_calc(param->timeout);
@@ -801,6 +807,10 @@ static int disabled_event_handler(enum hio_lte_fsm_event event)
 		break;
 	case HIO_LTE_FSM_EVENT_SOCKET_RECONFIG:
 		/* Config already stored; nothing to do while disabled. */
+		break;
+	case HIO_LTE_FSM_EVENT_SEND:
+		/* Fail the transaction; default would go to ERROR and wake the modem. */
+		abort_pending_send_recv(-ENOTCONN);
 		break;
 	case HIO_LTE_FSM_EVENT_DISABLE:
 		/* Already disabled: re-post so a caller that requested disable
@@ -1713,6 +1723,8 @@ static int init(void)
 	}
 
 	m_state = FSM_STATE_DISABLED;
+	/* on_enter_disabled() does not run for the initial state. */
+	k_event_post(&m_states_event, DISABLED_BIT);
 
 	k_work_queue_init(&m_work_q);
 
