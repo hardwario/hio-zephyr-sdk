@@ -838,6 +838,20 @@ int hio_lte_talk_at_cmd_with_resp_prefix(const char *s, char *buf, size_t size, 
 	return gather_prefix_values(pfx, buf, size, 1) == 1 ? 0 : -EILSEQ;
 }
 
+/* The command response (not the result URC) goes to cb in ISR context. */
+int hio_lte_talk_ncellmeas_cb(int p1, int p2, nrf_modem_at_resp_handler_t cb)
+{
+	LOG_INF("AT%%NCELLMEAS=%d,%d", p1, p2);
+
+	int ret = nrf_modem_at_cmd_async(cb, "AT%%NCELLMEAS=%d,%d", p1, p2);
+	if (ret < 0) {
+		LOG_ERR("Call `nrf_modem_at_cmd_async` failed: %d", ret);
+		return ret;
+	}
+
+	return ret > 0 ? -EILSEQ : 0;
+}
+
 int hio_lte_talk_ncellmeas(int p1, int p2)
 {
 	int ret;

@@ -206,6 +206,18 @@ int hio_lte_flow_scan_plmn_wait(k_timeout_t timeout)
 	return 0;
 }
 
+atomic_t fake_flow_scan_abort_count = ATOMIC_INIT(0);
+
+void hio_lte_flow_scan_abort(void)
+{
+	atomic_inc(&fake_flow_scan_abort_count);
+}
+
+int hio_lte_flow_abort(void)
+{
+	return 0;
+}
+
 int hio_lte_talk_ncellmeas(int p1, int p2)
 {
 	ARG_UNUSED(p1);

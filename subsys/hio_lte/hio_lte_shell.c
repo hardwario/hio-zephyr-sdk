@@ -427,6 +427,8 @@ static const char *scan_status_str(int status)
 		return "partial";
 	case -EBUSY:
 		return "radio busy";
+	case -ECANCELED:
+		return "cancelled";
 	default:
 		return "error";
 	}
@@ -504,15 +506,20 @@ static int print_scan_result(const struct shell *shell)
 /* Test mode: no FSM, run the steps directly in the current CFUN mode. */
 static void scan_test_mode(enum hio_lte_scan_mode mode)
 {
+	const k_timeout_t step_timeout = K_MINUTES(15);
+
 	hio_lte_flow_scan_begin(mode, false);
 
-	if (mode != HIO_LTE_SCAN_PLMN && !hio_lte_flow_scan_cells_start()) {
-		hio_lte_flow_scan_cells_wait(K_FOREVER);
+	if (mode != HIO_LTE_SCAN_PLMN && !hio_lte_flow_scan_cells_start() &&
+	    hio_lte_flow_scan_cells_wait(step_timeout)) {
+		hio_lte_flow_scan_abort();
+		return;
 	}
 
-	if (mode != HIO_LTE_SCAN_CELLS) {
-		hio_lte_flow_scan_plmn_start();
-		hio_lte_flow_scan_plmn_wait(K_FOREVER);
+	if (mode != HIO_LTE_SCAN_CELLS && !hio_lte_flow_scan_plmn_start() &&
+	    hio_lte_flow_scan_plmn_wait(step_timeout)) {
+		hio_lte_flow_scan_abort();
+		return;
 	}
 
 	hio_lte_flow_scan_end();

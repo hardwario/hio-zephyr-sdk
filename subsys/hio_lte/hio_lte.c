@@ -99,6 +99,8 @@ atomic_t m_flag = ATOMIC_INIT(0);
 #define SCAN_WATCHDOG_TIMEOUT K_MINUTES(15)
 /* Let the modem settle in CFUN=2 before the first scan step. */
 #define SCAN_SETTLE_DELAY K_SECONDS(2)
+/* A full scan takes minutes; shorter retry delays would be extended by it. */
+#define SCAN_AUTO_MIN_DELAY K_MINUTES(10)
 
 enum scan_phase {
 	SCAN_PHASE_SETTLE,
@@ -109,6 +111,7 @@ enum scan_phase {
 static enum hio_lte_scan_mode m_scan_mode;
 static enum scan_phase m_scan_phase;
 static bool m_scan_to_retry_delay;
+static bool m_scan_finished;
 static k_timepoint_t m_scan_timer_end;
 /* Set while RETRY_DELAY is left for a scan, so its delay resumes after it. */
 static bool m_retry_resume;
@@ -840,12 +843,18 @@ int hio_lte_scan(enum hio_lte_scan_mode mode)
 		return -ENODEV;
 	}
 
-	if (current == FSM_STATE_SCAN || atomic_test_and_set_bit(&m_flag, FLAG_SCAN_REQ)) {
+	if (current == FSM_STATE_SCAN) {
 		return -EALREADY;
 	}
 
+	/* Before the flag: the FSM may pick the request up right after it. */
 	m_scan_mode = mode;
 	atomic_clear_bit(&m_flag, FLAG_SCAN_AUTO);
+
+	if (atomic_test_and_set_bit(&m_flag, FLAG_SCAN_REQ)) {
+		return -EALREADY;
+	}
+
 	delegate_event(HIO_LTE_FSM_EVENT_SCAN);
 
 	return 0;
@@ -899,6 +908,11 @@ static int on_enter_disabled(void)
 	k_event_clear(&m_states_event, ATTACHED_BIT | CONNECTED_BIT);
 	m_error_ctx.flow_check_failures = 0;
 
+	/* A request must not survive into the next enable. */
+	atomic_clear_bit(&m_flag, FLAG_SCAN_REQ);
+	atomic_clear_bit(&m_flag, FLAG_SCAN_AUTO);
+	m_retry_resume = false;
+
 	/* Signal callers blocked in hio_lte_disable() that DISABLED is reached. */
 	k_event_post(&m_states_event, DISABLED_BIT);
 
@@ -950,6 +964,8 @@ static int disabled_event_handler(enum hio_lte_fsm_event event)
 static int on_enter_error(void)
 {
 	m_error_ctx.on_timeout_state = FSM_STATE_PREPARE; /* Default timeout state */
+	/* A scan left for ERROR does not return to its retry delay. */
+	m_retry_resume = false;
 
 	int ret = hio_lte_flow_check();
 	if (ret == 0) {
@@ -1196,8 +1212,8 @@ static int on_enter_retry_delay(void)
 	m_start = k_uptime_get_32();
 
 #if defined(CONFIG_HIO_LTE_SCAN_AUTO)
-	/* The scan fills the delay, so it only runs when there is one. */
-	if (!K_TIMEOUT_EQ(timeout.retry_delay, K_NO_WAIT) &&
+	/* The scan fills the delay, so it only runs in a long enough one. */
+	if (timeout.retry_delay.ticks >= SCAN_AUTO_MIN_DELAY.ticks &&
 	    m_scan_auto_count++ % CONFIG_HIO_LTE_SCAN_AUTO_EVERY == 0 &&
 	    !atomic_test_and_set_bit(&m_flag, FLAG_SCAN_REQ)) {
 		m_scan_mode = HIO_LTE_SCAN_ALL;
@@ -1848,6 +1864,7 @@ static void scan_arm(k_timeout_t timeout)
 static void scan_finish(void)
 {
 	hio_lte_flow_scan_end();
+	m_scan_finished = true;
 	hio_lte_notify(HIO_LTE_EVENT_SCAN_DONE);
 
 	if (m_scan_to_retry_delay) {
@@ -1885,6 +1902,13 @@ static int on_enter_scan(void)
 	atomic_clear_bit(&m_flag, FLAG_CFUN4);
 
 	hio_lte_flow_scan_begin(m_scan_mode, atomic_test_and_clear_bit(&m_flag, FLAG_SCAN_AUTO));
+	m_scan_finished = false;
+
+	/* Not connected while scanning: callers wait in wait_for_connected()
+	 * instead of each timing out on a SEND the scan ignores. -EBUSY is a
+	 * local refusal, not counted towards cloud address failover. */
+	k_event_clear(&m_states_event, ATTACHED_BIT | CONNECTED_BIT);
+	abort_pending_send_recv(-EBUSY);
 
 	/* RX only: no attach attempts, and the search is not limited to the
 	 * camped RAT as it is in CFUN=1. The modem refuses CFUN=2 from CFUN=1,
@@ -1910,6 +1934,12 @@ static int on_enter_scan(void)
 static int on_leave_scan(void)
 {
 	stop_timer();
+
+	if (!m_scan_finished) {
+		hio_lte_flow_scan_abort();
+		hio_lte_notify(HIO_LTE_EVENT_SCAN_DONE);
+	}
+
 	return 0;
 }
 
@@ -1928,9 +1958,14 @@ static int scan_event_handler(enum hio_lte_fsm_event event)
 			hio_lte_flow_cmd("AT%NCELLMEASSTOP");
 			scan_next();
 		} else {
-			LOG_ERR("PLMN scan response did not arrive");
+			/* Any AT command would now wait for %COPS=? forever. */
+			LOG_ERR("PLMN scan response did not arrive, shutting the modem down");
+			hio_lte_flow_abort();
 			transition_state(FSM_STATE_ERROR);
 		}
+		break;
+	case HIO_LTE_FSM_EVENT_SEND:
+		abort_pending_send_recv(-EBUSY);
 		break;
 	case HIO_LTE_FSM_EVENT_NCELLMEAS:
 		if (m_scan_phase == SCAN_PHASE_CELLS) {

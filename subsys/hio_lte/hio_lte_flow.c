@@ -71,6 +71,7 @@ static struct hio_lte_scan_result m_scan;
 static K_SEM_DEFINE(m_scan_cells_sem, 0, 1);
 static K_SEM_DEFINE(m_scan_plmn_sem, 0, 1);
 static bool m_scan_cells_pending;
+static bool m_scan_plmn_pending;
 
 static void process_urc_ncellmeas(const char *line)
 {
@@ -1219,6 +1220,8 @@ static void scan_plmn_work_handler(struct k_work *work)
 {
 	LOG_INF("PLMN scan done: %d, networks: %u", m_scan.plmn_status, m_scan.count);
 
+	m_scan_plmn_pending = false;
+
 	k_sem_give(&m_scan_plmn_sem);
 	m_event_delegate_cb(HIO_LTE_FSM_EVENT_COPS_DONE);
 }
@@ -1245,14 +1248,38 @@ static void scan_plmn_resp_handler(const char *resp)
 	} else if (strstr(resp, "ERROR")) {
 		m_scan.plmn_status = -EIO;
 	} else {
-		m_scan.plmn_status = ret;
+		m_scan.plmn_status = list ? ret : -EBADMSG;
 	}
 
 	k_work_submit(&m_scan_plmn_work);
 }
 
+static void scan_cells_fail_work_handler(struct k_work *work)
+{
+	LOG_ERR("Cell search refused by the modem");
+
+	m_scan_cells_pending = false;
+	k_sem_give(&m_scan_cells_sem);
+	if (!g_hio_lte_config.test) {
+		m_event_delegate_cb(HIO_LTE_FSM_EVENT_NCELLMEAS);
+	}
+}
+
+static K_WORK_DEFINE(m_scan_cells_fail_work, scan_cells_fail_work_handler);
+
+/* ISR context. A refused %NCELLMEAS never sends the result URC. */
+static void scan_cells_resp_handler(const char *resp)
+{
+	if (strstr(resp, "ERROR")) {
+		m_scan.cells_status = -EIO;
+		k_work_submit(&m_scan_cells_fail_work);
+	}
+}
+
 void hio_lte_flow_scan_begin(enum hio_lte_scan_mode mode, bool auto_triggered)
 {
+	m_scan_cells_pending = false;
+	m_scan_plmn_pending = false;
 	memset(&m_scan, 0, sizeof(m_scan));
 	m_scan.mode = mode;
 	m_scan.auto_triggered = auto_triggered;
@@ -1283,7 +1310,8 @@ int hio_lte_flow_scan_cells_start(void)
 	m_scan_cells_pending = true;
 
 	if (nrf_modem_is_initialized()) {
-		ret = hio_lte_talk_ncellmeas(5, HIO_LTE_NCELLMEAS_CELL_MAX);
+		ret = hio_lte_talk_ncellmeas_cb(5, HIO_LTE_NCELLMEAS_CELL_MAX,
+						scan_cells_resp_handler);
 	}
 
 	if (ret) {
@@ -1310,6 +1338,7 @@ int hio_lte_flow_scan_plmn_start(void)
 	if (nrf_modem_is_initialized()) {
 		ret = hio_lte_talk_at_pcops_list_async(scan_plmn_resp_handler);
 		if (!ret) {
+			m_scan_plmn_pending = true;
 			return 0;
 		}
 	}
@@ -1324,6 +1353,33 @@ int hio_lte_flow_scan_plmn_start(void)
 int hio_lte_flow_scan_plmn_wait(k_timeout_t timeout)
 {
 	return k_sem_take(&m_scan_plmn_sem, timeout);
+}
+
+/* The scan ends early (DISABLE, ERROR): stop the cell search and publish
+ * what was collected. %COPS=? cannot be stopped. */
+void hio_lte_flow_scan_abort(void)
+{
+	if (m_scan_cells_pending) {
+		m_scan_cells_pending = false;
+		m_scan.cells_status = -ECANCELED;
+		hio_lte_flow_cmd("AT%NCELLMEASSTOP");
+	}
+
+	if (m_scan_plmn_pending) {
+		m_scan.plmn_status = -ECANCELED;
+	}
+
+	hio_lte_flow_scan_end();
+}
+
+/* Shut the modem down without AT, for when the AT channel is stuck. */
+int hio_lte_flow_abort(void)
+{
+	if (!nrf_modem_is_initialized()) {
+		return 0;
+	}
+
+	return nrf_modem_lib_shutdown();
 }
 
 int hio_lte_flow_xmodemtrace(int lvl)
