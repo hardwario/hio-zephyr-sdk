@@ -7,6 +7,7 @@
 /* HIO includes */
 #include <hio/hio_lte.h>
 #include <hio/hio_config.h>
+#include <hio/hio_util.h>
 
 /* Nordic includes */
 #include <ncs_version.h>
@@ -130,16 +131,18 @@ static int cmd_fw_version(const struct shell *shell, size_t argc, char **argv)
 static void print_cereg_event(const struct shell *shell, const char *label,
 			      const struct hio_lte_cereg_event *e)
 {
-	uint32_t ago = k_uptime_seconds() - e->uptime_s;
+	char ago[24];
+
+	hio_util_fmt_duration(k_uptime_seconds() - e->uptime_s, ago, sizeof(ago));
 
 	if (e->reject_cause) {
 		shell_print(shell,
-			    "%s%u s ago, %s, act: %s, plmn: %u, tac: %04X, cell: %08X, emm: %u (%s)",
+			    "%s%s ago, %s, act: %s, plmn: %u, tac: %04X, cell: %08X, emm: %u (%s)",
 			    label, ago, hio_lte_str_cereg_stat(e->stat), hio_lte_str_act(e->act),
 			    e->plmn, e->tac, e->cid, e->reject_cause,
 			    hio_lte_str_emm_cause(e->reject_cause));
 	} else {
-		shell_print(shell, "%s%u s ago, %s, act: %s, plmn: %u, tac: %04X, cell: %08X", label,
+		shell_print(shell, "%s%s ago, %s, act: %s, plmn: %u, tac: %04X, cell: %08X", label,
 			    ago, hio_lte_str_cereg_stat(e->stat), hio_lte_str_act(e->act), e->plmn,
 			    e->tac, e->cid);
 	}
@@ -622,8 +625,10 @@ static int print_scan_result(const struct shell *shell)
 
 	print_last_reject(shell);
 
-	shell_print(shell, "last scan: %lld s ago (%s)",
-		    (k_uptime_get() - result.uptime_ms) / MSEC_PER_SEC,
+	char ago[24];
+
+	hio_util_fmt_duration((k_uptime_get() - result.uptime_ms) / MSEC_PER_SEC, ago, sizeof(ago));
+	shell_print(shell, "last scan: %s ago (%s)", ago,
 		    result.auto_triggered ? "auto" : "request");
 	shell_print(shell, "search: lte-m cells %s, nb-iot cells %s, networks %s",
 		    scan_status_str(result.cells_ltem_status),
@@ -730,7 +735,10 @@ static int cmd_scan(const struct shell *shell, size_t argc, char **argv)
 			shell_error(shell, "scan did not finish");
 			return -ETIMEDOUT;
 		}
-		shell_print(shell, "still scanning (%lld s)", elapsed);
+		char took[24];
+
+		hio_util_fmt_duration(elapsed, took, sizeof(took));
+		shell_print(shell, "still scanning (%s)", took);
 	}
 
 	ret = print_scan_result(shell);
