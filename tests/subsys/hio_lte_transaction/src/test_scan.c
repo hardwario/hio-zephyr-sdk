@@ -17,12 +17,15 @@ extern atomic_t fake_flow_scan_cells_count;
 extern atomic_t fake_flow_scan_plmn_count;
 extern bool fake_flow_scan_auto;
 extern int fake_flow_last_cfun;
+extern uint8_t fake_flow_scan_cells_act;
+extern bool fake_flow_scan_rat_lte_m;
+extern bool fake_flow_scan_rat_nb_iot;
 extern uint32_t fake_attach_timeout_ms;
 extern uint32_t fake_retry_delay_ms;
 extern atomic_t fake_flow_scan_abort_count;
 
-/* Past the CFUN=4 -> CFUN=2 step and SCAN_SETTLE_DELAY. */
-#define SETTLE_MS 3200
+/* Past SCAN_SETTLE_DELAY after each RAT switch. */
+#define SETTLE_MS 2200
 
 static void fsm_down(void)
 {
@@ -43,6 +46,7 @@ static void scan_before(void *fixture)
 
 	fsm_down();
 
+	strcpy(g_hio_lte_config.mode, "lte-m,nb-iot");
 	fake_attach_timeout_ms = 60000;
 	fake_retry_delay_ms = 0;
 	fake_flow_scan_auto = false;
@@ -69,24 +73,33 @@ ZTEST(hio_lte_scan, test_rejects_invalid_mode)
 	zassert_equal(hio_lte_scan(HIO_LTE_SCAN_CELLS + 1), -EINVAL);
 }
 
-/* From READY: RX-only, cells, networks, then a full reattach. */
-ZTEST(hio_lte_scan, test_from_ready_runs_both_and_reattaches)
+/* From READY: LTE-M cells, NB-IoT cells, networks, then a full reattach. */
+ZTEST(hio_lte_scan, test_from_ready_runs_all_steps_and_reattaches)
 {
 	fsm_bring_up();
 
 	zassert_ok(hio_lte_scan(HIO_LTE_SCAN_ALL));
-	k_sleep(K_MSEC(1100));
+	k_sleep(K_MSEC(50));
 	zassert_true(fsm_in("scan"));
-	zassert_equal(fake_flow_last_cfun, 2);
+	zassert_true(fake_flow_scan_rat_lte_m && !fake_flow_scan_rat_nb_iot);
 	zassert_equal(hio_lte_scan(HIO_LTE_SCAN_ALL), -EALREADY);
 	zassert_equal(hio_lte_wait_for_scan(K_NO_WAIT), -ETIMEDOUT);
 
-	k_sleep(K_MSEC(SETTLE_MS - 1100));
+	k_sleep(K_MSEC(SETTLE_MS));
 	zassert_equal(atomic_get(&fake_flow_scan_cells_count), 1);
-	zassert_equal(atomic_get(&fake_flow_scan_plmn_count), 0);
+	zassert_equal(fake_flow_scan_cells_act, HIO_LTE_CEREG_PARAM_ACT_LTE);
 
 	fake_flow_event_cb(HIO_LTE_FSM_EVENT_NCELLMEAS);
 	k_sleep(K_MSEC(50));
+	zassert_true(!fake_flow_scan_rat_lte_m && fake_flow_scan_rat_nb_iot);
+	k_sleep(K_MSEC(SETTLE_MS));
+	zassert_equal(atomic_get(&fake_flow_scan_cells_count), 2);
+	zassert_equal(fake_flow_scan_cells_act, HIO_LTE_CEREG_PARAM_ACT_NBIOT);
+
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_NCELLMEAS);
+	k_sleep(K_MSEC(50));
+	zassert_true(fake_flow_scan_rat_lte_m && fake_flow_scan_rat_nb_iot);
+	k_sleep(K_MSEC(SETTLE_MS));
 	zassert_equal(atomic_get(&fake_flow_scan_plmn_count), 1);
 	zassert_false(fake_flow_scan_auto);
 
@@ -99,6 +112,25 @@ ZTEST(hio_lte_scan, test_from_ready_runs_both_and_reattaches)
 	k_sleep(K_MSEC(50));
 	fake_flow_event_cb(HIO_LTE_FSM_EVENT_REGISTERED);
 	zassert_ok(hio_lte_wait_for_connected(K_SECONDS(1)), "no reconnect after scan");
+}
+
+/* Only the RATs of the LTE mode config are searched. */
+ZTEST(hio_lte_scan, test_steps_follow_mode_config)
+{
+	strcpy(g_hio_lte_config.mode, "nb-iot");
+	fsm_bring_up();
+
+	zassert_ok(hio_lte_scan(HIO_LTE_SCAN_ALL));
+	k_sleep(K_MSEC(50));
+	zassert_true(!fake_flow_scan_rat_lte_m && fake_flow_scan_rat_nb_iot);
+	k_sleep(K_MSEC(SETTLE_MS));
+	zassert_equal(fake_flow_scan_cells_act, HIO_LTE_CEREG_PARAM_ACT_NBIOT);
+
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_NCELLMEAS);
+	k_sleep(K_MSEC(SETTLE_MS));
+	zassert_equal(atomic_get(&fake_flow_scan_cells_count), 1);
+	zassert_equal(atomic_get(&fake_flow_scan_plmn_count), 1);
+	zassert_true(!fake_flow_scan_rat_lte_m && fake_flow_scan_rat_nb_iot);
 }
 
 ZTEST(hio_lte_scan, test_plmn_only_skips_cells)
@@ -124,6 +156,10 @@ ZTEST(hio_lte_scan, test_cells_only_skips_plmn)
 	zassert_equal(atomic_get(&fake_flow_scan_cells_count), 1);
 
 	fake_flow_event_cb(HIO_LTE_FSM_EVENT_NCELLMEAS);
+	k_sleep(K_MSEC(SETTLE_MS));
+	zassert_equal(atomic_get(&fake_flow_scan_cells_count), 2);
+
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_NCELLMEAS);
 	k_sleep(K_MSEC(50));
 	zassert_equal(atomic_get(&fake_flow_scan_plmn_count), 0);
 	zassert_true(fsm_in("prepare"));
@@ -140,7 +176,7 @@ ZTEST(hio_lte_scan, test_interrupts_attach)
 	zassert_true(fsm_in("attach"));
 
 	zassert_ok(hio_lte_scan(HIO_LTE_SCAN_PLMN));
-	k_sleep(K_MSEC(1100));
+	k_sleep(K_MSEC(50));
 	zassert_true(fsm_in("scan"));
 }
 
@@ -187,7 +223,9 @@ ZTEST(hio_lte_scan, test_auto_scan_in_retry_delay)
 	zassert_true(fake_flow_scan_auto);
 
 	fake_flow_event_cb(HIO_LTE_FSM_EVENT_NCELLMEAS);
-	k_sleep(K_MSEC(50));
+	k_sleep(K_MSEC(SETTLE_MS));
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_NCELLMEAS);
+	k_sleep(K_MSEC(SETTLE_MS));
 	fake_flow_event_cb(HIO_LTE_FSM_EVENT_COPS_DONE);
 	k_sleep(K_SECONDS(6));
 	zassert_true(fsm_in("retry_delay"));
@@ -206,7 +244,7 @@ ZTEST(hio_lte_scan, test_send_during_scan_is_refused)
 
 	fsm_bring_up();
 	zassert_ok(hio_lte_scan(HIO_LTE_SCAN_PLMN));
-	k_sleep(K_MSEC(1100));
+	k_sleep(K_MSEC(50));
 	zassert_true(fsm_in("scan"));
 	zassert_equal(hio_lte_wait_for_connected(K_NO_WAIT), -ETIMEDOUT,
 		      "still reported as connected");
@@ -227,7 +265,7 @@ ZTEST(hio_lte_scan, test_disable_during_scan)
 {
 	fsm_bring_up();
 	zassert_ok(hio_lte_scan(HIO_LTE_SCAN_ALL));
-	k_sleep(K_MSEC(1100));
+	k_sleep(K_MSEC(50));
 	zassert_true(fsm_in("scan"));
 
 	zassert_ok(hio_lte_disable());

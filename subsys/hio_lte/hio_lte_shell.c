@@ -1,5 +1,6 @@
 #include "hio_lte_config.h"
 #include "hio_lte_flow.h"
+#include "hio_lte_parse.h"
 #include "hio_lte_state.h"
 #include "hio_lte_talk.h"
 
@@ -440,17 +441,168 @@ static int rsrp_dbm(int16_t index)
 	return index - 141;
 }
 
-static void print_scan_cells(const struct shell *shell, const struct hio_lte_scan_result *result)
-{
-	for (size_t i = 0; i < result->cell_count; i++) {
-		const struct hio_lte_ncellmeas_cell_param *c = &result->cells[i];
+struct scan_plmn {
+	uint16_t mcc;
+	uint16_t mnc;
+	const char *str; /* From the network list, NULL if only cells have it. */
+};
 
-		shell_print(shell,
-			    "cell: %08X, plmn: %03u%02u, tac: %04X, earfcn: %u, pci: %u, rsrp: %d dBm",
-			    c->eci, c->mcc, c->mnc, c->tac, c->earfcn, c->pci, rsrp_dbm(c->rsrp));
+static void scan_plmn_add(struct scan_plmn *list, size_t *n, size_t max, uint16_t mcc,
+			  uint16_t mnc, const char *str)
+{
+	for (size_t i = 0; i < *n; i++) {
+		if (list[i].mcc == mcc && list[i].mnc == mnc) {
+			if (!list[i].str) {
+				list[i].str = str;
+			}
+			return;
+		}
 	}
 
-	shell_print(shell, "cells: %u", result->cell_count);
+	if (*n < max) {
+		list[(*n)++] = (struct scan_plmn){.mcc = mcc, .mnc = mnc, .str = str};
+	}
+}
+
+static bool scan_entry_plmn(const struct hio_lte_scan_entry *e, uint16_t *mcc, uint16_t *mnc)
+{
+	int16_t c, n;
+
+	if (hio_lte_parse_plmn(e->plmn, NULL, &c, &n)) {
+		return false;
+	}
+	*mcc = c;
+	*mnc = n;
+	return true;
+}
+
+/* Stronger first within a RAT; LTE-M before NB-IoT. */
+static bool scan_cell_before(const struct hio_lte_scan_cell *a, const struct hio_lte_scan_cell *b)
+{
+	return a->act != b->act ? a->act < b->act : a->rsrp > b->rsrp;
+}
+
+static void print_scan_plmn(const struct shell *shell, const struct hio_lte_scan_result *r,
+			    size_t entries, const struct scan_plmn *p)
+{
+	int stat_ltem = -1;
+	int stat_nbiot = -1;
+	bool ltem = false;
+	bool nbiot = false;
+	uint16_t mcc, mnc;
+
+	for (size_t i = 0; i < entries; i++) {
+		const struct hio_lte_scan_entry *e = &r->entries[i];
+
+		if (!scan_entry_plmn(e, &mcc, &mnc) || mcc != p->mcc || mnc != p->mnc) {
+			continue;
+		}
+		if (e->act == HIO_LTE_CEREG_PARAM_ACT_NBIOT) {
+			stat_nbiot = e->stat;
+			nbiot = true;
+		} else {
+			stat_ltem = e->stat;
+			ltem = true;
+		}
+	}
+
+	uint8_t cells[ARRAY_SIZE(r->cells)];
+	size_t n = 0;
+
+	for (size_t i = 0; i < r->cell_count; i++) {
+		const struct hio_lte_scan_cell *c = &r->cells[i];
+
+		if (c->mcc != p->mcc || c->mnc != p->mnc) {
+			continue;
+		}
+		if (c->act == HIO_LTE_CEREG_PARAM_ACT_NBIOT) {
+			nbiot = true;
+		} else {
+			ltem = true;
+		}
+
+		size_t j = n++;
+		for (; j > 0 && scan_cell_before(c, &r->cells[cells[j - 1]]); j--) {
+			cells[j] = cells[j - 1];
+		}
+		cells[j] = i;
+	}
+
+	char plmn[12];
+	char stat[48];
+
+	if (p->str) {
+		snprintf(plmn, sizeof(plmn), "%s", p->str);
+	} else {
+		snprintf(plmn, sizeof(plmn), "%03u%02u", p->mcc, p->mnc);
+	}
+
+	if (stat_ltem < 0 && stat_nbiot < 0) {
+		snprintf(stat, sizeof(stat), "not in network list");
+	} else if (stat_ltem < 0 || stat_nbiot < 0 || stat_ltem == stat_nbiot) {
+		snprintf(stat, sizeof(stat), "%s",
+			 cops_stat_str(stat_ltem >= 0 ? stat_ltem : stat_nbiot));
+	} else {
+		snprintf(stat, sizeof(stat), "%s (lte-m), %s (nb-iot)", cops_stat_str(stat_ltem),
+			 cops_stat_str(stat_nbiot));
+	}
+
+	shell_print(shell, "plmn: %s, act: %s%s%s, stat: %s", plmn, ltem ? "lte-m" : "",
+		    ltem && nbiot ? "," : "", nbiot ? "nb-iot" : "", stat);
+
+	for (size_t i = 0; i < n; i++) {
+		const struct hio_lte_scan_cell *c = &r->cells[cells[i]];
+
+		shell_print(shell,
+			    "  cell: %08X, act: %s, tac: %04X, earfcn: %u, pci: %u, rsrp: %d dBm",
+			    c->eci, cops_act_str(c->act), c->tac, c->earfcn, c->pci,
+			    rsrp_dbm(c->rsrp));
+	}
+}
+
+/* One group per PLMN with all its RATs and cells, sorted by PLMN. */
+static void print_scan_groups(const struct shell *shell, const struct hio_lte_scan_result *r)
+{
+	size_t entries = MIN(r->count, ARRAY_SIZE(r->entries));
+	struct scan_plmn plmns[ARRAY_SIZE(r->entries) + ARRAY_SIZE(r->cells)];
+	size_t n = 0;
+	size_t listed = 0;
+	uint16_t mcc, mnc;
+
+	for (size_t i = 0; i < entries; i++) {
+		if (scan_entry_plmn(&r->entries[i], &mcc, &mnc)) {
+			scan_plmn_add(plmns, &n, ARRAY_SIZE(plmns), mcc, mnc, r->entries[i].plmn);
+		}
+	}
+	listed = n;
+
+	for (size_t i = 0; i < r->cell_count; i++) {
+		scan_plmn_add(plmns, &n, ARRAY_SIZE(plmns), r->cells[i].mcc, r->cells[i].mnc, NULL);
+	}
+
+	for (size_t i = 1; i < n; i++) {
+		struct scan_plmn p = plmns[i];
+		size_t j = i;
+
+		for (; j > 0 && (plmns[j - 1].mcc > p.mcc ||
+				 (plmns[j - 1].mcc == p.mcc && plmns[j - 1].mnc > p.mnc));
+		     j--) {
+			plmns[j] = plmns[j - 1];
+		}
+		plmns[j] = p;
+	}
+
+	for (size_t i = 0; i < n; i++) {
+		print_scan_plmn(shell, r, entries, &plmns[i]);
+	}
+
+	if (entries < r->count) {
+		shell_print(shell, "networks: %zu (%u with act, %zu stored), cells: %u", listed,
+			    r->count, entries, r->cell_count);
+	} else {
+		shell_print(shell, "networks: %zu (%u with act), cells: %u", listed, r->count,
+			    r->cell_count);
+	}
 }
 
 static int print_scan_result(const struct shell *shell)
@@ -473,53 +625,50 @@ static int print_scan_result(const struct shell *shell)
 	shell_print(shell, "last scan: %lld s ago (%s)",
 		    (k_uptime_get() - result.uptime_ms) / MSEC_PER_SEC,
 		    result.auto_triggered ? "auto" : "request");
+	shell_print(shell, "search: lte-m cells %s, nb-iot cells %s, networks %s",
+		    scan_status_str(result.cells_ltem_status),
+		    scan_status_str(result.cells_nbiot_status), scan_status_str(result.plmn_status));
 
-	if (result.mode != HIO_LTE_SCAN_PLMN) {
-		shell_print(shell, "cell search: %s (%d)", scan_status_str(result.cells_status),
-			    result.cells_status);
-		if (!result.cells_status) {
-			print_scan_cells(shell, &result);
-		}
-	}
-
-	if (result.mode != HIO_LTE_SCAN_CELLS) {
-		shell_print(shell, "network search: %s (%d)", scan_status_str(result.plmn_status),
-			    result.plmn_status);
-
-		size_t stored = MIN(result.count, ARRAY_SIZE(result.entries));
-		for (size_t i = 0; i < stored; i++) {
-			shell_print(shell, "plmn: %s, act: %s, stat: %s", result.entries[i].plmn,
-				    cops_act_str(result.entries[i].act),
-				    cops_stat_str(result.entries[i].stat));
-		}
-
-		if (stored < result.count) {
-			shell_print(shell, "networks: %u (showing %zu)", result.count, stored);
-		} else {
-			shell_print(shell, "networks: %u", result.count);
-		}
-	}
+	print_scan_groups(shell, &result);
 
 	return 0;
 }
 
-/* Test mode: no FSM, run the steps directly in the current CFUN mode. */
+/* Test mode: no FSM, run the same steps directly. */
 static void scan_test_mode(enum hio_lte_scan_mode mode)
 {
 	const k_timeout_t step_timeout = K_MINUTES(15);
+	bool lte_m = strstr(g_hio_lte_config.mode, "lte-m");
+	bool nb_iot = strstr(g_hio_lte_config.mode, "nb-iot");
 
 	hio_lte_flow_scan_begin(mode, false);
 
-	if (mode != HIO_LTE_SCAN_PLMN && !hio_lte_flow_scan_cells_start() &&
-	    hio_lte_flow_scan_cells_wait(step_timeout)) {
-		hio_lte_flow_scan_abort();
-		return;
+	for (int i = 0; i < 2 && mode != HIO_LTE_SCAN_PLMN; i++) {
+		bool nbiot_step = i == 1;
+
+		if (nbiot_step ? !nb_iot : !lte_m) {
+			continue;
+		}
+
+		hio_lte_flow_scan_rat(!nbiot_step, nbiot_step);
+		k_sleep(K_SECONDS(2));
+
+		uint8_t act = nbiot_step ? HIO_LTE_CEREG_PARAM_ACT_NBIOT : HIO_LTE_CEREG_PARAM_ACT_LTE;
+		if (!hio_lte_flow_scan_cells_start(act) &&
+		    hio_lte_flow_scan_cells_wait(step_timeout)) {
+			hio_lte_flow_scan_abort();
+			return;
+		}
 	}
 
-	if (mode != HIO_LTE_SCAN_CELLS && !hio_lte_flow_scan_plmn_start() &&
-	    hio_lte_flow_scan_plmn_wait(step_timeout)) {
-		hio_lte_flow_scan_abort();
-		return;
+	if (mode != HIO_LTE_SCAN_CELLS) {
+		hio_lte_flow_scan_rat(lte_m, nb_iot);
+		k_sleep(K_SECONDS(2));
+
+		if (!hio_lte_flow_scan_plmn_start() && hio_lte_flow_scan_plmn_wait(step_timeout)) {
+			hio_lte_flow_scan_abort();
+			return;
+		}
 	}
 
 	hio_lte_flow_scan_end();
@@ -867,9 +1016,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	              cmd_history, 1, 0),
 
 	SHELL_CMD_ARG(scan, &sub_lte_scan,
-	              "Scan cells and networks and wait for the result; interrupts "
-	              "attach and reconnects (format: [all|plmn|cells]). Cells cover "
-	              "the preferred RAT only.",
+	              "Scan cells and networks of the configured RATs and wait for the "
+	              "result; interrupts attach and reconnects (format: "
+	              "[all|plmn|cells]). Leaves the modem in CFUN=2 in test mode.",
 	              cmd_scan, 1, 1),
 
 	SHELL_CMD_ARG(ncellmeas-schedule, NULL,

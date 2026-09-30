@@ -74,6 +74,14 @@ config HIO_LTE_SCAN_MAX_ENTRIES
 		Networks stored from the last network scan (AT%COPS=?). More are
 		counted but not stored.
 
+config HIO_LTE_SCAN_MAX_CELLS
+	int "HIO_LTE_SCAN_MAX_CELLS"
+	default 14
+	range 1 30
+	help
+		Cells stored from the scan cell searches (up to 7 per access
+		technology).
+
 config HIO_LTE_SCAN_AUTO
 	bool "HIO_LTE_SCAN_AUTO"
 	default y
