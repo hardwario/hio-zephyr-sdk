@@ -236,6 +236,9 @@ static int cmd_metrics(const struct shell *shell, size_t argc, char **argv)
 		return ret;
 	}
 
+	shell_print(shell, "attach attempts: %u", metrics.attach_count);
+	shell_print(shell, "attach fails: %u", metrics.attach_fail_count);
+	shell_print(shell, "attach last duration: %u ms", metrics.attach_last_duration_ms);
 	shell_print(shell, "uplink messages: %u", metrics.uplink_count);
 	shell_print(shell, "uplink bytes: %u", metrics.uplink_bytes);
 	shell_print(shell, "uplink errors: %u", metrics.uplink_errors);
