@@ -30,6 +30,8 @@ extern atomic_t fake_flow_send_count;
 extern const struct hio_lte_send_recv_param *fake_flow_last_send_param;
 extern uint32_t fake_flow_send_block_ms;
 extern atomic_t fake_flow_start_count;
+extern size_t fake_flow_recv_len;
+extern uint32_t fake_flow_recv_block_ms;
 
 #define UPLINK_LEN 481
 
@@ -59,6 +61,8 @@ static void reset_fakes(void *fixture)
 	zassert_ok(hio_lte_wait_for_disable(K_SECONDS(2)));
 
 	fake_flow_send_block_ms = 0;
+	fake_flow_recv_len = 0;
+	fake_flow_recv_block_ms = 0;
 	fake_flow_last_send_param = NULL;
 	atomic_clear(&fake_flow_send_count);
 	atomic_clear(&fake_flow_start_count);
@@ -166,6 +170,37 @@ ZTEST(hio_lte_transaction, test_concurrent_caller_does_not_steal_transaction)
 	zassert_ok(k_thread_join(&m_holder_thread, K_SECONDS(5)), "holder did not finish");
 	zassert_equal(m_holder_ret, -ETIMEDOUT, "holder should end on its own deadline, got %d",
 		      m_holder_ret);
+}
+
+/* The caller gives up while the FSM waits in recv (RCVTIMEO is not bound by
+ * the caller's deadline). The late reply must not reach the caller's param. */
+ZTEST(hio_lte_transaction, test_caller_gives_up_during_receive)
+{
+	static uint8_t downlink[64];
+	size_t len = 12345;
+
+	fsm_bring_up();
+	/* Radio already connected, so the send moves straight on to recv. */
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_CSCON_1);
+	k_sleep(K_MSEC(50));
+
+	fake_flow_recv_len = 10;
+	fake_flow_recv_block_ms = SEND_BLOCK_MS;
+
+	struct hio_lte_send_recv_param param = {
+		.send_buf = m_uplink,
+		.send_len = sizeof(m_uplink),
+		.recv_buf = downlink,
+		.recv_size = sizeof(downlink),
+		.recv_len = &len,
+		.timeout = K_MSEC(CALLER_DEADLINE_MS),
+	};
+
+	zassert_equal(hio_lte_send_recv(&param), -ETIMEDOUT);
+
+	k_sleep(K_MSEC(SEND_BLOCK_MS * 2));
+	zassert_equal(len, 12345, "late reply written to the abandoned caller");
+	zassert_is_null(m_send_recv_param);
 }
 
 /* Test mode: the transaction is refused and the FSM stays down. */
