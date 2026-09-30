@@ -553,23 +553,43 @@ static int cmd_scan(const struct shell *shell, size_t argc, char **argv)
 	if (g_hio_lte_config.test) {
 		shell_print(shell, "scanning (can take minutes)...");
 		scan_test_mode(mode);
-		return print_scan_result(shell);
+		ret = print_scan_result(shell);
+		if (!ret) {
+			shell_info(shell, "command succeeded");
+		}
+		return ret;
 	}
 
 	ret = hio_lte_scan(mode);
 	if (ret == -EALREADY) {
-		shell_warn(shell, "scan already in progress");
-		return 0;
-	}
-	if (ret) {
+		shell_print(shell, "scan already in progress, waiting for it");
+	} else if (ret) {
 		shell_error(shell, "command failed: %d", ret);
 		return ret;
 	}
 
-	shell_print(shell, "scan requested, see: lte scan show");
-	shell_info(shell, "command succeeded");
+	/* Cannot be interrupted anyway, so hold the shell until it is done. The
+	 * connection is re-established after the scan. */
+	shell_print(shell, "scanning, this takes minutes...");
 
-	return 0;
+	int64_t start = k_uptime_get();
+	while (hio_lte_wait_for_scan(K_SECONDS(30))) {
+		int64_t elapsed = (k_uptime_get() - start) / MSEC_PER_SEC;
+
+		/* Beyond the scan watchdogs: something is wrong. */
+		if (elapsed > 35 * 60) {
+			shell_error(shell, "scan did not finish");
+			return -ETIMEDOUT;
+		}
+		shell_print(shell, "still scanning (%lld s)", elapsed);
+	}
+
+	ret = print_scan_result(shell);
+	if (!ret) {
+		shell_info(shell, "command succeeded");
+	}
+
+	return ret;
 }
 
 static int cmd_scan_show(const struct shell *shell, size_t argc, char **argv)
@@ -847,8 +867,9 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	              cmd_history, 1, 0),
 
 	SHELL_CMD_ARG(scan, &sub_lte_scan,
-	              "Scan cells and networks, interrupts attach and reconnects "
-	              "(format: [all|plmn|cells]). Cells cover the preferred RAT only.",
+	              "Scan cells and networks and wait for the result; interrupts "
+	              "attach and reconnects (format: [all|plmn|cells]). Cells cover "
+	              "the preferred RAT only.",
 	              cmd_scan, 1, 1),
 
 	SHELL_CMD_ARG(ncellmeas-schedule, NULL,

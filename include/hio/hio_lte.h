@@ -565,6 +565,15 @@ struct hio_lte_scan_result {
 int hio_lte_scan(enum hio_lte_scan_mode mode);
 
 /**
+ * @brief Wait until the requested scan has completed (or was dropped by a
+ * disable). Takes minutes.
+ *
+ * @retval 0          Done.
+ * @retval -ETIMEDOUT Still running.
+ */
+int hio_lte_wait_for_scan(k_timeout_t timeout);
+
+/**
  * @brief Get the result of the last network scan.
  *
  * @retval 0       Success (check @c valid).
