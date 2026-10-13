@@ -315,12 +315,16 @@ static void panic(const struct log_backend *const backend)
 int hio_atci_log_enable(const struct hio_atci *atci, bool enable)
 {
 	if (!atci) {
+		bool found = false;
+
 		STRUCT_SECTION_FOREACH(hio_atci, item) {
 			if (item->log_backend) {
 				atomic_set(&item->log_backend->ctx->muted, !enable);
+				found = true;
 			}
 		}
-		return 0;
+
+		return found ? 0 : -ENOTSUP;
 	}
 
 	if (!atci->log_backend) {
