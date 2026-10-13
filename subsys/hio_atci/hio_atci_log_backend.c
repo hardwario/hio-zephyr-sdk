@@ -247,8 +247,12 @@ static void process(const struct log_backend *const backend, union log_msg_gener
 	const struct hio_atci_log_backend *log_backend = atci->log_backend;
 	const struct log_output *log_output = log_backend->log_output;
 
-	/* Output switched off at runtime: drop silently (not counted as dropped) */
-	if (atomic_get(&log_backend->ctx->muted)) {
+	/* Output switched off at runtime: drop silently (not counted as dropped).
+	 * Errors and everything after a panic still go out, so crashes and
+	 * fatal errors stay visible on ATCI even with the output muted. */
+	if (atomic_get(&log_backend->ctx->muted) &&
+	    log_backend->ctx->state != STATE_PANIC &&
+	    log_msg_get_level(&msg->log) != LOG_LEVEL_ERR) {
 		return;
 	}
 
@@ -311,12 +315,16 @@ static void panic(const struct log_backend *const backend)
 int hio_atci_log_enable(const struct hio_atci *atci, bool enable)
 {
 	if (!atci) {
+		bool found = false;
+
 		STRUCT_SECTION_FOREACH(hio_atci, item) {
 			if (item->log_backend) {
 				atomic_set(&item->log_backend->ctx->muted, !enable);
+				found = true;
 			}
 		}
-		return 0;
+
+		return found ? 0 : -ENOTSUP;
 	}
 
 	if (!atci->log_backend) {

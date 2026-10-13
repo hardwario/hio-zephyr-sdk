@@ -1,0 +1,9 @@
+sample:
+  name: HARDWARIO minimal application template
+tests:
+  sample.hio.minimal_app:
+    build_only: true
+    platform_allow: nrf9151dk/nrf9151/ns
+    integration_platforms:
+      - nrf9151dk/nrf9151/ns
+    tags: hio

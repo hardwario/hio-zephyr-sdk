@@ -474,12 +474,13 @@ int hio_atci_log_backend_process(const struct hio_atci_log_backend *backend);
  *
  * Runtime switch only, the persistent default is the "atci log" config item.
  * The log levels (runtime filters) are not touched.
+ * Error-level messages and output after a panic are never suppressed.
  *
  * @param[in] atci   Pointer to the ATCI instance, or NULL for all instances.
  * @param[in] enable true to enable the output, false to suppress it.
  *
  * @retval 0 on success.
- * @retval -ENOTSUP if the instance has no log backend.
+ * @retval -ENOTSUP if the instance (or, for NULL, no instance) has a log backend.
  */
 int hio_atci_log_enable(const struct hio_atci *atci, bool enable);
 

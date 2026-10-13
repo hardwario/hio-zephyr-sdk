@@ -54,9 +54,15 @@ config HIO_ATCI_CONFIG
 	  settings (log output, login passphrase hash) and the "atci" shell
 	  command.
 
+	  Enabled by default whenever HIO_CONFIG and the ATCI log backend are
+	  enabled, so the "atci" module (with the "log" item) also shows in
+	  "config show" / AT$CONFIG without login. Say n to keep the log
+	  output always on without a persistent switch (AT$LOG still works).
+
 config HIO_ATCI_CONFIG_INIT_PRIORITY
 	int "ATCI configuration init priority"
 	depends on HIO_ATCI_CONFIG
+	default HIO_ATCI_LOGIN_INIT_PRIORITY if HIO_ATCI_LOGIN
 	default 99
 	help
 	  Initialization priority for registering the ATCI configuration
@@ -114,10 +120,19 @@ config HIO_ATCI_LOGIN_COOLDOWN
 	  Authentication attempts are rejected for this many seconds after
 	  too many consecutive failed attempts.
 
+config HIO_ATCI_LOGIN_INIT_PRIORITY
+	int "ATCI login init priority [DEPRECATED]"
+	depends on HIO_ATCI_LOGIN
+	default 99
+	help
+	  Deprecated, use HIO_ATCI_CONFIG_INIT_PRIORITY. Kept so existing
+	  configurations still parse; its value is used as the default of
+	  HIO_ATCI_CONFIG_INIT_PRIORITY. Will be removed in a future release.
+
 choice HIO_ATCI_LOGIN_HASH
 	prompt "Login password hash backend"
 	depends on HIO_ATCI_LOGIN
-	default HIO_ATCI_LOGIN_HASH_MBEDTLS
+	default HIO_ATCI_LOGIN_HASH_PSA
 
 config HIO_ATCI_LOGIN_HASH_MBEDTLS
 	bool "mbedTLS"
