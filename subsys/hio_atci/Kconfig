@@ -117,7 +117,7 @@ config HIO_ATCI_LOGIN_COOLDOWN
 choice HIO_ATCI_LOGIN_HASH
 	prompt "Login password hash backend"
 	depends on HIO_ATCI_LOGIN
-	default HIO_ATCI_LOGIN_HASH_MBEDTLS
+	default HIO_ATCI_LOGIN_HASH_PSA
 
 config HIO_ATCI_LOGIN_HASH_MBEDTLS
 	bool "mbedTLS"
