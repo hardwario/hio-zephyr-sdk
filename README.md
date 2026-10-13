@@ -17,6 +17,21 @@ Python dependencies of the SDK scripts (`west gen-codec`, `west serial-console`,
 pip install -r hio-zephyr-sdk/requirements.txt
 ```
 
+## CBOR codec
+
+Applications sending data to HARDWARIO Cloud describe their message in
+`codec/cbor-decoder.yaml` (optionally `codec/cbor-encoder.yaml`) and generate
+`app_codec.h` at build time:
+
+```cmake
+find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
+project(application)
+include(${ZEPHYR_HIO_ZEPHYR_SDK_MODULE_DIR}/cmake/app_codec.cmake)
+```
+
+Pass `CODEC_CLOUD_OPTIONS_STATIC(opts)` from `app_codec.h` to `hio_cloud_init()`;
+see [`samples/lte_cloud`](samples/lte_cloud).
+
 ## Supported versions
 
 | Component | Version |
