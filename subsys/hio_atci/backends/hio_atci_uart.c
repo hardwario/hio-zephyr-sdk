@@ -28,6 +28,13 @@
 
 LOG_MODULE_REGISTER(hio_atci_uart, CONFIG_HIO_ATCI_LOG_LEVEL);
 
+/* CONFIG_HIO_ATCI_LOG_LEVEL only exists with CONFIG_LOG */
+#if defined(CONFIG_HIO_ATCI_LOG_LEVEL)
+#define ATCI_UART_LOG_LEVEL CONFIG_HIO_ATCI_LOG_LEVEL
+#else
+#define ATCI_UART_LOG_LEVEL 0
+#endif
+
 #define DT_DRV_COMPAT hio_atci_uart
 
 #define RX_TIMEOUT 10000
@@ -466,10 +473,10 @@ static const struct hio_atci_backend_api hio_atci_uart_backend_api = {
 			return -ENODEV;                                                            \
 		}                                                                                  \
                                                                                                    \
-		bool log_backend = CONFIG_HIO_ATCI_LOG_LEVEL > 0;                                  \
-		uint32_t level = (CONFIG_HIO_ATCI_LOG_LEVEL > LOG_LEVEL_DBG)                       \
+		bool log_backend = ATCI_UART_LOG_LEVEL > 0;                                        \
+		uint32_t level = (ATCI_UART_LOG_LEVEL > LOG_LEVEL_DBG)                             \
 					 ? CONFIG_LOG_MAX_LEVEL                                    \
-					 : CONFIG_HIO_ATCI_LOG_LEVEL;                              \
+					 : ATCI_UART_LOG_LEVEL;                                    \
                                                                                                    \
 		hio_atci_init(&hio_atci_uart_##inst, dev_uart_##inst, log_backend, level);         \
                                                                                                    \
