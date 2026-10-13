@@ -1,5 +1,5 @@
-/* west twister --testsuite-root . -c -i -v -p native_posix */
-/* west build -b native_posix && ./build/hio_lte/zephyr/zephyr.elf */
+/* west twister --testsuite-root . -c -i -v -p native_sim */
+/* west build -b native_sim && ./build/hio_lte/zephyr/zephyr.elf */
 
 #include <zephyr/kernel.h>
 #include <zephyr/ztest.h>
