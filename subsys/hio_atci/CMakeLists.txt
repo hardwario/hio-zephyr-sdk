@@ -17,3 +17,8 @@ zephyr_sources_ifdef(CONFIG_HIO_ATCI_CONFIG hio_atci_config.c)
 zephyr_sources_ifdef(CONFIG_HIO_ATCI_LOGIN hio_atci_login.c)
 
 zephyr_linker_sources(ROM_SECTIONS hio_atci.ld)
+
+if(CONFIG_HIO_ATCI_LOGIN AND NOT CONFIG_HIO_ATCI_LOGIN_INIT_PRIORITY EQUAL 99)
+  message(WARNING "CONFIG_HIO_ATCI_LOGIN_INIT_PRIORITY is deprecated, "
+                  "use CONFIG_HIO_ATCI_CONFIG_INIT_PRIORITY instead.")
+endif()

@@ -71,6 +71,14 @@ manifest:
   (`CONFIG_HIO_CLOUD_HASH_PSA`, `CONFIG_HIO_ATCI_LOGIN_HASH_PSA`). The mbedTLS
   legacy backend does not configure on NCS v3.4 and TinyCrypt is not shipped there.
 
+## Migration notes
+
+- `CONFIG_HIO_ATCI_LOGIN_INIT_PRIORITY` is deprecated, use
+  `CONFIG_HIO_ATCI_CONFIG_INIT_PRIORITY`. The old symbol still parses and its
+  value is used as the default of the new one; a CMake warning is printed
+  when it is changed.
+- `g_hio_atci_login_config` (internal) was replaced by `g_hio_atci_config`.
+
 ## Samples
 
 - [`samples/atci`](samples/atci) – AT command interface with login, shell and firmware update commands.
