@@ -1,0 +1,9 @@
+sample:
+  name: HARDWARIO LTE + cloud uplink
+tests:
+  sample.hio.lte_cloud:
+    build_only: true
+    platform_allow: nrf9151dk/nrf9151/ns
+    integration_platforms:
+      - nrf9151dk/nrf9151/ns
+    tags: hio hio_lte hio_cloud

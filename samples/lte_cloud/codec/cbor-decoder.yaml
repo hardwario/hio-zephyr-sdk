@@ -1,0 +1,6 @@
+version: 2
+type: decoder
+name: com.hardwario.hio.sample.lte_cloud
+schema:
+  - system:
+      - uptime:
