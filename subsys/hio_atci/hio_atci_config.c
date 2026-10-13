@@ -79,7 +79,12 @@ static int init(void)
 	return 0;
 }
 
-#if defined(CONFIG_SHELL)
+/* The "atci" shell command only exists when it has at least one subcommand */
+#if defined(CONFIG_SHELL) && (defined(CONFIG_HIO_CONFIG_SHELL) || defined(CONFIG_HIO_ATCI_LOG_BACKEND))
+#define HIO_ATCI_CONFIG_SHELL 1
+#endif
+
+#if defined(HIO_ATCI_CONFIG_SHELL)
 
 static int print_help(const struct shell *shell, size_t argc, char **argv)
 {
@@ -152,7 +157,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 
 SHELL_CMD_REGISTER(atci, &sub_atci, "ATCI commands.", print_help);
 
-#endif /* CONFIG_SHELL */
+#endif /* HIO_ATCI_CONFIG_SHELL */
 
 /* Load after hio config */
 BUILD_ASSERT(CONFIG_HIO_CONFIG_INIT_PRIORITY < CONFIG_HIO_ATCI_CONFIG_INIT_PRIORITY);
