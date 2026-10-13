@@ -1,0 +1,42 @@
+config HIO_NVS
+	bool "HIO_NVS"
+	select HIO_SYS
+	select CBPRINTF_FP_SUPPORT
+	select CRC
+	select EVENTS
+	select FLASH
+	select FLASH_MAP
+	select FLASH_PAGE_LAYOUT
+	select NVS
+	help
+	  Persistent runtime data (counters, timestamps, accumulators) stored
+	  periodically in a dedicated `hio_nvs_storage` flash partition.
+
+if HIO_NVS
+
+config HIO_NVS_INIT_PRIORITY
+	int "Initialization priority"
+	default 0
+
+config HIO_NVS_SAVE_INTERVAL
+	int "Periodic save interval in seconds"
+	default 3600
+	range 15 86400
+
+config HIO_NVS_FIRST_SAVE_DELAY
+	int "Delay of the first periodic save after boot in seconds"
+	default 300
+	range 15 86400
+	help
+	  Protects the flash against excessive writes during a boot loop. The
+	  shorter of this and HIO_NVS_SAVE_INTERVAL is used.
+
+config HIO_NVS_SHELL
+	bool "HIO_NVS_SHELL"
+	default y if SHELL
+
+module = HIO_NVS
+module-str = HIO NVS Subsystem
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # HIO_NVS
