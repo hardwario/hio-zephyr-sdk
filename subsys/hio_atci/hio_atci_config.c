@@ -120,7 +120,11 @@ static int cmd_log(const struct shell *shell, size_t argc, char **argv)
 		return -EINVAL;
 	}
 
-	hio_atci_log_enable(NULL, enable);
+	int ret = hio_atci_log_enable(NULL, enable);
+	if (ret) {
+		shell_error(shell, "command failed: %d", ret);
+		return ret;
+	}
 
 	shell_info(shell, "command succeeded");
 
