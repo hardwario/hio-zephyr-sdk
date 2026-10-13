@@ -1,0 +1,25 @@
+# Application manifest: the application (not hio-zephyr-sdk) pins NCS.
+#
+#   west init -l minimal_app && west update
+manifest:
+  version: "1.2"
+
+  remotes:
+    - name: ncs
+      url-base: https://github.com/nrfconnect
+    - name: hardwario
+      url-base: https://github.com/hardwario
+
+  projects:
+    - name: sdk-nrf
+      remote: ncs
+      path: nrf
+      revision: v3.4-branch # prefer a fixed tag or SHA for releases
+      import: true
+    - name: hio-zephyr-sdk
+      remote: hardwario
+      path: hio-zephyr-sdk
+      revision: main
+
+  self:
+    path: minimal_app
