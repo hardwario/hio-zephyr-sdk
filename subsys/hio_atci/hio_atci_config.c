@@ -148,7 +148,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 #endif
 
 #if defined(CONFIG_HIO_ATCI_LOG_BACKEND)
-	SHELL_CMD_ARG(log, NULL, "Log output on ATCI (runtime): [on|off].", cmd_log, 1, 1),
+	SHELL_CMD_ARG(log, NULL, "Log output on all ATCI instances (runtime): [on|off].", cmd_log, 1, 1),
 #endif
 
 	SHELL_SUBCMD_SET_END);
