@@ -1,0 +1,7 @@
+# Python dependencies of the west commands in scripts/west_commands and of
+# cmake/app_codec.cmake (install with: pip install -r requirements.txt)
+cbor2>=5.4      # gen-codec, app_codec.cmake
+PyYAML>=6.0     # gen-codec, app_codec.cmake
+pyserial>=3.5   # serial-console
+loguru>=0.7     # serial-console
+rttt>=1.10      # serial-console

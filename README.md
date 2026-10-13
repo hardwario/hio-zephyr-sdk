@@ -8,6 +8,15 @@ This repository contains the necessary code and configuration to use the Hardwar
 
 This repository depends on the [sdk-nrf](https://github.com/nrfconnect/sdk-nrf) repository for the necessary subsystems.
 
+## Installation
+
+Python dependencies of the SDK scripts (`west gen-codec`, `west serial-console`,
+`cmake/app_codec.cmake`) are listed in `requirements.txt`:
+
+```sh
+pip install -r hio-zephyr-sdk/requirements.txt
+```
+
 ## Supported versions
 
 | Component | Version |
