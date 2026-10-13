@@ -259,5 +259,5 @@ static int at_log_test(const struct hio_atci *atci)
 }
 
 HIO_ATCI_CMD_REGISTER(log, "$LOG", CONFIG_HIO_ATCI_CMD_LOG_AUTH_FLAGS, NULL, at_log_set,
-		      at_log_read, at_log_test, "Log output (runtime, AT$LOG=0|1)");
+		      at_log_read, at_log_test, "Log output of this ATCI instance (runtime, AT$LOG=0|1)");
 #endif /* CONFIG_HIO_ATCI_LOG_BACKEND */
