@@ -54,6 +54,11 @@ config HIO_ATCI_CONFIG
 	  settings (log output, login passphrase hash) and the "atci" shell
 	  command.
 
+	  Enabled by default whenever HIO_CONFIG and the ATCI log backend are
+	  enabled, so the "atci" module (with the "log" item) also shows in
+	  "config show" / AT$CONFIG without login. Say n to keep the log
+	  output always on without a persistent switch (AT$LOG still works).
+
 config HIO_ATCI_CONFIG_INIT_PRIORITY
 	int "ATCI configuration init priority"
 	depends on HIO_ATCI_CONFIG

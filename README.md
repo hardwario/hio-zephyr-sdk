@@ -73,6 +73,13 @@ manifest:
 
 ## Migration notes
 
+- **ATCI config module (`HIO_ATCI_CONFIG`)**: the `atci` hio_config module now
+  holds both the `log` item and, with `HIO_ATCI_LOGIN`, `passphrase-hash`
+  (settings keys unchanged, stored hashes are kept). It is enabled by default
+  whenever `HIO_CONFIG` and the ATCI log backend are enabled, so `config show`
+  / `AT$CONFIG` list the `atci` module also without login. Set
+  `CONFIG_HIO_ATCI_CONFIG=n` to keep the previous behaviour (log output
+  always on, no persistent switch).
 - `CONFIG_HIO_ATCI_LOGIN_INIT_PRIORITY` is deprecated, use
   `CONFIG_HIO_ATCI_CONFIG_INIT_PRIORITY`. The old symbol still parses and its
   value is used as the default of the new one; a CMake warning is printed
