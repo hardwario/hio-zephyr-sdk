@@ -71,6 +71,13 @@ manifest:
   (`CONFIG_HIO_CLOUD_HASH_PSA`, `CONFIG_HIO_ATCI_LOGIN_HASH_PSA`). The mbedTLS
   legacy backend does not configure on NCS v3.4 and TinyCrypt is not shipped there.
 
+## Samples
+
+- [`samples/atci`](samples/atci) – AT command interface with login, shell and firmware update commands.
+- [`samples/hio_log`](samples/hio_log) – logging via `hio_log`.
+- [`samples/minimal_app`](samples/minimal_app) – clean application template with its own `west.yml` pinning NCS v3.4-branch.
+- [`samples/lte_cloud`](samples/lte_cloud) – connect over LTE and send one message to HARDWARIO Cloud (PSA hash, flash-saving settings).
+
 -----------------------------------------------------------------------------------------------------------
 
 # License
