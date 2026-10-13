@@ -231,24 +231,31 @@ static int load_pib(void)
 
 	/* Load vendor name */
 	memcpy(m_data.vendor_name, pib + VENDOR_NAME_OFFSET, sizeof(m_data.vendor_name));
+	m_data.vendor_name[sizeof(m_data.vendor_name) - 1] = '\0';
 
 	/* Load product name */
 	memcpy(m_data.product_name, pib + PRODUCT_NAME_OFFSET, sizeof(m_data.product_name));
+	m_data.product_name[sizeof(m_data.product_name) - 1] = '\0';
 
 	/* Load hardware variant */
 	memcpy(m_data.hw_variant, pib + HW_VARIANT_OFFSET, sizeof(m_data.hw_variant));
+	m_data.hw_variant[sizeof(m_data.hw_variant) - 1] = '\0';
 
 	/* Load hardware revision */
 	memcpy(m_data.hw_revision, pib + HW_REVISION_OFFSET, sizeof(m_data.hw_revision));
+	m_data.hw_revision[sizeof(m_data.hw_revision) - 1] = '\0';
 
 	/* Load serial number */
 	memcpy(m_data.serial_number, pib + SERIAL_NUMBER_OFFSET, sizeof(m_data.serial_number));
+	m_data.serial_number[sizeof(m_data.serial_number) - 1] = '\0';
 
 	/* Load claim token */
 	memcpy(m_data.claim_token, pib + CLAIM_TOKEN_OFFSET, sizeof(m_data.claim_token));
+	m_data.claim_token[sizeof(m_data.claim_token) - 1] = '\0';
 
 	/* Load BLE passkey */
 	memcpy(m_data.ble_passkey, pib + BLE_PASSKEY_OFFSET, sizeof(m_data.ble_passkey));
+	m_data.ble_passkey[sizeof(m_data.ble_passkey) - 1] = '\0';
 
 	m_state = 0;
 
@@ -257,30 +264,50 @@ static int load_pib(void)
 
 int hio_info_get_vendor_name(const char **vendor_name)
 {
+	if (!vendor_name) {
+		return -EINVAL;
+	}
+
 	*vendor_name = m_data.vendor_name;
 	return m_state;
 }
 
 int hio_info_get_product_name(const char **product_name)
 {
+	if (!product_name) {
+		return -EINVAL;
+	}
+
 	*product_name = m_data.product_name;
 	return m_state;
 }
 
 int hio_info_get_hw_variant(const char **hw_variant)
 {
+	if (!hw_variant) {
+		return -EINVAL;
+	}
+
 	*hw_variant = m_data.hw_variant;
 	return m_state;
 }
 
 int hio_info_get_hw_revision(const char **hw_revision)
 {
+	if (!hw_revision) {
+		return -EINVAL;
+	}
+
 	*hw_revision = m_data.hw_revision;
 	return m_state;
 }
 
 int hio_info_get_fw_bundle(const char **fw_bundle)
 {
+	if (!fw_bundle) {
+		return -EINVAL;
+	}
+
 #if defined(FW_BUNDLE)
 	int ret;
 	static char buf[FW_BUNDLE_LENGTH];
@@ -299,6 +326,10 @@ int hio_info_get_fw_bundle(const char **fw_bundle)
 
 int hio_info_get_fw_name(const char **fw_name)
 {
+	if (!fw_name) {
+		return -EINVAL;
+	}
+
 #if defined(FW_NAME)
 	int ret;
 	static char buf[FW_NAME_LENGTH];
@@ -317,18 +348,30 @@ int hio_info_get_fw_name(const char **fw_name)
 
 int hio_info_get_fw_version(const char **fw_version)
 {
+	if (!fw_version) {
+		return -EINVAL;
+	}
+
 	*fw_version = m_app_version;
 	return 0;
 }
 
 int hio_info_get_serial_number(const char **serial_number)
 {
+	if (!serial_number) {
+		return -EINVAL;
+	}
+
 	*serial_number = m_data.serial_number;
 	return m_state;
 }
 
 int hio_info_get_serial_number_uint32(uint32_t *serial_number)
 {
+	if (!serial_number) {
+		return -EINVAL;
+	}
+
 	*serial_number = m_serial_number_uint32;
 
 	if (m_state) {
@@ -344,12 +387,20 @@ int hio_info_get_serial_number_uint32(uint32_t *serial_number)
 
 int hio_info_get_claim_token(const char **claim_token)
 {
+	if (!claim_token) {
+		return -EINVAL;
+	}
+
 	*claim_token = m_data.claim_token;
 	return m_state;
 }
 
 int hio_info_get_ble_devaddr(const char **ble_devaddr)
 {
+	if (!ble_devaddr) {
+		return -EINVAL;
+	}
+
 	int ret;
 
 	uint64_t devaddr;
@@ -377,6 +428,10 @@ int hio_info_get_ble_devaddr(const char **ble_devaddr)
 
 int hio_info_get_ble_devaddr_uint64(uint64_t *ble_devaddr)
 {
+	if (!ble_devaddr) {
+		return -EINVAL;
+	}
+
 #if defined(CONFIG_SOC_SERIES_NRF52X) || defined(CONFIG_SOC_SERIES_NRF52)
 	*ble_devaddr = NRF_FICR->DEVICEADDR[1];
 	*ble_devaddr &= BIT_MASK(16);
@@ -392,12 +447,20 @@ int hio_info_get_ble_devaddr_uint64(uint64_t *ble_devaddr)
 
 int hio_info_get_ble_passkey(const char **ble_passkey)
 {
+	if (!ble_passkey) {
+		return -EINVAL;
+	}
+
 	*ble_passkey = m_data.ble_passkey;
 	return m_state;
 }
 
 int hio_info_get_product_family(uint8_t *product_family)
 {
+	if (!product_family) {
+		return -EINVAL;
+	}
+
 	if (m_state) {
 		return m_state;
 	}
