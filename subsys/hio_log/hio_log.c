@@ -174,7 +174,9 @@ static int print_help(const struct shell *shell, size_t argc, char **argv)
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	sub_log,
 
+#if defined(CONFIG_HIO_CONFIG_SHELL)
 	HIO_CONFIG_SHELL_CMD_ARG,
+#endif
 
 	SHELL_CMD_ARG(list, NULL, "List all log backends.", cmd_list, 1, 0),
 	SHELL_CMD_ARG(apply, NULL, "Apply log configuration again.", cmd_apply, 1, 0),
