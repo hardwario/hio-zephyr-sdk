@@ -761,7 +761,7 @@ int hio_lte_talk_crsm_214()
 
 	char buf[4] = {0};
 
-	ret = cmd("AT+CRSM=214,28539,0,0,12\"FFFFFFFFFFFFFFFFFFFFFFFF\"");
+	ret = cmd("AT+CRSM=214,28539,0,0,12,\"FFFFFFFFFFFFFFFFFFFFFFFF\"");
 	if (ret < 0) {
 		LOG_ERR("Call `cmd` failed: %d", ret);
 		return ret;
