@@ -304,6 +304,16 @@ static int sec_action(const struct hio_atci *atci)
 }
 HIO_ATCI_CMD_REGISTER(test_sec, "+SEC", 1, sec_action, NULL, NULL, NULL, "auth-gated probe");
 
+/* $ERR: a command that reports its failure with hio_atci_error() (like the
+ * login and config commands do), which sets ctx->ret_printed. */
+static int err_action(const struct hio_atci *atci)
+{
+	hio_atci_error(atci, "\"boom\"");
+	return -EINVAL;
+}
+HIO_ATCI_CMD_REGISTER(test_err, "$ERR", HIO_ATCI_CMD_ACL_FLAGS_NONE, err_action, NULL, NULL,
+		      NULL, "hio_atci_error probe");
+
 /* Auth callback mirroring hio_atci_login: gate flagged commands on the
  * per-instance session state. */
 static int auth_check_like_login(const struct hio_atci *atci, const struct hio_atci_cmd *cmd,
@@ -686,4 +696,53 @@ ZTEST(hio_atci, test_auth_gating_and_disconnect_logout)
 	mock_feed("AT+SEC\n");
 	zassert_true(mock_tx_wait_for("ERROR: \"Permission denied\"\r\n", WAIT_DEFAULT),
 		     "expected permission denied after disconnect");
+}
+
+/* Run AT$ERR (its handler prints via hio_atci_error) and wait until its
+ * response, including the final endline, is complete. */
+static void run_err_cmd(void)
+{
+	mock_tx_reset();
+	mock_feed("AT$ERR\n");
+	zassert_true(mock_tx_wait_for("ERROR: \"boom\"\r\n\r\n", WAIT_DEFAULT),
+		     "AT$ERR: no complete response");
+	mock_tx_reset();
+}
+
+/* 14. A command answered via hio_atci_error() must not suppress the status
+ *     line of the next command that fails or succeeds before dispatch (bare
+ *     "AT", unknown command, CRC error). Regression: ret_printed stayed set
+ *     and those commands got only the endline, no OK/ERROR. */
+ZTEST(hio_atci, test_status_after_hio_atci_error)
+{
+	char snap[256];
+
+	run_err_cmd();
+	mock_feed("AT\n");
+	zassert_true(mock_tx_wait_for("OK\r\n", WAIT_DEFAULT), "bare AT: no OK after error");
+	mock_tx_snapshot(snap, sizeof(snap));
+	zassert_str_equal(snap, "OK\r\n", "bare AT output wrong: '%s'", snap);
+
+	run_err_cmd();
+	mock_feed("ATXX\n");
+	zassert_true(mock_tx_wait_for("ERROR: \"Command not found\"\r\n", WAIT_DEFAULT),
+		     "unknown command: no status after error");
+	mock_tx_snapshot(snap, sizeof(snap));
+	zassert_str_equal(snap, "ERROR: \"Command not found\"\r\n",
+			  "unknown command output wrong: '%s'", snap);
+
+	run_err_cmd();
+	mock_feed("XX\n");
+	zassert_true(mock_tx_wait_for("ERROR: \"Invalid command\"\r\n", WAIT_DEFAULT),
+		     "invalid command: no status after error");
+
+	/* Strict CRC mode, switched directly (the ATCI thread is idle). */
+	run_err_cmd();
+	test_atci.ctx->crc_mode = 1;
+	mock_feed("AT\t00000000\n");
+	/* The CRC trailer is the last write of the response; wait for it so
+	 * the mode is not restored while the response is still being framed. */
+	bool seen = mock_tx_wait_for("ERROR: \"CRC mismatch\"\t", WAIT_DEFAULT);
+	test_atci.ctx->crc_mode = 0;
+	zassert_true(seen, "bad CRC: no status after error");
 }

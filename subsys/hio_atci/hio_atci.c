@@ -263,8 +263,6 @@ static int execute(const struct hio_atci *atci)
 
 	ret = -ENOTSUP;
 
-	atci->ctx->ret_printed = false;
-
 	LOG_DBG("cmd: %s, type: %d", cmd ? cmd->cmd : "NULL", type);
 
 	if (m_auth_check_cb) {
@@ -367,6 +365,10 @@ static void process(const struct hio_atci *atci)
 	}
 
 	atci->ctx->crc = 0;
+	/* Reset before execute(): its early returns (invalid command, CRC
+	 * error, bare "AT", command not found) must not inherit the flag left
+	 * set by hio_atci_error() of an earlier command. */
+	atci->ctx->ret_printed = false;
 	atci->ctx->cmd_processing = true;
 
 	int ret = execute(atci);
