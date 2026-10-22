@@ -451,6 +451,24 @@ static void process_rx(const struct hio_atci *atci)
 	}
 }
 
+/* RX, log messages and kill are signalled by events, periodic wake-ups are
+ * needed only for the backend update and the modem trace polling
+ */
+static k_timeout_t idle_timeout(const struct hio_atci *atci)
+{
+#if defined(CONFIG_HIO_ATCI_MODEM_TRACE)
+	if (atci->ctx->modem_trace) {
+		return K_MSEC(100);
+	}
+#endif
+
+	if (atci->backend->api->update) {
+		return K_MSEC(100);
+	}
+
+	return K_FOREVER;
+}
+
 static void atci_thread(void *atci_handle, void *arg_log_backend, void *arg_log_level)
 {
 	struct hio_atci *atci = (struct hio_atci *)atci_handle;
@@ -483,7 +501,7 @@ static void atci_thread(void *atci_handle, void *arg_log_backend, void *arg_log_
 		uint32_t events = k_event_wait(
 			&atci->ctx->event, EVENT_RX | EVENT_KILL | EVENT_LOG_MSG, false, timeout);
 
-		timeout = K_MSEC(100); /* Reset timeout for next wait */
+		timeout = idle_timeout(atci); /* Reset timeout for next wait */
 
 		if (events & EVENT_KILL) {
 			LOG_INF("ATCI thread killed");
