@@ -251,6 +251,16 @@ config HIO_ATCI_CMD_FW
 	help
 	  Enable HIO ATCI DFU support.
 
+config HIO_ATCI_CMD_FW_CHUNK_SIZE
+	int "HIO ATCI DFU maximum chunk size"
+	depends on HIO_ATCI_CMD_FW
+	default 256
+	range 16 4096
+	help
+	  Maximum payload in bytes of one AT$FW="chunk" command. The hex encoded
+	  command has to fit HIO_ATCI_CMD_BUFF_SIZE too, the resulting usable
+	  chunk size is reported by AT$FW="info".
+
 config HIO_ATCI_CMD_FW_AUTH_FLAGS
 	int "HIO ATCI DFU authentication flags"
 	default 1 if HIO_ATCI_LOGIN

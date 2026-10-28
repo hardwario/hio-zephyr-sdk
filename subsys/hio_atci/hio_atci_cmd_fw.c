@@ -33,7 +33,7 @@
 
 /*
  * Supported command forms:
- *   AT$FW="info"
+ *   AT$FW="info"                     (also reports the max chunk size)
  *   AT$FW="start",<size>
  *   AT$FW="chunk",<offset>,<hex-data>
  *   AT$FW="done"
@@ -54,6 +54,16 @@ LOG_MODULE_DECLARE(hio_atci_cmd, CONFIG_HIO_ATCI_LOG_LEVEL);
 #if FIXED_PARTITION_EXISTS(SLOT1_LABEL)
 #define FLASH_AREA_IMAGE_SECONDARY FIXED_PARTITION_ID(SLOT1_LABEL)
 #endif
+
+/* Longest AT$FW="chunk" command around the hex data, including the CRC suffix */
+#define CHUNK_CMD_OVERHEAD (sizeof("AT$FW=\"chunk\",4294967295,\"\"\t01234567") - 1)
+/* Chunk payload that fits the command buffer as hex, rounded down to 16 B */
+#define CHUNK_CMD_MAX_SIZE                                                                         \
+	(((CONFIG_HIO_ATCI_CMD_BUFF_SIZE - 1 - CHUNK_CMD_OVERHEAD) / 2) & ~15)
+#define CHUNK_MAX_SIZE MIN(CONFIG_HIO_ATCI_CMD_FW_CHUNK_SIZE, CHUNK_CMD_MAX_SIZE)
+
+BUILD_ASSERT(CONFIG_HIO_ATCI_CMD_BUFF_SIZE - 1 >= CHUNK_CMD_OVERHEAD + 2 * 16,
+	     "HIO_ATCI_CMD_BUFF_SIZE too small for AT$FW=\"chunk\"");
 
 static const char *swap_type_str(uint8_t type)
 {
@@ -144,6 +154,7 @@ static void area_print_info(const struct hio_atci *atci, uint8_t area_id, const 
 
 static int info(const struct hio_atci *atci)
 {
+	hio_atci_printfln(atci, "$FW: \"max chunk\",%u", (unsigned int)CHUNK_MAX_SIZE);
 	area_print_info(atci, FLASH_AREA_IMAGE_PRIMARY, "primary");
 #if defined(FLASH_AREA_IMAGE_SECONDARY)
 	area_print_info(atci, FLASH_AREA_IMAGE_SECONDARY, "secondary");
@@ -240,7 +251,8 @@ static int chunk(const struct hio_atci *atci, char *argv)
 		return -EINVAL;
 	}
 
-	uint8_t buf[256];
+	/* Static, commands are processed in the ATCI thread one at a time */
+	static uint8_t buf[CHUNK_MAX_SIZE];
 	size_t len = 0;
 	if (!(p = hio_tok_hex(p, &def, buf, sizeof(buf), &len)) || !def) {
 		hio_atci_error(atci, "\"Invalid hex data\"");
