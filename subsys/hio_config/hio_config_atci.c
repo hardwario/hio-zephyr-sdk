@@ -23,6 +23,22 @@
 
 LOG_MODULE_DECLARE(hio_config);
 
+/* Print a string with '"' and '\' escaped by a backslash */
+static void print_escaped(const struct hio_atci *atci, const char *str)
+{
+	const char *run = str;
+
+	for (const char *p = str; *p != '\0'; p++) {
+		if (*p == '"' || *p == '\\') {
+			hio_atci_write(atci, run, p - run);
+			hio_atci_printf(atci, "\\%c", *p);
+			run = p + 1;
+		}
+	}
+
+	hio_atci_write(atci, run, strlen(run));
+}
+
 static int item_print_value(const struct hio_atci *atci, const struct hio_config *module,
 			    const struct hio_config_item *item)
 {
@@ -56,8 +72,9 @@ static int item_print_value(const struct hio_atci *atci, const struct hio_config
 		break;
 	}
 	case HIO_CONFIG_TYPE_STRING:
-		hio_atci_printfln(atci, "$CONFIG: \"%s\",\"%s\",\"%s\"", module->name, item->name,
-				  (char *)item->variable);
+		hio_atci_printf(atci, "$CONFIG: \"%s\",\"%s\",\"", module->name, item->name);
+		print_escaped(atci, (char *)item->variable);
+		hio_atci_printfln(atci, "\"");
 		break;
 
 	case HIO_CONFIG_TYPE_HEX:
@@ -246,7 +263,7 @@ static void sanitize_help(const char *help, char *buf, size_t buf_size)
 	}
 
 	for (size_t i = 0; help[i] != '\0' && help[i] != '\n' && j < buf_size - 2; i++) {
-		if (help[i] == '"') {
+		if (help[i] == '"' || help[i] == '\\') {
 			if (j + 2 > buf_size - 1) {
 				break;
 			}
@@ -302,12 +319,19 @@ static int test_item_cb(const struct hio_config *module, const struct hio_config
 		break;
 	}
 
-	case HIO_CONFIG_TYPE_STRING:
-		hio_atci_printfln(atci, "$CONFIG: \"%s\",\"%s\",\"%s\",,,,\"%s\",\"%s\"",
-				  module->name, item->name, type,
-				  item->default_string ? item->default_string : "",
-				  help_buf);
+	case HIO_CONFIG_TYPE_STRING: {
+		/* min/max columns carry the allowed length; the buffer (minus NUL)
+		 * caps the max when the item sets no tighter limit */
+		int max_len = item->size - 1;
+		if (item->max > 0 && item->max < max_len) {
+			max_len = item->max;
+		}
+		hio_atci_printf(atci, "$CONFIG: \"%s\",\"%s\",\"%s\",%d,%d,,\"", module->name,
+				item->name, type, MAX(item->min, 0), max_len);
+		print_escaped(atci, item->default_string ? item->default_string : "");
+		hio_atci_printfln(atci, "\",\"%s\"", help_buf);
 		break;
+	}
 
 	case HIO_CONFIG_TYPE_HEX: {
 		hio_atci_printf(atci, "$CONFIG: \"%s\",\"%s\",\"%s\",,,,\"",
