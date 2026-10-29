@@ -42,6 +42,8 @@ LOG_MODULE_REGISTER(hio_config, CONFIG_HIO_CONFIG_LOG_LEVEL);
 static K_EVENT_DEFINE(m_event);
 static sys_slist_t m_list = SYS_SLIST_STATIC_INIT(&m_list);
 static hio_config_access_cb m_access_cb;
+/* Set by a successful value write, cleared by a successful save */
+static bool m_dirty;
 
 int hio_config_item_access(const struct hio_config *module, const struct hio_config_item *item)
 {
@@ -226,6 +228,8 @@ static int save(void)
 		LOG_ERR("Call `settings_save` failed: %d", ret);
 		return ret;
 	}
+
+	m_dirty = false;
 
 	LOG_INF("Settings was saved");
 
@@ -616,26 +620,43 @@ int hio_config_module_item_set_value(const struct hio_config *module, const stru
 		return -EPERM;
 	}
 
+	int ret = -EINVAL;
+
 	if (item->parse_cb != NULL) {
-		return item->parse_cb(item, argv, err_msg);
+		ret = item->parse_cb(item, argv, err_msg);
+	} else {
+		switch (item->type) {
+		case HIO_CONFIG_TYPE_INT:
+			ret = parse_int(item, argv, err_msg);
+			break;
+		case HIO_CONFIG_TYPE_FLOAT:
+			ret = parse_float(item, argv, err_msg);
+			break;
+		case HIO_CONFIG_TYPE_BOOL:
+			ret = parse_bool(item, argv, err_msg);
+			break;
+		case HIO_CONFIG_TYPE_ENUM:
+			ret = parse_enum(item, argv, err_msg);
+			break;
+		case HIO_CONFIG_TYPE_STRING:
+			ret = parse_string(item, argv, err_msg);
+			break;
+		case HIO_CONFIG_TYPE_HEX:
+			ret = parse_hex(item, argv, err_msg);
+			break;
+		}
 	}
 
-	switch (item->type) {
-	case HIO_CONFIG_TYPE_INT:
-		return parse_int(item, argv, err_msg);
-	case HIO_CONFIG_TYPE_FLOAT:
-		return parse_float(item, argv, err_msg);
-	case HIO_CONFIG_TYPE_BOOL:
-		return parse_bool(item, argv, err_msg);
-	case HIO_CONFIG_TYPE_ENUM:
-		return parse_enum(item, argv, err_msg);
-	case HIO_CONFIG_TYPE_STRING:
-		return parse_string(item, argv, err_msg);
-	case HIO_CONFIG_TYPE_HEX:
-		return parse_hex(item, argv, err_msg);
+	if (ret == 0) {
+		m_dirty = true;
 	}
 
-	return -EINVAL;
+	return ret;
+}
+
+bool hio_config_is_dirty(void)
+{
+	return m_dirty;
 }
 
 int hio_config_item_format_line(const struct hio_config *module,

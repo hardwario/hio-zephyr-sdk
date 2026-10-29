@@ -14,6 +14,7 @@
 #include <zephyr/sys/util.h>
 
 /* Standard include */
+#include <stdbool.h>
 #include <stddef.h>
 
 #ifdef __cplusplus
@@ -214,6 +215,18 @@ int hio_config_save(void);
  * @brief Save configuration to persistent storage without rebooting.
  */
 int hio_config_save_without_reboot(void);
+
+/**
+ * @brief Check whether the configuration has unsaved changes.
+ *
+ * Returns true after any successful hio_config_module_item_set_value() (ATCI
+ * AT$CONFIG=, shell `config <item> <value>`, cloud config downlink) until the
+ * next successful save. Writing the current value again also counts as a
+ * change. Values updated directly in code are not tracked.
+ *
+ * @return true if there are unsaved changes, false otherwise.
+ */
+bool hio_config_is_dirty(void);
 
 /**
  * @brief Reset configuration to defaults and reboot system.
