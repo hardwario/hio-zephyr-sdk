@@ -4,33 +4,18 @@
  * SPDX-License-Identifier: LicenseRef-HARDWARIO-5-Clause
  */
 
+#include "ram_store.h"
 #include "test_module.h"
 
 #include <zephyr/ztest.h>
 
 #include <string.h>
 
-/* SETTINGS_NONE has no save destination (settings_save() returns -ENOENT),
- * so register a store that accepts and drops every value. */
-static int null_save(struct settings_store *cs, const char *name, const char *value,
-		     size_t val_len)
-{
-	return 0;
-}
-
-static const struct settings_store_itf m_null_itf = {
-	.csi_save = null_save,
-};
-
-static struct settings_store m_null_store = {
-	.cs_itf = &m_null_itf,
-};
-
 /* Suites run in alphabetical order; register here too (idempotent). */
 static void *suite_setup(void)
 {
 	zassert_ok(test_module_register(), "test module registration failed");
-	settings_dst_register(&m_null_store);
+	ram_store_register();
 	return NULL;
 }
 
@@ -99,4 +84,84 @@ ZTEST(hio_config_dirty, test_save_clears)
 	zassert_true(hio_config_is_dirty());
 	zassert_ok(hio_config_save_without_reboot());
 	zassert_false(hio_config_is_dirty());
+}
+
+ZTEST(hio_config_dirty, test_gen_counts_writes)
+{
+	const char *err_msg = NULL;
+	char line[] = "app config apn \"example\"";
+	uint32_t gen = hio_config_get_gen();
+
+	zassert_ok(set("interval", "120", &err_msg));
+	zassert_equal(hio_config_get_gen(), gen + 1);
+	zassert_ok(set("interval", "120", &err_msg));
+	zassert_equal(hio_config_get_gen(), gen + 2);
+	zassert_not_ok(set("interval", "0", &err_msg));
+	zassert_equal(hio_config_get_gen(), gen + 2);
+	zassert_ok(hio_config_parse_line(line, NULL));
+	zassert_equal(hio_config_get_gen(), gen + 3);
+}
+
+ZTEST(hio_config_dirty, test_save_keeps_gen)
+{
+	const char *err_msg = NULL;
+
+	zassert_ok(set("interval", "120", &err_msg));
+	uint32_t gen = hio_config_get_gen();
+
+	zassert_ok(hio_config_save_without_reboot());
+	zassert_equal(hio_config_get_gen(), gen);
+	zassert_false(hio_config_is_dirty());
+}
+
+ZTEST(hio_config_dirty, test_reset_marks_dirty)
+{
+	uint32_t gen = hio_config_get_gen();
+
+	zassert_ok(hio_config_reset_without_reboot());
+	zassert_equal(hio_config_get_gen(), gen + 1);
+	zassert_true(hio_config_is_dirty());
+}
+
+ZTEST(hio_config_dirty, test_module_reset_keeps_clean)
+{
+	uint32_t gen = hio_config_get_gen();
+
+	zassert_ok(hio_config_module_reset_without_reboot(&g_test_module));
+	zassert_equal(hio_config_get_gen(), gen + 1);
+	zassert_false(hio_config_is_dirty());
+}
+
+ZTEST(hio_config_dirty, test_module_reset_keeps_dirty)
+{
+	const char *err_msg = NULL;
+
+	zassert_ok(set("interval", "120", &err_msg));
+	zassert_ok(hio_config_module_reset_without_reboot(&g_test_module));
+	zassert_true(hio_config_is_dirty());
+}
+
+ZTEST(hio_config_dirty, test_store_keeps_clean)
+{
+	const struct hio_config_item *item;
+	uint32_t gen = hio_config_get_gen();
+	int value = 300;
+
+	zassert_ok(hio_config_module_find_item(&g_test_module, "interval", &item));
+	zassert_ok(hio_config_module_item_store(&g_test_module, item, &value));
+	zassert_equal(g_test_config_interim.interval, 300);
+	zassert_equal(hio_config_get_gen(), gen + 1);
+	zassert_false(hio_config_is_dirty());
+}
+
+ZTEST(hio_config_dirty, test_store_keeps_dirty)
+{
+	const struct hio_config_item *item;
+	const char *err_msg = NULL;
+	int value = 300;
+
+	zassert_ok(set("apn", "other", &err_msg));
+	zassert_ok(hio_config_module_find_item(&g_test_module, "interval", &item));
+	zassert_ok(hio_config_module_item_store(&g_test_module, item, &value));
+	zassert_true(hio_config_is_dirty());
 }

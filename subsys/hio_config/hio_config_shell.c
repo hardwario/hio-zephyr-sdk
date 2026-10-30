@@ -225,6 +225,48 @@ static int cmd_show(const struct shell *shell, size_t argc, char **argv)
 	return hio_config_iter_items(NULL, print_item_cb, (void *)shell);
 }
 
+static int print_diff_cb(const struct hio_config *module, const struct hio_config_item *item,
+			 const void *saved, void *user_data)
+{
+	const struct shell *shell = user_data;
+	char line[CONFIG_SHELL_CMD_BUFF_SIZE];
+	int ret;
+
+	ret = hio_config_item_format_line_value(module, item, saved, line, sizeof(line));
+	if (ret < 0) {
+		shell_error(shell, "format failed for %s %s: %d", module->name, item->name, ret);
+		return ret;
+	}
+	shell_print(shell, "- %s", line);
+
+	ret = hio_config_item_format_line(module, item, line, sizeof(line));
+	if (ret < 0) {
+		shell_error(shell, "format failed for %s %s: %d", module->name, item->name, ret);
+		return ret;
+	}
+	shell_print(shell, "+ %s", line);
+
+	return 0;
+}
+
+static int cmd_diff(const struct shell *shell, size_t argc, char **argv)
+{
+	int ret;
+
+	if (!hio_config_is_dirty()) {
+		shell_print(shell, "No unsaved changes.");
+		return 0;
+	}
+
+	ret = hio_config_iter_diff(print_diff_cb, (void *)shell);
+	if (ret) {
+		shell_error(shell, "command failed: %d", ret);
+		return ret;
+	}
+
+	return 0;
+}
+
 static int cmd_save(const struct shell *shell, size_t argc, char **argv)
 {
 	int ret;
@@ -278,6 +320,10 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	SHELL_CMD_ARG(show, NULL,
 	              "Show all configuration.",
 	              cmd_show, 1, 0),
+
+	SHELL_CMD_ARG(diff, NULL,
+	              "Show unsaved changes (- saved, + current).",
+	              cmd_diff, 1, 0),
 
 	SHELL_CMD_ARG(save, NULL,
 	              "Save all configuration and reboot.",

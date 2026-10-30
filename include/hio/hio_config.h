@@ -217,12 +217,46 @@ int hio_config_save(void);
 int hio_config_save_without_reboot(void);
 
 /**
+ * @brief Store a single item value right away.
+ *
+ * Writes @p value to the storage and to the item (the interim value) without
+ * persisting any other pending change, and counts it as a change (see
+ * hio_config_get_gen()). Unlike a set, it keeps a config without unsaved
+ * changes clean. Use it instead of writing the item variable and calling
+ * settings_save_one() directly, which hio_config would not notice. The final
+ * value is left to the caller. No access control is applied.
+ *
+ * @param module Pointer to the configuration module.
+ * @param item   Pointer to the configuration item.
+ * @param value  New value laid out like item->variable (item->size bytes).
+ *
+ * @return 0 on success, negative error code on failure (nothing changed).
+ */
+int hio_config_module_item_store(const struct hio_config *module,
+				 const struct hio_config_item *item, const void *value);
+
+/**
+ * @brief Get the configuration change counter.
+ *
+ * Starts at 0 after boot (loading the stored values does not count) and is
+ * incremented by every successful hio_config_module_item_set_value() (ATCI
+ * AT$CONFIG=, shell `config <item> <value>`, cloud config downlink), by
+ * hio_config_module_item_store(), by every storage reset and by a failed save. Writing the current value again also counts as a
+ * change. Values updated directly in code are not tracked. Registering a
+ * module does not change the counter.
+ *
+ * Use it to tell whether the configuration may have changed since it was
+ * last read; the counter is RAM-only and restarts from 0 on every boot.
+ *
+ * @return Current change counter.
+ */
+uint32_t hio_config_get_gen(void);
+
+/**
  * @brief Check whether the configuration has unsaved changes.
  *
- * Returns true after any successful hio_config_module_item_set_value() (ATCI
- * AT$CONFIG=, shell `config <item> <value>`, cloud config downlink) until the
- * next successful save. Writing the current value again also counts as a
- * change. Values updated directly in code are not tracked.
+ * Returns true after any change counted by hio_config_get_gen() until the
+ * next successful save.
  *
  * @return true if there are unsaved changes, false otherwise.
  */
@@ -393,6 +427,99 @@ int hio_config_module_item_set_value(const struct hio_config *module,
  */
 int hio_config_item_format_line(const struct hio_config *module,
 				const struct hio_config_item *item, char *buf, size_t size);
+
+/**
+ * @brief Callback receiving a "show" line in pieces.
+ *
+ * @param data      Next piece of the line (not NUL-terminated).
+ * @param len       Length of the piece.
+ * @param user_data User data passed to hio_config_item_write_line().
+ *
+ * @return 0 to continue, non-zero to stop writing.
+ */
+typedef int (*hio_config_write_cb_t)(const void *data, size_t len, void *user_data);
+
+/**
+ * @brief Write a config item with a given value as a "show" line in pieces.
+ *
+ * Produces the same bytes as hio_config_item_format_line_value() (no line
+ * terminator) without a buffer for the whole line, e.g. to feed a hash.
+ *
+ * @param module    Pointer to the configuration module.
+ * @param item      Pointer to the configuration item.
+ * @param value     Value laid out like item->variable (item->size bytes).
+ * @param cb        Callback receiving the pieces.
+ * @param user_data User data passed to the callback.
+ *
+ * @return 0 on success, otherwise the non-zero callback return value.
+ */
+int hio_config_item_write_line(const struct hio_config *module,
+			       const struct hio_config_item *item, const void *value,
+			       hio_config_write_cb_t cb, void *user_data);
+
+/**
+ * @brief Format a config item with a given value as a single "show" line.
+ *
+ * Same as hio_config_item_format_line(), but the value is taken from @p value
+ * (laid out like item->variable, item->size bytes) instead of the item.
+ *
+ * @param module Pointer to the configuration module.
+ * @param item   Pointer to the configuration item.
+ * @param value  Value to format.
+ * @param buf    Output buffer (NUL-terminated on success).
+ * @param size   Output buffer size.
+ *
+ * @return Line length on success, -ENOSPC if the buffer is too small.
+ */
+int hio_config_item_format_line_value(const struct hio_config *module,
+				      const struct hio_config_item *item, const void *value,
+				      char *buf, size_t size);
+
+/**
+ * @brief Callback for iterating over item values.
+ *
+ * @param module    Pointer to the configuration module.
+ * @param item      Pointer to the configuration item.
+ * @param value     Value laid out like item->variable (item->size bytes),
+ *                  valid only during the callback.
+ * @param user_data User data passed to the iteration function.
+ *
+ * @return 0 to continue iteration, non-zero to stop early.
+ */
+typedef int (*hio_config_value_cb_t)(const struct hio_config *module,
+				     const struct hio_config_item *item, const void *value,
+				     void *user_data);
+
+/**
+ * @brief Iterate over the saved values of all items.
+ *
+ * Calls @p cb for every item with SHOW access, in the same order as
+ * hio_config_iter_items(), with the value in persistent storage, or the
+ * default value if the item is not stored (as on boot). Reads the storage
+ * once per item.
+ *
+ * @param cb        Callback function.
+ * @param user_data User data passed to the callback.
+ *
+ * @return 0 on success, -ENOSPC if an item is larger than
+ *         CONFIG_HIO_CONFIG_VALUE_MAX_SIZE, otherwise the storage error or
+ *         the non-zero callback return value.
+ */
+int hio_config_iter_saved(hio_config_value_cb_t cb, void *user_data);
+
+/**
+ * @brief Iterate over items whose current value differs from the saved one.
+ *
+ * Calls @p cb with the saved value (see hio_config_iter_saved()) for every
+ * item with SHOW access whose current value differs from it. Returns without
+ * reading the storage when hio_config_is_dirty() is false.
+ *
+ * @param cb        Callback function.
+ * @param user_data User data passed to the callback.
+ *
+ * @return Same as hio_config_iter_saved().
+ */
+int hio_config_iter_diff(hio_config_value_cb_t cb, void *user_data);
 
 /**
  * @brief Parse and apply a single config line.

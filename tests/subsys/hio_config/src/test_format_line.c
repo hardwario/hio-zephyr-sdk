@@ -8,6 +8,7 @@
 
 #include <zephyr/ztest.h>
 
+#include <stdio.h>
 #include <string.h>
 
 /* Suites run in alphabetical order, so each suite registers the module
@@ -96,4 +97,42 @@ ZTEST(hio_config_format_line, test_enospc)
 	zassert_ok(hio_config_module_find_item(&g_test_module, "interval", &item));
 	zassert_equal(hio_config_item_format_line(&g_test_module, item, buf, sizeof(buf)),
 		      -ENOSPC);
+}
+
+ZTEST(hio_config_format_line, test_exact_size)
+{
+	const struct hio_config_item *item;
+	const char *expected = "app config interval 60";
+	size_t len = strlen(expected);
+	char buf[64];
+
+	zassert_ok(hio_config_module_find_item(&g_test_module, "interval", &item));
+
+	/* No room for the terminator */
+	zassert_equal(hio_config_item_format_line(&g_test_module, item, buf, len), -ENOSPC);
+	zassert_equal(hio_config_item_format_line(&g_test_module, item, buf, len + 1), len);
+	zassert_str_equal(buf, expected);
+}
+
+ZTEST(hio_config_format_line, test_hex_multiple_pieces)
+{
+	static uint8_t value[32];
+	static const struct hio_config_item item = {
+		.name = "long", .type = HIO_CONFIG_TYPE_HEX, .variable = value, .size = sizeof(value),
+	};
+	char expected[128];
+	char buf[128];
+	size_t n;
+
+	for (size_t i = 0; i < sizeof(value); i++) {
+		value[i] = 0xa0 + i;
+	}
+
+	n = snprintf(expected, sizeof(expected), "app config long ");
+	for (size_t i = 0; i < sizeof(value); i++) {
+		n += snprintf(expected + n, sizeof(expected) - n, "%02x", value[i]);
+	}
+
+	zassert_equal(hio_config_item_format_line(&g_test_module, &item, buf, sizeof(buf)), n);
+	zassert_str_equal(buf, expected);
 }

@@ -26,6 +26,14 @@ config HIO_CONFIG_SETTINGS_KEY_MAX
 	int "Maximum length of settings key (module/item)"
 	default 96
 
+config HIO_CONFIG_VALUE_MAX_SIZE
+	int "Maximum size of a config item value in bytes"
+	default 128
+	help
+	  Size of the stack buffer used to read a saved item value back from
+	  the storage (config diff, saved config hash). Items larger than this
+	  make those operations fail with -ENOSPC.
+
 config HIO_CONFIG_SHELL
 	bool "HIO_CONFIG_SHELL"
 	default y if SHELL
