@@ -39,6 +39,20 @@ config HIO_CLOUD_HASH_PSA
 
 endchoice
 
+config HIO_CLOUD_ATCI
+	bool "HIO_CLOUD_ATCI"
+	default y if HIO_ATCI
+	help
+	  Register the AT$CONFIGHASH command.
+
+config HIO_CLOUD_ATCI_CMD_AUTH_FLAGS
+	int "HIO_CLOUD ATCI commands authentication flags"
+	depends on HIO_CLOUD_ATCI
+	default 1 if HIO_ATCI_LOGIN
+	default 0
+	help
+	  Authentication flags applied to the HIO_CLOUD ATCI commands.
+
 config HIO_CLOUD_DEFAULT_ADDR
 	string "HIO_CLOUD_DEFAULT_ADDR"
 	default "157.245.24.13"

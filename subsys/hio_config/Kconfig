@@ -31,8 +31,9 @@ config HIO_CONFIG_VALUE_MAX_SIZE
 	default 128
 	help
 	  Size of the stack buffer used to read a saved item value back from
-	  the storage (config diff, saved config hash). Items larger than this
-	  make those operations fail with -ENOSPC.
+	  the storage (config diff, config hash and the config upload to the
+	  cloud with unsaved changes). Items larger than this make those
+	  operations fail with -ENOSPC.
 
 config HIO_CONFIG_SHELL
 	bool "HIO_CONFIG_SHELL"

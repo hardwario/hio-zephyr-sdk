@@ -14,6 +14,7 @@
 /* HIO includes */
 #include <hio/hio_buf.h>
 #include <hio/hio_cloud.h>
+#include <hio/hio_config.h>
 #include <hio/hio_info.h>
 #include <hio/hio_rtc.h>
 
@@ -473,14 +474,31 @@ static int upload_config(void)
 
 	k_mutex_lock(&m_lock, K_FOREVER);
 
-	hio_buf_reset(&m_transfer_buf);
+	/* The config is not locked while packed: repack when it changed or got
+	 * saved meanwhile, so that no unsaved value or a mix of old and new
+	 * saved values is uploaded */
+	for (int i = 0;; i++) {
+		uint32_t gen = hio_config_get_gen();
+		bool dirty = hio_config_is_dirty();
 
-	ret = hio_cloud_msg_pack_config(&m_transfer_buf);
+		hio_buf_reset(&m_transfer_buf);
 
-	if (ret) {
-		LOG_ERR("Call `hio_cloud_msg_pack_config` failed: %d", ret);
-		k_mutex_unlock(&m_lock);
-		return ret;
+		ret = hio_cloud_msg_pack_config(&m_transfer_buf);
+		if (ret) {
+			LOG_ERR("Call `hio_cloud_msg_pack_config` failed: %d", ret);
+			k_mutex_unlock(&m_lock);
+			return ret;
+		}
+
+		if (hio_config_get_gen() == gen && hio_config_is_dirty() == dirty) {
+			break;
+		}
+
+		if (i == 2) {
+			LOG_ERR("Config keeps changing");
+			k_mutex_unlock(&m_lock);
+			return -EAGAIN;
+		}
 	}
 
 	uint64_t hash;
@@ -502,7 +520,10 @@ static int upload_config(void)
 			return ret;
 		}
 
+		/* Read by hio_cloud_get_session_config_hash() under m_lock_state */
+		k_mutex_lock(&m_lock_state, K_FOREVER);
 		m_session.config_hash = hash;
+		k_mutex_unlock(&m_lock_state);
 
 		LOG_INF("Uploading config finished");
 	}
@@ -877,6 +898,91 @@ int hio_cloud_get_last_seen_ts(int64_t *ts)
 	ASERT_SESSION_AND_OPTIONS(&m_lock_state)
 
 	*ts = m_state_last_seen_ts;
+
+	k_mutex_unlock(&m_lock_state);
+
+	return 0;
+}
+
+struct config_hash_cache {
+	bool valid;
+	/* The hash switches from the current to the saved values with unsaved
+	 * changes, and a save changes the saved values without counting as a
+	 * change (gen), so the dirty flag is part of the key */
+	bool dirty;
+	uint32_t gen;
+	int nmodules;
+	uint64_t hash;
+};
+
+static K_MUTEX_DEFINE(m_config_hash_lock);
+static struct config_hash_cache m_config_hash_cache;
+
+static int count_modules_cb(const struct hio_config *module, void *user_data)
+{
+	(*(int *)user_data)++;
+	return 0;
+}
+
+int hio_cloud_get_config_hash(uint64_t *hash)
+{
+	int ret;
+
+	if (!hash) {
+		return -EINVAL;
+	}
+
+	/* Modules only get registered, never removed, so a new module changes
+	 * the count and invalidates the cache */
+	int nmodules = 0;
+	hio_config_iter_modules(count_modules_cb, &nmodules);
+
+	k_mutex_lock(&m_config_hash_lock, K_FOREVER);
+
+	struct config_hash_cache *cache = &m_config_hash_cache;
+	uint32_t gen = hio_config_get_gen();
+	bool dirty = hio_config_is_dirty();
+
+	if (!cache->valid || cache->gen != gen || cache->dirty != dirty ||
+	    cache->nmodules != nmodules) {
+		uint64_t value;
+
+		ret = hio_cloud_msg_config_hash(&value);
+		if (ret) {
+			LOG_ERR("Call `hio_cloud_msg_config_hash` failed: %d", ret);
+			k_mutex_unlock(&m_config_hash_lock);
+			return ret;
+		}
+
+		/* Do not cache a hash of a config that changed meanwhile */
+		cache->valid = hio_config_get_gen() == gen && hio_config_is_dirty() == dirty;
+		cache->dirty = dirty;
+		cache->gen = gen;
+		cache->nmodules = nmodules;
+		cache->hash = value;
+	}
+
+	*hash = cache->hash;
+
+	k_mutex_unlock(&m_config_hash_lock);
+
+	return 0;
+}
+
+int hio_cloud_get_session_config_hash(uint64_t *hash)
+{
+	if (!hash) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&m_lock_state, K_FOREVER);
+
+	if (m_session.id == 0) {
+		k_mutex_unlock(&m_lock_state);
+		return -ENODATA;
+	}
+
+	*hash = m_session.config_hash;
 
 	k_mutex_unlock(&m_lock_state);
 

@@ -78,6 +78,30 @@ int hio_cloud_send_data(const void *buf, size_t len, k_timeout_t timeout);
 __deprecated int hio_cloud_send(const void *buf, size_t len);
 
 int hio_cloud_get_last_seen_ts(int64_t *ts);
+
+/**
+ * @brief Get the hash of the config the cloud gets on the next upload.
+ *
+ * Only the saved config (what applies after a reboot) is uploaded, never
+ * unsaved changes. The result is cached until the config changes (see
+ * hio_config_get_gen()), gets saved or a new config module gets registered.
+ *
+ * @param hash Output hash.
+ *
+ * @return 0 on success, negative error code on failure.
+ */
+int hio_cloud_get_config_hash(uint64_t *hash);
+
+/**
+ * @brief Get the config hash the cloud knows from the session.
+ *
+ * Updated when a session starts and after each config upload.
+ *
+ * @param hash Output hash.
+ *
+ * @return 0 on success, -ENODATA if there is no session yet.
+ */
+int hio_cloud_get_session_config_hash(uint64_t *hash);
 int hio_cloud_firmware_update(const char *firmwareId);
 
 /**

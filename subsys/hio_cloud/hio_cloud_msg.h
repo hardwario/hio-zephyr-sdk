@@ -96,10 +96,24 @@ int hio_cloud_msg_pack_encoder(struct hio_buf *buf, uint64_t hash, const uint8_t
 
 int hio_cloud_msg_pack_stats(struct hio_buf *buf);
 
+/**
+ * @brief Pack the saved config (what applies after a reboot) for the upload.
+ *
+ * Unsaved changes are never uploaded. With them the saved values are read
+ * from the storage (see hio_config_iter_saved()), otherwise the current ones
+ * are used.
+ */
 int hio_cloud_msg_pack_config(struct hio_buf *buf);
 int hio_cloud_msg_unpack_config(struct hio_buf *buf, struct hio_cloud_msg_dlconfig *config);
 
 int hio_cloud_msg_get_hash(struct hio_buf *buf, uint64_t *hash);
+
+/**
+ * @brief Calculate the hash of the config hio_cloud_msg_pack_config() uploads.
+ *
+ * @param hash Output hash, same byte order as hio_cloud_msg_get_hash().
+ */
+int hio_cloud_msg_config_hash(uint64_t *hash);
 
 // for working with hio_cloud_msg_dlconfig
 int hio_cloud_msg_dlconfig_reset(struct hio_cloud_msg_dlconfig *config);
