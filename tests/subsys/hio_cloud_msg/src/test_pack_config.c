@@ -6,6 +6,7 @@
 
 #include "hio_cloud_msg.h"
 #include "hio_cloud_util.h"
+#include "ram_store.h"
 #include "test_module.h"
 
 #include <hio/hio_buf.h>
@@ -23,6 +24,7 @@
 static void *suite_setup(void)
 {
 	zassert_ok(test_module_register(), "test module registration failed");
+	ram_store_register();
 
 	const struct shell *sh = shell_backend_dummy_get_ptr();
 	WAIT_FOR(shell_ready(sh), 20000, k_msleep(1));
@@ -35,6 +37,9 @@ static void before_each(void *fixture)
 {
 	ARG_UNUSED(fixture);
 	test_module_set_defaults();
+	/* Clean config: the current values are packed, as "config show" prints
+	 * them (earlier suites leave unsaved changes) */
+	zassert_ok(hio_config_save_without_reboot());
 }
 
 ZTEST_SUITE(hio_cloud_pack_config, NULL, suite_setup, before_each, NULL, NULL);

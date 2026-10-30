@@ -15,11 +15,12 @@
 struct entry {
 	bool used;
 	char name[64];
-	uint8_t value[128];
+	/* Fits the 300 B strings of the "big" module in hio_cloud_msg tests */
+	uint8_t value[320];
 	size_t len;
 };
 
-static struct entry m_entries[32];
+static struct entry m_entries[64];
 
 static struct entry *find(const char *name)
 {

@@ -469,6 +469,33 @@ static int pack_shell_output_as_list(zcbor_state_t *zs, const char *output, size
 	return 0;
 }
 
+struct current_value_ctx {
+	hio_config_value_cb_t cb;
+	void *user_data;
+};
+
+static int current_value_cb(const struct hio_config *module, const struct hio_config_item *item,
+			    void *user_data)
+{
+	struct current_value_ctx *ctx = user_data;
+
+	return ctx->cb(module, item, item->variable, ctx->user_data);
+}
+
+/* The cloud gets the saved config only (what applies after a reboot). Without
+ * unsaved changes it equals the current one, which is read without the
+ * storage. */
+static int iter_upload_values(hio_config_value_cb_t cb, void *user_data)
+{
+	if (hio_config_is_dirty()) {
+		return hio_config_iter_saved(cb, user_data);
+	}
+
+	struct current_value_ctx ctx = {.cb = cb, .user_data = user_data};
+
+	return hio_config_iter_items(NULL, current_value_cb, &ctx);
+}
+
 #define PACK_CONFIG_LINE_MAX_SIZE 512
 
 struct pack_config_ctx {
@@ -481,20 +508,16 @@ struct pack_config_ctx {
 	char line[PACK_CONFIG_LINE_MAX_SIZE];
 };
 
-static int pack_config_item_cb(const struct hio_config *module, const struct hio_config_item *item,
-			       void *user_data)
+static int pack_config_value_cb(const struct hio_config *module, const struct hio_config_item *item,
+				const void *value, void *user_data)
 {
 	struct pack_config_ctx *ctx = user_data;
 	int ret;
 
-	if (!(hio_config_item_access(module, item) & HIO_CONFIG_ACCESS_SHOW)) {
-		return 0;
-	}
-
-	ret = hio_config_item_format_line(module, item, ctx->line, sizeof(ctx->line));
+	ret = hio_config_item_format_line_value(module, item, value, ctx->line, sizeof(ctx->line));
 	if (ret < 0) {
-		LOG_ERR("Call `hio_config_item_format_line` failed (%s %s): %d", module->name,
-			item->name, ret);
+		LOG_ERR("Call `hio_config_item_format_line_value` failed (%s %s): %d",
+			module->name, item->name, ret);
 		return ret;
 	}
 
@@ -589,9 +612,9 @@ int hio_cloud_msg_pack_config(struct hio_buf *buf)
 		.hash_live = true,
 	};
 
-	ret = hio_config_iter_items(NULL, pack_config_item_cb, &ctx);
+	ret = iter_upload_values(pack_config_value_cb, &ctx);
 	if (ret) {
-		LOG_ERR("Call `hio_config_iter_items` failed: %d", ret);
+		LOG_ERR("Iterating the config items failed: %d", ret);
 		/* Abort unless the item callback already cleaned up the
 		 * context itself (a hash_update failure inside the callback). */
 		if (ctx.hash_live) {
@@ -617,6 +640,89 @@ int hio_cloud_msg_pack_config(struct hio_buf *buf)
 	memcpy(hio_buf_get_mem(buf) + 1, hash, sizeof(hash));
 
 	hio_buf_seek(buf, 1 + 8 + 1 + (zs->payload - p));
+
+	return 0;
+}
+
+struct config_hash_ctx {
+	struct hio_cloud_hash *hash;
+	/* See struct pack_config_ctx */
+	bool hash_live;
+};
+
+static int config_hash_write_cb(const void *data, size_t len, void *user_data)
+{
+	struct config_hash_ctx *ctx = user_data;
+
+	int ret = hio_cloud_hash_update(ctx->hash, data, len);
+	if (ret) {
+		LOG_ERR("Call `hio_cloud_hash_update` failed: %d", ret);
+		/* update() already cleaned up the context on this path. */
+		ctx->hash_live = false;
+		return ret;
+	}
+
+	return 0;
+}
+
+/* Same hash input as hio_cloud_msg_pack_config(): the line followed by CRLF,
+ * streamed without a line buffer. Unlike the upload, lines longer than
+ * PACK_CONFIG_LINE_MAX_SIZE do not fail here; such a config cannot be
+ * uploaded at all. */
+static int config_hash_value_cb(const struct hio_config *module,
+				const struct hio_config_item *item, const void *value,
+				void *user_data)
+{
+	int ret;
+
+	ret = hio_config_item_write_line(module, item, value, config_hash_write_cb, user_data);
+	if (ret) {
+		return ret;
+	}
+
+	return config_hash_write_cb("\r\n", 2, user_data);
+}
+
+int hio_cloud_msg_config_hash(uint64_t *hash)
+{
+	struct config_hash_ctx ctx;
+	struct hio_cloud_hash hash_ctx;
+	int ret;
+
+	ret = hio_cloud_hash_begin(&hash_ctx);
+	if (ret) {
+		LOG_ERR("Call `hio_cloud_hash_begin` failed: %d", ret);
+		return ret;
+	}
+
+	/* Leading CRLF, see hio_cloud_msg_pack_config() */
+	ret = hio_cloud_hash_update(&hash_ctx, "\r\n", 2);
+	if (ret) {
+		LOG_ERR("Call `hio_cloud_hash_update` failed: %d", ret);
+		return ret;
+	}
+
+	ctx.hash = &hash_ctx;
+	ctx.hash_live = true;
+
+	ret = iter_upload_values(config_hash_value_cb, &ctx);
+	if (ret) {
+		LOG_ERR("Iterating the config items failed: %d", ret);
+		if (ctx.hash_live) {
+			hio_cloud_hash_abort(&hash_ctx);
+		}
+		return ret;
+	}
+
+	uint8_t digest[8];
+
+	ret = hio_cloud_hash_finish(&hash_ctx, digest);
+	if (ret) {
+		LOG_ERR("Call `hio_cloud_hash_finish` failed: %d", ret);
+		return ret;
+	}
+
+	*hash = sys_get_be64(digest);
 
 	return 0;
 }
