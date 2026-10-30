@@ -39,52 +39,55 @@ static void print_escaped(const struct hio_atci *atci, const char *str)
 	hio_atci_write(atci, run, strlen(run));
 }
 
-static int item_print_value(const struct hio_atci *atci, const struct hio_config *module,
-			    const struct hio_config_item *item)
+/* Print a value laid out like item->variable, without a line terminator */
+static void print_value(const struct hio_atci *atci, const struct hio_config_item *item,
+			const void *value)
 {
-
 	switch (item->type) {
 	case HIO_CONFIG_TYPE_INT:
-		hio_atci_printfln(atci, "$CONFIG: \"%s\",\"%s\",%d", module->name, item->name,
-				  *(int *)item->variable);
+		hio_atci_printf(atci, "%d", *(const int *)value);
 		break;
 
 	case HIO_CONFIG_TYPE_FLOAT:
-		hio_atci_printfln(atci, "$CONFIG: \"%s\",\"%s\",%.2f", module->name, item->name,
-				  (double)*(float *)item->variable);
+		hio_atci_printf(atci, "%.2f", (double)*(const float *)value);
 		break;
 
 	case HIO_CONFIG_TYPE_BOOL:
-		hio_atci_printfln(atci, "$CONFIG: \"%s\",\"%s\",%s", module->name, item->name,
-				  *(bool *)item->variable ? "true" : "false");
+		hio_atci_print(atci, *(const bool *)value ? "true" : "false");
 		break;
 
 	case HIO_CONFIG_TYPE_ENUM: {
 		int32_t val = 0;
-		memcpy(&val, item->variable, item->size);
+		memcpy(&val, value, item->size);
 		if (val < 0 || val >= item->max) {
-			hio_atci_printfln(atci, "$CONFIG: \"%s\",\"%s\",<invalid: %d>",
-					  module->name, item->name, val);
+			hio_atci_printf(atci, "<invalid: %d>", val);
 		} else {
-			hio_atci_printfln(atci, "$CONFIG: \"%s\",\"%s\",\"%s\"", module->name,
-					  item->name, item->enums[val]);
+			hio_atci_printf(atci, "\"%s\"", item->enums[val]);
 		}
 		break;
 	}
 	case HIO_CONFIG_TYPE_STRING:
-		hio_atci_printf(atci, "$CONFIG: \"%s\",\"%s\",\"", module->name, item->name);
-		print_escaped(atci, (char *)item->variable);
-		hio_atci_printfln(atci, "\"");
+		hio_atci_print(atci, "\"");
+		print_escaped(atci, value);
+		hio_atci_print(atci, "\"");
 		break;
 
 	case HIO_CONFIG_TYPE_HEX:
-		hio_atci_printf(atci, "$CONFIG: \"%s\",\"%s\",\"", module->name, item->name);
+		hio_atci_print(atci, "\"");
 		for (size_t i = 0; i < item->size; i++) {
-			hio_atci_printf(atci, "%02x", ((uint8_t *)item->variable)[i]);
+			hio_atci_printf(atci, "%02x", ((const uint8_t *)value)[i]);
 		}
-		hio_atci_printfln(atci, "\"");
+		hio_atci_print(atci, "\"");
 		break;
 	}
+}
+
+static int item_print_value(const struct hio_atci *atci, const struct hio_config *module,
+			    const struct hio_config_item *item)
+{
+	hio_atci_printf(atci, "$CONFIG: \"%s\",\"%s\",", module->name, item->name);
+	print_value(atci, item, item->variable);
+	hio_atci_println(atci, "");
 
 	return 0;
 }
@@ -233,6 +236,25 @@ static int at_write_action(const struct hio_atci *atci)
 	return 0;
 }
 
+static int print_diff_cb(const struct hio_config *module, const struct hio_config_item *item,
+			 const void *saved, void *user_data)
+{
+	const struct hio_atci *atci = user_data;
+
+	hio_atci_printf(atci, "$CONFIGDIFF: \"%s\",\"%s\",", module->name, item->name);
+	print_value(atci, item, item->variable);
+	hio_atci_print(atci, ",");
+	print_value(atci, item, saved);
+	hio_atci_println(atci, "");
+
+	return 0;
+}
+
+static int at_config_diff_read(const struct hio_atci *atci)
+{
+	return hio_config_iter_diff(print_diff_cb, (void *)atci);
+}
+
 static const char *item_type_str(enum hio_config_item_type type)
 {
 	switch (type) {
@@ -362,3 +384,6 @@ HIO_ATCI_CMD_REGISTER(config_w, "&W", CONFIG_HIO_CONFIG_ATCI_CMD_AUTH_FLAGS, at_
 		      NULL, NULL, "Save all configuration.");
 HIO_ATCI_CMD_REGISTER(config, "$CONFIG", CONFIG_HIO_CONFIG_ATCI_CMD_AUTH_FLAGS, NULL, at_config_set,
 		      at_config_read, at_config_test, "Configuration parameters.");
+HIO_ATCI_CMD_REGISTER(config_diff, "$CONFIGDIFF", CONFIG_HIO_CONFIG_ATCI_CMD_AUTH_FLAGS, NULL,
+		      NULL, at_config_diff_read, NULL,
+		      "Unsaved configuration changes: module, item, current value, saved value.");

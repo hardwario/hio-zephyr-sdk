@@ -42,8 +42,10 @@ LOG_MODULE_REGISTER(hio_config, CONFIG_HIO_CONFIG_LOG_LEVEL);
 static K_EVENT_DEFINE(m_event);
 static sys_slist_t m_list = SYS_SLIST_STATIC_INIT(&m_list);
 static hio_config_access_cb m_access_cb;
-/* Set by a successful value write, cleared by a successful save */
-static bool m_dirty;
+/* Incremented by every value write and storage reset; see hio_config_get_gen() */
+static uint32_t m_gen;
+/* m_gen at the last successful save; differs from m_gen while dirty */
+static uint32_t m_saved_gen;
 
 int hio_config_item_access(const struct hio_config *module, const struct hio_config_item *item)
 {
@@ -55,17 +57,18 @@ void hio_config_set_access_cb(hio_config_access_cb cb)
 	m_access_cb = cb;
 }
 
-static int item_init(const struct hio_config_item *item)
+/* Write the default value of the item to dst (laid out like item->variable) */
+static int item_default(const struct hio_config_item *item, void *dst)
 {
 	switch (item->type) {
 	case HIO_CONFIG_TYPE_INT:
-		*(int *)item->variable = item->default_int;
+		*(int *)dst = item->default_int;
 		return 0;
 	case HIO_CONFIG_TYPE_FLOAT:
-		*(float *)item->variable = item->default_float;
+		*(float *)dst = item->default_float;
 		return 0;
 	case HIO_CONFIG_TYPE_BOOL:
-		*(bool *)item->variable = item->default_bool;
+		*(bool *)dst = item->default_bool;
 		return 0;
 	case HIO_CONFIG_TYPE_ENUM:
 		if (item->default_enum < 0 || item->default_enum >= item->max) {
@@ -73,18 +76,23 @@ static int item_init(const struct hio_config_item *item)
 				item->max, item->name);
 			return -EINVAL;
 		}
-		memcpy(item->variable, &item->default_enum, item->size);
+		memcpy(dst, &item->default_enum, item->size);
 		return 0;
 	case HIO_CONFIG_TYPE_STRING:
-		strncpy(item->variable, item->default_string, item->size - 1);
-		((char *)item->variable)[item->size - 1] = '\0';
+		strncpy(dst, item->default_string, item->size - 1);
+		((char *)dst)[item->size - 1] = '\0';
 		return 0;
 	case HIO_CONFIG_TYPE_HEX:
-		memcpy(item->variable, item->default_hex, item->size);
+		memcpy(dst, item->default_hex, item->size);
 		return 0;
 	}
 
 	return -EINVAL;
+}
+
+static int item_init(const struct hio_config_item *item)
+{
+	return item_default(item, item->variable);
 }
 
 static int load_direct_cb(const char *key, size_t len, settings_read_cb read_cb, void *cb_arg,
@@ -226,10 +234,12 @@ static int save(void)
 	ret = settings_save();
 	if (ret) {
 		LOG_ERR("Call `settings_save` failed: %d", ret);
+		/* Part of the values may have been stored */
+		m_gen++;
 		return ret;
 	}
 
-	m_dirty = false;
+	m_saved_gen = m_gen;
 
 	LOG_INF("Settings was saved");
 
@@ -284,6 +294,9 @@ static int delete_item_cb(const struct hio_config *module, const struct hio_conf
 static int reset(void)
 {
 	__unused int ret;
+
+	/* The storage goes to the defaults while the values in RAM are kept */
+	m_gen++;
 
 #if defined(CONFIG_SETTINGS_FILE)
 	/* Settings in external FLASH as a LittleFS file */
@@ -364,12 +377,24 @@ static int module_reset(struct hio_config *module)
 		return -EINVAL;
 	}
 
+	/* Both RAM and storage go back to the defaults, so a clean config stays
+	 * clean unless deleting a stored value fails */
+	bool clean = !hio_config_is_dirty();
+
+	m_gen++;
+
 	for (int i = 0; i < module->nitems; i++) {
 		if (!(hio_config_item_access(module, &module->items[i]) & HIO_CONFIG_ACCESS_WRITE)) {
 			continue;
 		}
-		delete_item_cb(module, &module->items[i], NULL);
+		if (delete_item_cb(module, &module->items[i], NULL)) {
+			clean = false;
+		}
 		item_init(&module->items[i]);
+	}
+
+	if (clean) {
+		m_saved_gen = m_gen;
 	}
 
 	int ret = commit(module);
@@ -648,81 +673,270 @@ int hio_config_module_item_set_value(const struct hio_config *module, const stru
 	}
 
 	if (ret == 0) {
-		m_dirty = true;
+		m_gen++;
 	}
 
 	return ret;
 }
 
+int hio_config_module_item_store(const struct hio_config *module,
+				 const struct hio_config_item *item, const void *value)
+{
+	char key[CONFIG_HIO_CONFIG_SETTINGS_KEY_MAX];
+
+	if (module == NULL || item == NULL || value == NULL) {
+		return -EINVAL;
+	}
+
+	snprintf(key, sizeof(key), "%s/%s",
+		 module->storage_name ? module->storage_name : module->name, item->name);
+
+	int ret = settings_save_one(key, value, item->size);
+	if (ret) {
+		LOG_ERR("Call `settings_save_one` failed (%s): %d", key, ret);
+		return ret;
+	}
+
+	/* RAM and storage change together, so a clean config stays clean */
+	bool clean = !hio_config_is_dirty();
+
+	memcpy(item->variable, value, item->size);
+
+	m_gen++;
+	if (clean) {
+		m_saved_gen = m_gen;
+	}
+
+	return 0;
+}
+
+uint32_t hio_config_get_gen(void)
+{
+	return m_gen;
+}
+
 bool hio_config_is_dirty(void)
 {
-	return m_dirty;
+	return m_gen != m_saved_gen;
 }
 
 int hio_config_item_format_line(const struct hio_config *module,
 				const struct hio_config_item *item, char *buf, size_t size)
 {
-	int len;
+	return hio_config_item_format_line_value(module, item, item->variable, buf, size);
+}
+
+static int write_str(hio_config_write_cb_t cb, void *user_data, const char *str)
+{
+	return cb(str, strlen(str), user_data);
+}
+
+/* Write the value part of a "show" line */
+static int write_value(const struct hio_config_item *item, const void *value,
+		       hio_config_write_cb_t cb, void *user_data)
+{
+	/* Fits any float with "%.2f" */
+	char tmp[48];
+	int ret;
 
 	switch (item->type) {
 	case HIO_CONFIG_TYPE_INT:
-		len = snprintf(buf, size, "%s config %s %d", module->name, item->name,
-			       *(int *)item->variable);
-		break;
+		snprintf(tmp, sizeof(tmp), "%d", *(const int *)value);
+		return write_str(cb, user_data, tmp);
 
 	case HIO_CONFIG_TYPE_FLOAT:
-		len = snprintf(buf, size, "%s config %s %.2f", module->name, item->name,
-			       (double)*(float *)item->variable);
-		break;
+		snprintf(tmp, sizeof(tmp), "%.2f", (double)*(const float *)value);
+		return write_str(cb, user_data, tmp);
 
 	case HIO_CONFIG_TYPE_BOOL:
-		len = snprintf(buf, size, "%s config %s %s", module->name, item->name,
-			       *(bool *)item->variable ? "true" : "false");
-		break;
+		return write_str(cb, user_data, *(const bool *)value ? "true" : "false");
 
 	case HIO_CONFIG_TYPE_ENUM: {
 		int32_t val = 0;
-		memcpy(&val, item->variable, item->size);
+		memcpy(&val, value, item->size);
 
 		if (val < 0 || val >= item->max) {
-			len = snprintf(buf, size, "%s config %s <invalid: %d>", module->name,
-				       item->name, val);
-		} else {
-			len = snprintf(buf, size, "%s config %s \"%s\"", module->name,
-				       item->name, item->enums[val]);
+			snprintf(tmp, sizeof(tmp), "<invalid: %d>", val);
+			return write_str(cb, user_data, tmp);
 		}
-		break;
+
+		if ((ret = write_str(cb, user_data, "\"")) ||
+		    (ret = write_str(cb, user_data, item->enums[val]))) {
+			return ret;
+		}
+		return write_str(cb, user_data, "\"");
 	}
 
 	case HIO_CONFIG_TYPE_STRING:
-		len = snprintf(buf, size, "%s config %s \"%s\"", module->name, item->name,
-			       (char *)item->variable);
-		break;
+		if ((ret = write_str(cb, user_data, "\"")) ||
+		    (ret = cb(value, strnlen(value, item->size), user_data))) {
+			return ret;
+		}
+		return write_str(cb, user_data, "\"");
 
 	case HIO_CONFIG_TYPE_HEX:
-		len = snprintf(buf, size, "%s config %s ", module->name, item->name);
-		if (len < 0 || (size_t)len >= size) {
-			return -ENOSPC;
-		}
-		for (size_t i = 0; i < item->size; i++) {
-			int n = snprintf(buf + len, size - len, "%02x",
-					 ((uint8_t *)item->variable)[i]);
-			if (n < 0 || (size_t)n >= size - len) {
-				return -ENOSPC;
-			}
-			len += n;
-		}
-		break;
+		for (size_t i = 0; i < item->size;) {
+			size_t n = 0;
 
-	default:
-		return -EINVAL;
+			for (; i < item->size && n + 2 < sizeof(tmp); i++) {
+				n += snprintf(tmp + n, sizeof(tmp) - n, "%02x",
+					      ((const uint8_t *)value)[i]);
+			}
+			ret = cb(tmp, n, user_data);
+			if (ret) {
+				return ret;
+			}
+		}
+		return 0;
 	}
 
-	if (len < 0 || (size_t)len >= size) {
+	return -EINVAL;
+}
+
+int hio_config_item_write_line(const struct hio_config *module,
+			       const struct hio_config_item *item, const void *value,
+			       hio_config_write_cb_t cb, void *user_data)
+{
+	int ret;
+
+	if ((ret = write_str(cb, user_data, module->name)) ||
+	    (ret = write_str(cb, user_data, " config ")) ||
+	    (ret = write_str(cb, user_data, item->name)) ||
+	    (ret = write_str(cb, user_data, " "))) {
+		return ret;
+	}
+
+	return write_value(item, value, cb, user_data);
+}
+
+struct format_line_ctx {
+	char *buf;
+	size_t size;
+	size_t len;
+};
+
+static int format_line_cb(const void *data, size_t len, void *user_data)
+{
+	struct format_line_ctx *ctx = user_data;
+
+	/* Keep room for the terminator */
+	if (len >= ctx->size - ctx->len) {
 		return -ENOSPC;
 	}
 
-	return len;
+	memcpy(ctx->buf + ctx->len, data, len);
+	ctx->len += len;
+
+	return 0;
+}
+
+int hio_config_item_format_line_value(const struct hio_config *module,
+				      const struct hio_config_item *item, const void *value,
+				      char *buf, size_t size)
+{
+	if (size == 0) {
+		return -ENOSPC;
+	}
+
+	struct format_line_ctx ctx = {.buf = buf, .size = size};
+
+	int ret = hio_config_item_write_line(module, item, value, format_line_cb, &ctx);
+	if (ret) {
+		return ret;
+	}
+
+	buf[ctx.len] = '\0';
+
+	return ctx.len;
+}
+
+/* Load the saved value of the item into dst, or its default if it is not stored */
+static int item_load_saved(const struct hio_config *module, const struct hio_config_item *item,
+			   void *dst)
+{
+	char key[CONFIG_HIO_CONFIG_SETTINGS_KEY_MAX];
+
+	snprintf(key, sizeof(key), "%s/%s",
+		 module->storage_name ? module->storage_name : module->name, item->name);
+
+	ssize_t len = settings_load_one(key, dst, item->size);
+	if (len < 0) {
+		LOG_ERR("Call `settings_load_one` failed (%s): %d", key, (int)len);
+		return len;
+	}
+
+	/* Missing or size-mismatched values are not loaded on boot either */
+	if (len != item->size) {
+		return item_default(item, dst);
+	}
+
+	return 0;
+}
+
+static bool item_value_equal(const struct hio_config_item *item, const void *a, const void *b)
+{
+	if (item->type == HIO_CONFIG_TYPE_STRING) {
+		return strncmp(a, b, item->size) == 0;
+	}
+
+	return memcmp(a, b, item->size) == 0;
+}
+
+struct iter_saved_ctx {
+	hio_config_value_cb_t cb;
+	void *user_data;
+	bool diff_only;
+};
+
+static int iter_saved_cb(const struct hio_config *module, const struct hio_config_item *item,
+			 void *user_data)
+{
+	struct iter_saved_ctx *ctx = user_data;
+	uint8_t value[CONFIG_HIO_CONFIG_VALUE_MAX_SIZE] __aligned(sizeof(void *));
+	int ret;
+
+	if (item->size > sizeof(value)) {
+		LOG_ERR("Item '%s' in module '%s' is larger than %zu bytes", item->name,
+			module->name, sizeof(value));
+		return -ENOSPC;
+	}
+
+	ret = item_load_saved(module, item, value);
+	if (ret) {
+		return ret;
+	}
+
+	if (ctx->diff_only && item_value_equal(item, item->variable, value)) {
+		return 0;
+	}
+
+	return ctx->cb(module, item, value, ctx->user_data);
+}
+
+int hio_config_iter_saved(hio_config_value_cb_t cb, void *user_data)
+{
+	if (cb == NULL) {
+		return -EINVAL;
+	}
+
+	struct iter_saved_ctx ctx = {.cb = cb, .user_data = user_data};
+
+	return hio_config_iter_items(NULL, iter_saved_cb, &ctx);
+}
+
+int hio_config_iter_diff(hio_config_value_cb_t cb, void *user_data)
+{
+	if (cb == NULL) {
+		return -EINVAL;
+	}
+
+	if (!hio_config_is_dirty()) {
+		return 0;
+	}
+
+	struct iter_saved_ctx ctx = {.cb = cb, .user_data = user_data, .diff_only = true};
+
+	return hio_config_iter_items(NULL, iter_saved_cb, &ctx);
 }
 
 int hio_config_parse_line(char *line, const char **err_msg)
