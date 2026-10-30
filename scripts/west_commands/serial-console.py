@@ -170,6 +170,9 @@ class SerialConnector(BaseConsoleConnector):
     # so after `wake_idle` seconds without sending, an ESC (which just
     # clears the device's command buffer) goes first, `WAKE_DELAY` ahead.
     WAKE_DELAY = 0.1
+    # Right after the port opens (a replug, an acquire) the backend may be
+    # switched off entirely and takes longer to come up.
+    WAKE_DELAY_OPEN = 0.5
 
     def __init__(self, port: str, baudrate: int = 115200, timeout: float = 0.2, wake_idle: float = 2.0) -> None:
         super().__init__()
@@ -184,6 +187,7 @@ class SerialConnector(BaseConsoleConnector):
         self._port_lock = threading.Lock()
         self._released = False
         self._last_tx = 0.0
+        self._wake_delay = self.WAKE_DELAY_OPEN
         self._next_reopen = 0.0
 
     def _open_port(self):
@@ -216,6 +220,9 @@ class SerialConnector(BaseConsoleConnector):
     def _set_state(self, state: str, error: str = ''):
         self.state = state
         self.error = error
+        if state == 'connected':
+            self._last_tx = 0.0
+            self._wake_delay = self.WAKE_DELAY_OPEN
         # The console shows any status but "connected" as a fault overlay;
         # a release is explained through the error text.
         status = 'connected' if state == 'connected' else 'disconnected'
@@ -266,7 +273,8 @@ class SerialConnector(BaseConsoleConnector):
             try:
                 if self.wake_idle > 0 and time.monotonic() - self._last_tx > self.wake_idle:
                     self.ser.write(b'\x1b')
-                    time.sleep(self.WAKE_DELAY)
+                    time.sleep(self._wake_delay)
+                    self._wake_delay = self.WAKE_DELAY
                 self.ser.write(f'\x1b{text}\n'.encode('utf-8'))
             except (serial.SerialException, OSError) as e:
                 logger.warning(f"Serial write error: {e}")
@@ -636,7 +644,9 @@ class SerialMCPServer(AsyncMiddleware):
             # device was answering is lost with the link, and so may the login.
             self._pending = None
             self._auth = 'unknown'
-            self._schedule_login()
+            # Closing the port drops DTR, which disables the ATCI backend and
+            # clears the login: every open needs a fresh one.
+            self._schedule_login(delay=0.5)
         elif event.type == EventType.IN:
             self._terminal.add({'direction': 'in', 'text': str(event.data)})
         elif event.type == EventType.LOG:
@@ -742,17 +752,18 @@ class SerialMCPServer(AsyncMiddleware):
             if wait > 0:
                 await asyncio.sleep(wait)
 
-    def _schedule_login(self):
+    def _schedule_login(self, delay: float = 0.0):
         """Log in ahead of the first protected command, so `auth` says where
         things stand instead of waiting for a "Permission denied"."""
         if not self.passphrase or self._login_failed:
             return
         if self._login_task is not None and not self._login_task.done():
             return
-        self._login_task = asyncio.get_running_loop().create_task(self._auto_login())
+        self._login_task = asyncio.get_running_loop().create_task(self._auto_login(delay))
 
-    async def _auto_login(self):
-        # The boot delay passes outside the lock, AT commands go on meanwhile.
+    async def _auto_login(self, delay: float):
+        # The delays pass outside the lock, AT commands go on meanwhile.
+        await asyncio.sleep(delay)
         await self._wait_boot_delay()
         async with self._at_lock:
             if not self._login_failed and self.connector.state == 'connected':
@@ -760,20 +771,35 @@ class SerialMCPServer(AsyncMiddleware):
 
     async def _login(self):
         await self._wait_boot_delay()
-        for attempt in range(2):
+        final = ''
+        for attempt in range(3):
             # The passphrase never goes into the terminal buffer, the console or its log file.
             r = await self._transact(f'AT$LOGIN="{self.passphrase}"', 5.0, echo='AT$LOGIN="***"')
-            final = r['final'].strip() if r['status'] == 'done' and r['final'] is not None else ''
+            if r['status'] != 'done':
+                break
+            if r['final'] is None:
+                # No answer at all: the waking UART dropped it, so it never
+                # ran and is not pending either.
+                self._pending = None
+                await asyncio.sleep(0.5)
+                continue
+            final = r['final'].strip()
             # Refused during the boot delay without counting as an attempt;
             # the console may have come up after the @BOOT went by.
-            if 'Login not available yet' not in final or attempt:
+            if 'Login not available yet' not in final:
                 break
             await asyncio.sleep(_LOGIN_BOOT_DELAY)
         ok = final == _RESULT_OK
-        self._auth = 'logged_in' if ok else 'login_failed'
-        # One failed attempt per boot at most: repeated ones run into the
-        # firmware's login cooldown.
-        self._login_failed = not ok
+        rejected = final.startswith('ERROR') and 'Login not available yet' not in final
+        if ok:
+            self._auth = 'logged_in'
+        elif rejected:
+            self._auth = 'login_failed'
+        else:
+            self._auth = 'unknown'
+        # Only a passphrase the device turned down stops further attempts
+        # (until the next @BOOT): repeating it runs into the login cooldown.
+        self._login_failed = rejected
         logger.info(f'ATCI login: {self._auth}')
         return ok
 
@@ -1011,12 +1037,27 @@ class SerialMCPServer(AsyncMiddleware):
         @self._mcp.tool(annotations=control)
         async def port_acquire() -> dict:
             """Open the serial port again after `port_release`. Fails while
-            another tool still holds it."""
+            another tool still holds it.
+
+            The device logs out whenever the port closes; with a passphrase
+            this waits for the fresh login and returns `auth`.
+            """
             try:
                 await asyncio.get_running_loop().run_in_executor(None, server.connector.acquire)
             except (serial.SerialException, OSError) as e:
                 return {'status': 'error', 'error': str(e)}
-            return {'status': 'ok', 'state': server.connector.state}
+            out = {'status': 'ok', 'state': server.connector.state}
+            if server.passphrase:
+                # The login is scheduled when the connected event comes through.
+                await asyncio.sleep(0.1)
+                task = server._login_task
+                if task is not None and not task.done():
+                    try:
+                        await asyncio.wait_for(asyncio.shield(task), timeout=20)
+                    except asyncio.TimeoutError:
+                        pass
+                out['auth'] = server._auth
+            return out
 
 
 class SerialConsole(WestCommand):
