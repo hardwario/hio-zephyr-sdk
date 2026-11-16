@@ -136,6 +136,65 @@ int hio_cloud_msg_pack_firmware(struct hio_buf *buf, const struct hio_cloud_upfi
 int hio_cloud_msg_unpack_dlfirmware(struct hio_buf *buf,
 				    struct hio_cloud_msg_dlfirmware *dlfirmware);
 
+/* Upload data message: UL_UPLOAD_DATA (u8), decoder hash (u64, big endian), CBOR payload.
+ * Implemented in hio_cloud_msg_data.c. Like the other pack functions they append to the
+ * buffer; the caller resets it and serializes the calls.
+ */
+
+/**
+ * @brief Append an upload data message with an already encoded CBOR payload.
+ *
+ * @retval 0       Success.
+ * @retval -ENOSPC The message does not fit into the buffer.
+ */
+int hio_cloud_msg_pack_data(struct hio_buf *buf, uint64_t decoder_hash, const uint8_t *data,
+			    size_t len);
+
+/**
+ * @brief Append an upload data message whose CBOR payload is encoded by a callback.
+ *
+ * Appends the header, creates a zcbor encoding state over the rest of the buffer with
+ * stop_on_error enabled, calls the callback and sets the buffer length behind the encoded
+ * payload. The callback does not see the header, and zcbor does not let it write behind
+ * the end of the buffer.
+ *
+ * On any failure the buffer is restored to its length before the call, so no partial
+ * message is left behind.
+ *
+ * @param buf          Buffer to append the message to.
+ * @param decoder_hash Decoder hash to put into the header.
+ * @param cb           Encoding callback.
+ * @param user_data    Passed to the callback unchanged.
+ *
+ * @retval 0         Success, the buffer holds the complete message.
+ * @retval -EINVAL   @p buf or @p cb is NULL, the callback encoded nothing or returned
+ *                   a positive value (reserved for the cloud subsystem).
+ * @retval -ENOSPC   The header or the encoded payload does not fit.
+ * @retval -ENOMEM   zcbor ran out of backup states (ZCBOR_ERR_NO_BACKUP_MEM); raise
+ *                   CONFIG_HIO_CLOUD_ENCODE_ZCBOR_STATES.
+ * @retval -EBADMSG  The payload is not valid CBOR.
+ * @retval negative  Negative value returned by the callback, passed through unchanged.
+ */
+int hio_cloud_msg_pack_data_cb(struct hio_buf *buf, uint64_t decoder_hash,
+			       hio_cloud_data_encode_cb cb, void *user_data);
+
+/**
+ * @brief Number of payload bytes encoded so far by the running hio_cloud_msg_pack_data_cb().
+ *
+ * Returns 0 outside of an encode callback or for a foreign state.
+ */
+size_t hio_cloud_msg_data_len(const zcbor_state_t *zs);
+
+/**
+ * @brief Map a zcbor error code to errno.
+ *
+ * @retval 0        @p zcbor_err is ZCBOR_SUCCESS.
+ * @retval -ENOSPC  ZCBOR_ERR_NO_PAYLOAD.
+ * @retval -ENOMEM  ZCBOR_ERR_NO_BACKUP_MEM.
+ * @retval -EBADMSG Any other error.
+ */
+int hio_cloud_msg_zcbor_errno(int zcbor_err);
+
 #ifdef __cplusplus
 }
 #endif
