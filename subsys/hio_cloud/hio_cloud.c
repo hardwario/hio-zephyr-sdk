@@ -566,19 +566,30 @@ static int firmware_confirmed(void)
 
 	hio_cloud_uuid_t fuid;
 
-	ret = hio_cloud_util_get_firmware_update_id(fuid);
+	/* The session proves that the running image works: keep it, also when the update
+	 * did not come from the cloud (e.g. AT$FW) or its id was not stored */
+	bool was_confirmed = boot_is_img_confirmed();
 
+	if (!was_confirmed) {
+		if (boot_write_img_confirmed()) {
+			LOG_ERR("Failed to confirm image");
+			return -EIO; // Failed to confirm image
+		}
+
+		LOG_INF("Marked image as OK");
+	}
+
+	ret = hio_cloud_util_get_firmware_update_id(fuid);
 	if (ret) {
 		return 0; // No firmware update ID
 	}
 
-	if (boot_is_img_confirmed()) {
-		LOG_INF("Image confirmed OK");
-	} else if (boot_write_img_confirmed()) {
-		LOG_ERR("Failed to confirm image");
-		return -EIO; // Failed to confirm image
-	} else {
-		LOG_INF("Marked image as OK");
+	if (was_confirmed) {
+		/* The image of the update did not take (MCUboot reverted it), or the update
+		 * was handled before: there is nothing to ack */
+		LOG_WRN("Image confirmed before, dropping the firmware update id");
+		hio_cloud_util_delete_firmware_update_id();
+		return 0;
 	}
 
 	struct hio_cloud_upfirmware upfirmware = {
@@ -607,8 +618,7 @@ static int firmware_confirmed(void)
 
 	k_mutex_unlock(&m_lock);
 
-	/* The stored id marks a pending ack: drop it only once the cloud has
-	 * received it, so a failed transfer is retried on the next init. */
+	/* Dropped only once the cloud has received the ack */
 	hio_cloud_util_delete_firmware_update_id();
 
 	return 0;

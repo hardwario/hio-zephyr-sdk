@@ -279,7 +279,8 @@ static int settings_read_callback(const char *key, size_t len, settings_read_cb 
 {
 	struct settings_read_callback_params *params = param;
 
-	if (params->len < len) {
+	/* A shorter record would leave a part of the buffer uninitialized */
+	if (params->len != len) {
 		return -EINVAL;
 	}
 

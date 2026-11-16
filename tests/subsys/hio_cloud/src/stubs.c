@@ -92,6 +92,11 @@ int hio_cloud_msg_pack_firmware(struct hio_buf *buf, const struct hio_cloud_upfi
 		return ret;
 	}
 
+	if (!upfirmware->firmware) {
+		/* The ack of an update: its id, for the test to check */
+		return hio_buf_append_mem(buf, upfirmware->id, sizeof(hio_cloud_uuid_t));
+	}
+
 	return hio_buf_append_str(buf, upfirmware->firmware);
 }
 

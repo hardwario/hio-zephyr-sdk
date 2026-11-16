@@ -31,6 +31,9 @@ void test_main(void)
 
 	fake_reset();
 
+	/* Before the init, which confirms a firmware update */
+	mock_fw_setup();
+
 	int ret = hio_cloud_init(&m_options);
 
 	if (!ret) {

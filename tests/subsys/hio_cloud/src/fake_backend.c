@@ -91,15 +91,72 @@ static int fake_wait_ready(k_timeout_t timeout)
 	return 0;
 }
 
+static int m_log_count;
+static struct fake_log_entry m_log[FAKE_LOG_MAX];
+static uint8_t m_fail_type;
+static int m_fail_type_err;
+
+int fake_log_count(void)
+{
+	return m_log_count;
+}
+
+const struct fake_log_entry *fake_log(int index)
+{
+	if (index < 0 || index >= MIN(m_log_count, FAKE_LOG_MAX)) {
+		return NULL;
+	}
+
+	return &m_log[index];
+}
+
+int fake_log_find(uint8_t type)
+{
+	for (int i = 0; i < MIN(m_log_count, FAKE_LOG_MAX); i++) {
+		if (m_log[i].len && m_log[i].head[0] == type) {
+			return i;
+		}
+	}
+
+	return -1;
+}
+
+void fake_fail_first_of_type(uint8_t type, int err)
+{
+	m_fail_type = type;
+	m_fail_type_err = err;
+}
+
 static int fake_uplink(struct hio_buf *buf, bool *has_downlink, k_timeout_t timeout)
 {
 	size_t len = hio_buf_get_used(buf);
 	uint8_t *mem = hio_buf_get_mem(buf);
+	struct fake_log_entry *e = NULL;
+
+	if (m_log_count < FAKE_LOG_MAX) {
+		e = &m_log[m_log_count];
+		memcpy(e->head, mem, MIN(len, sizeof(e->head)));
+		e->len = len;
+	}
+
+	m_log_count++;
 
 	if (len > 0 && mem[0] == UL_CREATE_SESSION) {
 		m_session_pending = true;
 		*has_downlink = true;
 		return 0;
+	}
+
+	if (m_fail_type_err && len > 0 && mem[0] == m_fail_type) {
+		int err = m_fail_type_err;
+
+		m_fail_type_err = 0;
+
+		if (e) {
+			e->ret = err;
+		}
+
+		return err;
 	}
 
 	if (g_fake.uplink_count < FAKE_MAX_UPLINKS) {

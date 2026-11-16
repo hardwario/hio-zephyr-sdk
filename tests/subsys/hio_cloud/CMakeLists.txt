@@ -23,6 +23,15 @@ add_compile_definitions(
 
 set(HIO_CLOUD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../subsys/hio_cloud)
 
+# Firmware update confirmed by the init work, see src/mock_fw.c
+if(NOT DEFINED TEST_FW)
+  set(TEST_FW 1)
+endif()
+add_compile_definitions(TEST_FW=${TEST_FW})
+# Only hio_cloud.c: MCUboot itself is mocked (src/mock_fw.c)
+set_source_files_properties(${HIO_CLOUD_DIR}/hio_cloud.c PROPERTIES COMPILE_DEFINITIONS
+                            CONFIG_MCUBOOT_IMG_MANAGER=1)
+
 # The real hio_cloud.c with a fake transport behind the backend seam
 # (hio_cloud_backend_udp_lte), so sends go the real way into m_transfer_buf.
 include_directories(${HIO_CLOUD_DIR})
@@ -33,6 +42,8 @@ target_sources(app PRIVATE
 	src/main.c
 	src/fake_backend.c
 	src/stubs.c
+	src/mock_fw.c
+	src/test_firmware.c
 	src/test_send_data.c
 	src/test_send_data_cb.c
 )

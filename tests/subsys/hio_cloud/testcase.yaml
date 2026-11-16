@@ -5,3 +5,27 @@ tests:
       - native_sim
     integration_platforms:
       - native_sim
+  # Same sources with the init work finding no firmware update id
+  hio_cloud.send.fw_none:
+    tags: hio hio_cloud
+    extra_args: TEST_FW=0
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+  # The ack of a firmware update fails
+  hio_cloud.send.fw_ack_fail:
+    tags: hio hio_cloud
+    extra_args: TEST_FW=2
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+  # An update id stored, but MCUboot reverted the update
+  hio_cloud.send.fw_reverted:
+    tags: hio hio_cloud
+    extra_args: TEST_FW=3
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim

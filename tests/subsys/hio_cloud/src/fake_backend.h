@@ -58,6 +58,34 @@ struct fake {
 
 extern struct fake g_fake;
 
+/* Every uplink since the start, also the session request of the init work; unlike
+ * g_fake, not cleared by fake_reset() */
+#define FAKE_LOG_MAX 16
+
+struct fake_log_entry {
+	uint8_t head[FAKE_HEAD_LEN];
+	size_t len;
+	int ret;
+};
+
+int fake_log_count(void);
+const struct fake_log_entry *fake_log(int index);
+/* Index of the first logged uplink of message `type`, or -1 */
+int fake_log_find(uint8_t type);
+/* The first uplink of message `type` fails with `err`; not cleared by fake_reset() */
+void fake_fail_first_of_type(uint8_t type, int err);
+
+/* ---- Mock MCUboot image state and stored update id (src/mock_fw.c) ---- */
+
+/* TEST_FW 0: no update id stored, 1: id stored and acked, 2: id stored, the ack fails,
+ * 3: id stored, but the image is confirmed (MCUboot reverted the update) */
+extern const uint8_t TEST_FW_UPDATE_ID[16];
+
+/* Before hio_cloud_init(): the image state and the update id of TEST_FW */
+void mock_fw_setup(void);
+int mock_boot_confirm_calls(void);
+bool mock_fw_update_id_stored(void);
+
 /* Clears the records and the configuration */
 void fake_reset(void);
 
