@@ -38,8 +38,16 @@
 
 LOG_MODULE_REGISTER(hio_cloud, CONFIG_HIO_CLOUD_LOG_LEVEL);
 
+/* Serializes the users of m_transfer_buf. Every public function that rewrites
+ * m_transfer_buf under m_lock must take it via lock_transfer_buf() (the
+ * reentrancy guard against calls from an encode callback). */
 static K_MUTEX_DEFINE(m_lock);
 HIO_BUF_DEFINE_STATIC(m_transfer_buf, HIO_CLOUD_TRANSFER_BUF_SIZE);
+
+/* Set while an encode callback of hio_cloud_send_data_cb() runs. Only accessed
+ * with m_lock held; m_lock is recursive, so a set flag seen after taking it
+ * means a call from that callback. */
+static bool m_encoding;
 
 /* The transport backend. Only one implementation exists today (UDP over LTE);
  * a future transport would be a different ops table selected here. */
@@ -69,6 +77,24 @@ static int64_t m_state_last_seen_ts = 0;
 static bool is_started(void)
 {
 	return k_event_test(&m_cloud_events, EVENT_STARTED_SET) != 0;
+}
+
+/* Takes m_lock for a public function that rewrites m_transfer_buf: -EAGAIN when
+ * the lock is not acquired within @p timeout, -EDEADLK (lock released again) when
+ * called from an encode callback, whose message is in m_transfer_buf. */
+static int lock_transfer_buf(k_timeout_t timeout)
+{
+	if (k_mutex_lock(&m_lock, timeout)) {
+		return -EAGAIN;
+	}
+
+	if (m_encoding) {
+		k_mutex_unlock(&m_lock);
+		LOG_ERR("Cloud API called from an encode callback");
+		return -EDEADLK;
+	}
+
+	return 0;
 }
 
 static int process_downlink(struct hio_buf *buf, struct hio_buf *upbuf)
@@ -803,6 +829,49 @@ int hio_cloud_send(const void *buf, size_t len)
 	return hio_cloud_send_data(buf, len, K_FOREVER);
 }
 
+/* Common exit of the send functions: releases m_lock (taken by the caller) and
+ * logs success. Passes @p ret through. */
+static int send_finish(int ret)
+{
+	k_mutex_unlock(&m_lock);
+
+	if (!ret) {
+		LOG_INF("Request SEND finished");
+	}
+
+	return ret;
+}
+
+/* Transfers m_transfer_buf; m_lock must be held */
+static int send_transfer(k_timeout_t timeout)
+{
+	int ret = transfer(&m_transfer_buf, timeout, true);
+
+	if (ret) {
+		LOG_ERR("Call `transfer` failed: %d", ret);
+	}
+
+	return ret;
+}
+
+/* Body of hio_cloud_send_data(); m_lock must be held */
+static int send_data_locked(const void *buf, size_t len, k_timeout_t timeout)
+{
+	int ret;
+
+	LOG_INF("Request SEND started");
+
+	hio_buf_reset(&m_transfer_buf);
+
+	ret = hio_cloud_msg_pack_data(&m_transfer_buf, m_options->decoder_hash, buf, len);
+	if (ret) {
+		LOG_ERR("Call `hio_cloud_msg_pack_data` failed: %d", ret);
+		return ret;
+	}
+
+	return send_transfer(timeout);
+}
+
 int hio_cloud_send_data(const void *buf, size_t len, k_timeout_t timeout)
 {
 	int ret;
@@ -816,45 +885,76 @@ int hio_cloud_send_data(const void *buf, size_t len, k_timeout_t timeout)
 		return -EPERM;
 	}
 
-	k_mutex_lock(&m_lock, K_FOREVER);
+	/* The timeout applies to the transfer only */
+	ret = lock_transfer_buf(K_FOREVER);
+	if (ret) {
+		return ret;
+	}
+
+	ret = send_data_locked(buf, len, timeout);
+
+	return send_finish(ret);
+}
+
+/* Body of hio_cloud_send_data_cb(); m_lock must be held */
+static int send_cb_locked(hio_cloud_data_encode_cb cb, void *user_data, k_timepoint_t end)
+{
+	int ret;
+
+	/* No time left for the transfer: do not let the callback encode in vain */
+	if (sys_timepoint_expired(end)) {
+		return -ETIMEDOUT;
+	}
 
 	LOG_INF("Request SEND started");
 
 	hio_buf_reset(&m_transfer_buf);
 
-	ret = hio_buf_append_u8(&m_transfer_buf, UL_UPLOAD_DATA);
+	m_encoding = true;
+	ret = hio_cloud_msg_pack_data_cb(&m_transfer_buf, m_options->decoder_hash, cb, user_data);
+	m_encoding = false;
+
 	if (ret) {
-		LOG_ERR("Call `hio_buf_append_u8` failed: %d", ret);
-		k_mutex_unlock(&m_lock);
+		LOG_ERR("Call `hio_cloud_msg_pack_data_cb` failed: %d", ret);
 		return ret;
 	}
 
-	ret = hio_buf_append_u64_be(&m_transfer_buf, m_options->decoder_hash);
+	/* A transfer with no time left would fail and count against the server
+	 * address in the transport failover */
+	k_timeout_t left = sys_timepoint_timeout(end);
+
+	if (K_TIMEOUT_EQ(left, K_NO_WAIT)) {
+		LOG_WRN("Deadline expired while encoding");
+		hio_buf_reset(&m_transfer_buf);
+		return -ETIMEDOUT;
+	}
+
+	return send_transfer(left);
+}
+
+int hio_cloud_send_data_cb(hio_cloud_data_encode_cb cb, void *user_data, k_timeout_t timeout)
+{
+	int ret;
+
+	if (!cb) {
+		return -EINVAL;
+	}
+
+	if (!is_started()) {
+		LOG_WRN("Cloud is not initialized");
+		return -EPERM;
+	}
+
+	k_timepoint_t end = sys_timepoint_calc(timeout);
+
+	ret = lock_transfer_buf(sys_timepoint_timeout(end));
 	if (ret) {
-		LOG_ERR("Call `hio_buf_append_u64` failed: %d", ret);
-		k_mutex_unlock(&m_lock);
 		return ret;
 	}
 
-	ret = hio_buf_append_mem(&m_transfer_buf, buf, len);
-	if (ret) {
-		LOG_ERR("Call `hio_buf_append_mem` failed: %d", ret);
-		k_mutex_unlock(&m_lock);
-		return ret;
-	}
+	ret = send_cb_locked(cb, user_data, end);
 
-	ret = transfer(&m_transfer_buf, timeout, true);
-	if (ret) {
-		LOG_ERR("Call `transfer` failed: %d", ret);
-		k_mutex_unlock(&m_lock);
-		return ret;
-	}
-
-	k_mutex_unlock(&m_lock);
-
-	LOG_INF("Request SEND finished");
-
-	return 0;
+	return send_finish(ret);
 }
 
 int hio_cloud_recv(void)
@@ -866,7 +966,10 @@ int hio_cloud_recv(void)
 		return -EPERM;
 	}
 
-	k_mutex_lock(&m_lock, K_FOREVER);
+	ret = lock_transfer_buf(K_FOREVER);
+	if (ret) {
+		return ret;
+	}
 
 	LOG_DBG("Request RECV started");
 
@@ -1020,7 +1123,10 @@ int hio_cloud_firmware_update(const char *firmware)
 		return -EPERM;
 	}
 
-	k_mutex_lock(&m_lock, K_FOREVER);
+	ret = lock_transfer_buf(K_FOREVER);
+	if (ret) {
+		return ret;
+	}
 
 	LOG_INF("Request FIRMWARE UPDATE started");
 
