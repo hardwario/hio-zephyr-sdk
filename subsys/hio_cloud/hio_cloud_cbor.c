@@ -7,8 +7,11 @@
 /* HIO includes */
 #include <hio/hio_cloud.h>
 
+#include "hio_cloud_msg.h"
+
 /* Standard includes */
 #include <errno.h>
+#include <string.h>
 
 #include <zcbor_encode.h>
 
@@ -66,4 +69,57 @@ int hio_cloud_cbor_ncellmeas_put(zcbor_state_t *zs, const struct hio_lte_ncellme
 	zcbor_list_end_encode(zs, ZCBOR_VALUE_IS_INDEFINITE_LENGTH);
 
 	return 0;
+}
+
+size_t hio_cloud_cbor_free(const zcbor_state_t *zs)
+{
+	return zs->payload_end - zs->payload_mut;
+}
+
+size_t hio_cloud_cbor_len(const zcbor_state_t *zs)
+{
+	return hio_cloud_msg_data_len(zs);
+}
+
+int hio_cloud_cbor_put_raw(zcbor_state_t *zs, const void *cbor, size_t len)
+{
+	if (!zs) {
+		return -EINVAL;
+	}
+
+	if (!cbor || !len) {
+		/* Also fail the state, so that ignoring the return value cannot send a bad message
+		 */
+		zcbor_error(zs, ZCBOR_ERR_WRONG_VALUE);
+		return -EINVAL;
+	}
+
+	/* Same as zcbor with stop_on_error: nothing is written after the first error */
+	int err = zcbor_peek_error(zs);
+
+	if (err) {
+		return hio_cloud_msg_zcbor_errno(err);
+	}
+
+	if (len > hio_cloud_cbor_free(zs)) {
+		zcbor_error(zs, ZCBOR_ERR_NO_PAYLOAD);
+		return -ENOSPC;
+	}
+
+	memcpy(zs->payload_mut, cbor, len);
+	zs->payload_mut += len;
+	zs->elem_count++;
+
+	return 0;
+}
+
+void hio_cloud_cbor_put_key_ts(zcbor_state_t *zs, uint32_t key, int64_t ts)
+{
+	zcbor_uint32_put(zs, key);
+
+	if (ts == 0) {
+		zcbor_nil_put(zs, NULL);
+	} else {
+		zcbor_int64_put(zs, ts);
+	}
 }

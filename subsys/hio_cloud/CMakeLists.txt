@@ -8,6 +8,7 @@ zephyr_library()
 
 zephyr_library_sources(hio_cloud_cbor.c)
 zephyr_library_sources(hio_cloud_config.c)
+zephyr_library_sources(hio_cloud_msg_data.c)
 zephyr_library_sources(hio_cloud_msg.c)
 zephyr_library_sources(hio_cloud_packet.c)
 zephyr_library_sources(hio_cloud_process.c)
