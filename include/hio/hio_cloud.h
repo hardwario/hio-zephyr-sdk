@@ -18,7 +18,8 @@
 extern "C" {
 #endif
 
-#define HIO_CLOUD_TRANSFER_BUF_SIZE (16 * 1024)
+/** Size of the cloud transfer buffer, set by CONFIG_HIO_CLOUD_TRANSFER_BUF_SIZE. */
+#define HIO_CLOUD_TRANSFER_BUF_SIZE CONFIG_HIO_CLOUD_TRANSFER_BUF_SIZE
 
 struct hio_cloud_options {
 	uint64_t decoder_hash;
