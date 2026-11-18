@@ -504,7 +504,7 @@ struct hio_lte_cereg_event {
 int hio_lte_get_cereg_history(struct hio_lte_cereg_event *events, size_t max, size_t *count);
 
 /**
- * @brief Get the last registration reject (CEREG with an EMM cause).
+ * @brief Get the last registration reject (CEREG with an EMM cause while not registered).
  *
  * Kept separately, so it survives the history rolling over.
  *

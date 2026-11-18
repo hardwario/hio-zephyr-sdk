@@ -191,8 +191,7 @@ static void process_urc(const char *line, void *user_data)
 		hio_lte_state_set_cereg_param(&cereg_param);
 		hio_lte_state_add_cereg_event(&cereg_param);
 
-		/* cause_type 0 is an EMM cause, 1 is manufacturer specific. */
-		if (cereg_param.cause_type == 0 && cereg_param.reject_cause) {
+		if (hio_lte_state_cereg_is_reject(&cereg_param)) {
 			char what[48];
 
 			snprintf(what, sizeof(what), "Registration rejected, tac %s, cell %08X",

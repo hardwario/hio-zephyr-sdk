@@ -74,6 +74,45 @@ ZTEST(state_cereg_history, test_history)
 	zassert_ok(hio_lte_state_get_last_reject(&e[0]));
 	zassert_equal(e[0].reject_cause, 15);
 	zassert_equal(e[0].tac, 0x8DCC);
+
+	/* An EPS-only attach is accepted with EMM cause 18, which is no reject. */
+	add_cereg(5, "05F2", 0x74FEB50, 0, 18);
+
+	zassert_ok(hio_lte_state_get_cereg_history(e, ARRAY_SIZE(e), &count));
+	zassert_equal(e[0].reject_cause, 18, "the history keeps the cause");
+	zassert_ok(hio_lte_state_get_last_reject(&e[0]));
+	zassert_equal(e[0].reject_cause, 15);
+}
+
+ZTEST(state_cereg_history, test_cereg_is_reject)
+{
+	struct hio_lte_cereg_param param = {
+		.valid = true,
+		.stat = HIO_LTE_CEREG_PARAM_STAT_SEARCHING,
+		.cause_type = 0,
+		.reject_cause = 15,
+	};
+
+	zassert_true(hio_lte_state_cereg_is_reject(&param));
+
+	param.stat = HIO_LTE_CEREG_PARAM_STAT_REGISTRATION_DENIED;
+	zassert_true(hio_lte_state_cereg_is_reject(&param));
+
+	/* EMM cause 18 (CS domain not available) comes with an EPS-only attach. */
+	param.reject_cause = 18;
+	param.stat = HIO_LTE_CEREG_PARAM_STAT_REGISTERED_ROAMING;
+	zassert_false(hio_lte_state_cereg_is_reject(&param));
+	param.stat = HIO_LTE_CEREG_PARAM_STAT_REGISTERED_HOME;
+	zassert_false(hio_lte_state_cereg_is_reject(&param));
+
+	/* Manufacturer-specific cause is not an EMM cause. */
+	param.stat = HIO_LTE_CEREG_PARAM_STAT_SEARCHING;
+	param.cause_type = 1;
+	zassert_false(hio_lte_state_cereg_is_reject(&param));
+
+	param.cause_type = 0;
+	param.reject_cause = 0;
+	zassert_false(hio_lte_state_cereg_is_reject(&param));
 }
 
 ZTEST_SUITE(state_cereg_history, NULL, NULL, NULL, NULL, NULL);

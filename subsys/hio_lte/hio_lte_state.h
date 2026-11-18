@@ -33,6 +33,15 @@ void hio_lte_state_set_ceer(const char *ceer);
 int hio_lte_state_get_conn_param(struct hio_lte_conn_param *param);
 void hio_lte_state_set_conn_param(const struct hio_lte_conn_param *param);
 
+/* An EMM cause (cause_type 0) while not registered: a registration can be
+ * accepted with a cause too, e.g. 18 for an EPS-only attach. */
+static inline bool hio_lte_state_cereg_is_reject(const struct hio_lte_cereg_param *param)
+{
+	return param->cause_type == 0 && param->reject_cause &&
+	       param->stat != HIO_LTE_CEREG_PARAM_STAT_REGISTERED_HOME &&
+	       param->stat != HIO_LTE_CEREG_PARAM_STAT_REGISTERED_ROAMING;
+}
+
 int hio_lte_state_get_cereg_param(struct hio_lte_cereg_param *param);
 void hio_lte_state_set_cereg_param(const struct hio_lte_cereg_param *param);
 

@@ -295,7 +295,7 @@ void hio_lte_state_add_cereg_event(const struct hio_lte_cereg_param *param)
 		event.plmn = m_rai_param.plmn;
 	}
 
-	if (event.reject_cause) {
+	if (hio_lte_state_cereg_is_reject(param)) {
 		m_last_reject = event;
 		m_last_reject_valid = true;
 	}
