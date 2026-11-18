@@ -31,6 +31,7 @@ static size_t m_cereg_head;
 static size_t m_cereg_len;
 static struct hio_lte_cereg_event m_last_reject;
 static bool m_last_reject_valid;
+static bool m_radio_off;
 static int m_dtls_ciphersuite_used = 0;
 
 int hio_lte_state_get_imei(uint64_t *imei)
@@ -217,10 +218,23 @@ void hio_lte_state_set_cereg_param(const struct hio_lte_cereg_param *param)
 		return;
 	}
 
+	bool registered = param->stat == HIO_LTE_CEREG_PARAM_STAT_REGISTERED_HOME ||
+			  param->stat == HIO_LTE_CEREG_PARAM_STAT_REGISTERED_ROAMING;
+
 	k_mutex_lock(&m_lock, K_FOREVER);
 
-	memcpy(&m_cereg_param, param, sizeof(m_cereg_param));
+	/* The "+CEREG: 0" of our own CFUN=4 says nothing about the network. */
+	if (registered || !m_radio_off) {
+		memcpy(&m_cereg_param, param, sizeof(m_cereg_param));
+	}
 
+	k_mutex_unlock(&m_lock);
+}
+
+void hio_lte_state_set_radio_off(bool off)
+{
+	k_mutex_lock(&m_lock, K_FOREVER);
+	m_radio_off = off;
 	k_mutex_unlock(&m_lock);
 }
 

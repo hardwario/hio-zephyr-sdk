@@ -25,6 +25,54 @@ ZTEST(state_ceer, test_ceer_null_arg)
 
 ZTEST_SUITE(state_ceer, NULL, NULL, NULL, NULL, NULL);
 
+/* After its own CFUN=4 the modem reports not registered: the values of the
+ * last registration stay until the radio is on again. */
+ZTEST(state_cereg_param, test_kept_while_radio_off)
+{
+	struct hio_lte_cereg_param reg = {
+		.valid = true,
+		.stat = HIO_LTE_CEREG_PARAM_STAT_REGISTERED_ROAMING,
+		.cid = 0xAE520,
+		.act = HIO_LTE_CEREG_PARAM_ACT_NBIOT,
+		.active_time = -1,
+		.periodic_tau_ext = -1,
+	};
+	struct hio_lte_cereg_param off = {
+		.valid = true,
+		.stat = HIO_LTE_CEREG_PARAM_STAT_NOT_REGISTERED,
+	};
+	struct hio_lte_cereg_param out;
+
+	strcpy(reg.tac, "B4DC");
+	hio_lte_state_set_cereg_param(&reg);
+
+	hio_lte_state_set_radio_off(true);
+	hio_lte_state_set_cereg_param(&off);
+
+	zassert_ok(hio_lte_state_get_cereg_param(&out));
+	zassert_equal(out.stat, HIO_LTE_CEREG_PARAM_STAT_REGISTERED_ROAMING);
+	zassert_str_equal(out.tac, "B4DC");
+	zassert_equal(out.cid, 0xAE520);
+	zassert_equal(out.act, HIO_LTE_CEREG_PARAM_ACT_NBIOT);
+	zassert_equal(out.active_time, -1);
+
+	/* A registration is taken anyway. */
+	reg.cid = 0xAE521;
+	hio_lte_state_set_cereg_param(&reg);
+	zassert_ok(hio_lte_state_get_cereg_param(&out));
+	zassert_equal(out.cid, 0xAE521);
+
+	/* Radio on: a loss of the network is stored. */
+	hio_lte_state_set_radio_off(false);
+	off.stat = HIO_LTE_CEREG_PARAM_STAT_SEARCHING;
+	hio_lte_state_set_cereg_param(&off);
+
+	zassert_ok(hio_lte_state_get_cereg_param(&out));
+	zassert_equal(out.stat, HIO_LTE_CEREG_PARAM_STAT_SEARCHING);
+}
+
+ZTEST_SUITE(state_cereg_param, NULL, NULL, NULL, NULL, NULL);
+
 /* History holds CONFIG_HIO_LTE_CEREG_HISTORY (3 here) entries. */
 static void add_cereg(int stat, const char *tac, int cid, int cause_type, int cause)
 {

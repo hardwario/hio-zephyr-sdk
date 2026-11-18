@@ -91,8 +91,15 @@ int hio_lte_flow_prepare(void)
 
 int fake_flow_last_cfun = -1;
 
+/* Runs inside the command, as the URCs the modem sends before its OK. */
+void (*fake_flow_cfun_hook)(int cfun);
+
 int hio_lte_flow_cfun(int cfun)
 {
+	if (fake_flow_cfun_hook) {
+		fake_flow_cfun_hook(cfun);
+	}
+
 	fake_flow_last_cfun = cfun;
 	return 0;
 }

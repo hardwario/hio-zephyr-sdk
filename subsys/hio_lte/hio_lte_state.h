@@ -43,7 +43,10 @@ static inline bool hio_lte_state_cereg_is_reject(const struct hio_lte_cereg_para
 }
 
 int hio_lte_state_get_cereg_param(struct hio_lte_cereg_param *param);
+/* While the radio is off on purpose, keeps the last registration. */
 void hio_lte_state_set_cereg_param(const struct hio_lte_cereg_param *param);
+/* Set around the CFUN=4 of the ready state where the network grants no PSM. */
+void hio_lte_state_set_radio_off(bool off);
 
 int hio_lte_state_get_rai_param(struct hio_lte_rai_param *param);
 void hio_lte_state_set_rai_param(const struct hio_lte_rai_param *param);

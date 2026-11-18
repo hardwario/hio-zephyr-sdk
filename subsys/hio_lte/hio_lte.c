@@ -931,6 +931,8 @@ static int on_enter_disabled(void)
 	 * complete. Covers every path into DISABLED (explicit disable, reconnect). */
 	abort_pending_send_recv(-ENOTCONN);
 
+	hio_lte_state_set_radio_off(false);
+
 	ret = hio_lte_flow_stop();
 	if (ret < 0) {
 		LOG_ERR("Call `hio_lte_flow_stop` failed: %d", ret);
@@ -996,6 +998,8 @@ static int disabled_event_handler(enum hio_lte_fsm_event event)
 
 static int on_enter_error(void)
 {
+	hio_lte_state_set_radio_off(false);
+
 	m_error_ctx.on_timeout_state = FSM_STATE_PREPARE; /* Default timeout state */
 	/* A scan left for ERROR does not return to its retry delay. */
 	m_retry_resume = false;
@@ -1294,6 +1298,8 @@ static int on_leave_retry_delay(void)
 
 static int on_enter_attach(void)
 {
+	hio_lte_state_set_radio_off(false);
+
 	k_mutex_lock(&m_metrics_lock, K_FOREVER);
 	m_metrics.attach_count++;
 	int ret = hio_rtc_get_ts(&m_metrics.attach_last_ts);
@@ -1515,9 +1521,12 @@ static int ready_event_handler(enum hio_lte_fsm_event event)
 				atomic_set_bit(&m_flag, FLAG_DTLS_SAVED);
 			}
 			LOG_WRN("PSM is not supported, disabling LTE modem to save power");
+			/* Before the command: the modem reports "+CEREG: 0" right away. */
+			hio_lte_state_set_radio_off(true);
 			ret = hio_lte_flow_cfun(4);
 			if (ret < 0) {
 				LOG_ERR("Call `hio_lte_flow_cfun` failed: %d", ret);
+				hio_lte_state_set_radio_off(false);
 				return ret;
 			}
 			atomic_set_bit(&m_flag, FLAG_CFUN4);
@@ -1991,6 +2000,7 @@ static int on_enter_scan(void)
 	atomic_clear_bit(&m_flag, FLAG_SCAN_REQ);
 	/* Superseded: the scan ends with a reattach or in RETRY_DELAY. */
 	atomic_clear_bit(&m_flag, FLAG_CFUN4);
+	hio_lte_state_set_radio_off(false);
 
 	hio_lte_flow_scan_begin(m_scan_mode, atomic_test_and_clear_bit(&m_flag, FLAG_SCAN_AUTO));
 	m_scan_finished = false;
