@@ -393,8 +393,8 @@ enum hio_lte_event {
 /**
  * @brief LTE event callback structure.
  *
- * @note Handler is executed from a worker thread depending on driver
- *       implementation; it must be non-blocking and return quickly.
+ * @note The handler runs on the hio_lte work queue; it must not block and must
+ *       return quickly. It may remove its own callback, but no other one.
  */
 struct hio_lte_cb {
 	sys_snode_t node; /**< Zephyr singly-linked list support. */

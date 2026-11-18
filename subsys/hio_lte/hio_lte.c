@@ -194,6 +194,7 @@ static uint32_t m_start_cscon1 = 0;
 struct hio_lte_cereg_param m_cereg_param;
 
 static sys_slist_t cb_list = SYS_SLIST_STATIC_INIT(&cb_list);
+static K_MUTEX_DEFINE(m_cb_lock);
 
 #define ON_ERROR_MAX_FLOW_CHECK_RETRIES 3
 static struct {
@@ -407,11 +408,16 @@ static void delegate_event(enum hio_lte_fsm_event event)
 
 static void hio_lte_notify(enum hio_lte_event event)
 {
-	struct hio_lte_cb *cb;
+	struct hio_lte_cb *cb, *tmp;
 
-	SYS_SLIST_FOR_EACH_CONTAINER(&cb_list, cb, node) {
+	/* Recursive for this thread, so a handler can remove its callback. */
+	k_mutex_lock(&m_cb_lock, K_FOREVER);
+
+	SYS_SLIST_FOR_EACH_CONTAINER_SAFE(&cb_list, cb, tmp, node) {
 		cb->handler(cb, event);
 	}
+
+	k_mutex_unlock(&m_cb_lock);
 }
 
 static void event_handler(enum hio_lte_fsm_event event)
@@ -781,15 +787,25 @@ int hio_lte_add_callback(struct hio_lte_cb *cb)
 		return -EINVAL;
 	}
 
+	int ret = 0;
 	struct hio_lte_cb *iter;
+
+	k_mutex_lock(&m_cb_lock, K_FOREVER);
+
 	SYS_SLIST_FOR_EACH_CONTAINER(&cb_list, iter, node) {
 		if (iter == cb) {
-			return -EALREADY;
+			ret = -EALREADY;
+			break;
 		}
 	}
 
-	sys_slist_append(&cb_list, &cb->node);
-	return 0;
+	if (!ret) {
+		sys_slist_append(&cb_list, &cb->node);
+	}
+
+	k_mutex_unlock(&m_cb_lock);
+
+	return ret;
 }
 
 int hio_lte_remove_callback(struct hio_lte_cb *cb)
@@ -798,7 +814,10 @@ int hio_lte_remove_callback(struct hio_lte_cb *cb)
 		return -EINVAL;
 	}
 
+	k_mutex_lock(&m_cb_lock, K_FOREVER);
 	bool removed = sys_slist_find_and_remove(&cb_list, &cb->node);
+	k_mutex_unlock(&m_cb_lock);
+
 	return removed ? 0 : -ENOENT;
 }
 
