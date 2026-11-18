@@ -11,6 +11,7 @@
 #include "hio_lte_flow.h"
 #include "hio_lte_talk.h"
 
+#include <hio/hio_config.h>
 #include <hio/hio_lte.h>
 #include <hio/hio_rtc.h>
 
@@ -243,6 +244,27 @@ int hio_lte_talk_ncellmeas(int p1, int p2)
 {
 	ARG_UNUSED(p1);
 	ARG_UNUSED(p2);
+	return 0;
+}
+
+/* Used by the 'lte' shell commands only. */
+int hio_lte_flow_xmodemtrace(int lvl)
+{
+	return 0;
+}
+
+int hio_lte_talk_at_cmd(const char *s)
+{
+	return 0;
+}
+
+int hio_lte_talk_bypass_set_cb(hio_lte_talk_bypass_cb cb, void *user_data)
+{
+	return 0;
+}
+
+int hio_config_shell_cmd(const struct shell *shell, size_t argc, char **argv)
+{
 	return 0;
 }
 

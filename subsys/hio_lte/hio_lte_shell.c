@@ -222,6 +222,19 @@ static int cmd_state(const struct shell *shell, size_t argc, char **argv)
 	shell_print(shell, "cereg: %s", lte_cereg);
 	shell_print(shell, "mode: %s", lte_mode);
 
+	/* The PSM the network granted, reported with a registration only. */
+	if (cereg_param.valid && cereg_param.active_time == GRPS_TIMER_DEACTIVATED) {
+		shell_print(shell, "psm: not granted");
+	} else if (cereg_param.valid && cereg_param.active_time >= 0 &&
+		   cereg_param.periodic_tau_ext >= 0) {
+		char active[24];
+		char tau[24];
+
+		hio_util_fmt_duration(cereg_param.active_time, active, sizeof(active));
+		hio_util_fmt_duration(cereg_param.periodic_tau_ext, tau, sizeof(tau));
+		shell_print(shell, "psm: active-time %s, periodic-tau %s", active, tau);
+	}
+
 	struct hio_lte_conn_param conn_param;
 	hio_lte_get_conn_param(&conn_param);
 	if (conn_param.valid) {

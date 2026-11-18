@@ -8,11 +8,13 @@
  * modem reports "+CEREG: 0", which must not hide the last registration. */
 
 #include "fsm_helpers.h"
+#include "hio_lte_parse.h"
 #include "hio_lte_state.h"
 
 #include <hio/hio_lte.h>
 
 #include <zephyr/kernel.h>
+#include <zephyr/shell/shell_dummy.h>
 #include <zephyr/ztest.h>
 
 extern int fake_flow_last_cfun;
@@ -35,11 +37,25 @@ static void set_cereg(enum hio_lte_cereg_param_stat stat)
 		/* As parsed from "+CEREG: <stat>". */
 		param.cid = 0;
 		param.act = 0;
-		param.active_time = 0;
-		param.periodic_tau_ext = 0;
+		param.active_time = GRPS_TIMER_INVALID;
+		param.periodic_tau_ext = GRPS_TIMER_INVALID;
 	}
 
 	hio_lte_state_set_cereg_param(&param);
+}
+
+static const char *shell_cmd(const char *cmd)
+{
+	const struct shell *sh = shell_backend_dummy_get_ptr();
+	size_t size;
+
+	WAIT_FOR(shell_ready(sh), 20000, k_msleep(1));
+	shell_backend_dummy_clear_output(sh);
+	int ret = shell_execute_cmd(sh, cmd);
+	const char *out = shell_backend_dummy_get_output(sh, &size);
+	zassert_ok(ret, "%s failed: %d: %s", cmd, ret, out);
+
+	return out;
 }
 
 static void cfun4_reports_not_registered(int cfun)
@@ -108,6 +124,10 @@ ZTEST(hio_lte_no_psm, test_cfun4_keeps_registration_until_attach)
 	zassert_equal(out.act, HIO_LTE_CEREG_PARAM_ACT_NBIOT);
 	zassert_equal(out.active_time, -1);
 
+	const char *text = shell_cmd("lte state");
+	zassert_not_null(strstr(text, "cereg: registered-roaming"), "%s", text);
+	zassert_not_null(strstr(text, "psm: not granted"), "%s", text);
+
 	/* Wake: CFUN=1 and attach, where a loss of the network counts again. */
 	fake_flow_event_cb(HIO_LTE_FSM_EVENT_XMODEMSLEEP);
 	k_sleep(K_MSEC(50));
@@ -119,6 +139,28 @@ ZTEST(hio_lte_no_psm, test_cfun4_keeps_registration_until_attach)
 
 	set_cereg(HIO_LTE_CEREG_PARAM_STAT_SEARCHING);
 	assert_cereg_stat(HIO_LTE_CEREG_PARAM_STAT_SEARCHING);
+
+	/* No PSM line without a registration. */
+	text = shell_cmd("lte state");
+	zassert_not_null(strstr(text, "cereg: searching"), "%s", text);
+	zassert_is_null(strstr(text, "psm:"), "%s", text);
+}
+
+ZTEST(hio_lte_no_psm, test_state_shows_granted_psm)
+{
+	struct hio_lte_cereg_param param = {
+		.valid = true,
+		.stat = HIO_LTE_CEREG_PARAM_STAT_REGISTERED_HOME,
+		.act = HIO_LTE_CEREG_PARAM_ACT_LTE,
+		.active_time = 0,
+		.periodic_tau_ext = 86400,
+	};
+
+	hio_lte_state_set_cereg_param(&param);
+
+	const char *text = shell_cmd("lte state");
+	zassert_not_null(strstr(text, "psm: active-time 0s, periodic-tau 1d 00h 00m 00s"), "%s",
+			 text);
 }
 
 ZTEST(hio_lte_no_psm, test_disable_turns_radio_on)

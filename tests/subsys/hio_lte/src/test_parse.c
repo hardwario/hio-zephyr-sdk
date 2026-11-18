@@ -128,6 +128,9 @@ ZTEST(parser, test_urc_cereg_2)
 	zassert_true(strcmp(param.tac, "B4DC") == 0, "param.tac not equal");
 	zassert_equal(param.cid, 0x000AE520, "param.cid not equal");
 	zassert_equal(param.act, 9, "param.act not equal");
+	zassert_equal(param.active_time, GRPS_TIMER_INVALID, "param.active_time not invalid");
+	zassert_equal(param.periodic_tau_ext, GRPS_TIMER_INVALID,
+		      "param.periodic_tau_ext not invalid");
 }
 
 ZTEST(parser, test_urc_cereg_2_empty)
@@ -141,6 +144,9 @@ ZTEST(parser, test_urc_cereg_2_empty)
 	zassert_true(strcmp(param.tac, "") == 0, "param.tac not equal");
 	zassert_equal(param.cid, 0, "param.cid not equal");
 	zassert_equal(param.act, 0, "param.act not equal");
+	zassert_equal(param.active_time, GRPS_TIMER_INVALID, "param.active_time not invalid");
+	zassert_equal(param.periodic_tau_ext, GRPS_TIMER_INVALID,
+		      "param.periodic_tau_ext not invalid");
 }
 
 ZTEST(parser, test_urc_cereg_4)
@@ -154,6 +160,9 @@ ZTEST(parser, test_urc_cereg_4)
 	zassert_true(strcmp(param.tac, "") == 0, "param.tac not equal");
 	zassert_equal(param.cid, 0, "param.cid not equal");
 	zassert_equal(param.act, 0, "param.act not equal");
+	zassert_equal(param.active_time, GRPS_TIMER_INVALID, "param.active_time not invalid");
+	zassert_equal(param.periodic_tau_ext, GRPS_TIMER_INVALID,
+		      "param.periodic_tau_ext not invalid");
 }
 
 ZTEST(parser, test_urc_xmodemsleep_1_89999825)

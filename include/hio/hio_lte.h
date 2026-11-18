@@ -78,6 +78,8 @@ enum hio_lte_attach_policy {
 
 /**
  * @brief Decoded +CEREG parameters.
+ *
+ * The PSM timers are -2 when the CEREG did not report them.
  */
 struct hio_lte_cereg_param {
 	bool valid;                         /**< True if values are valid. */

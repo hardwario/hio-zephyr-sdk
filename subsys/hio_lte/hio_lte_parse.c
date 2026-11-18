@@ -299,6 +299,10 @@ int hio_lte_parse_urc_cereg(const char *line, struct hio_lte_cereg_param *param)
 
 	memset(param, 0, sizeof(*param));
 
+	/* Not reported, unless the PSM fields follow. */
+	param->active_time = GRPS_TIMER_INVALID;
+	param->periodic_tau_ext = GRPS_TIMER_INVALID;
+
 	const char *p = line;
 
 	bool def;
