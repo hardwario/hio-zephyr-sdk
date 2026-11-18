@@ -37,7 +37,7 @@ void test_main(void)
 	int ret = hio_cloud_init(&m_options);
 
 	if (!ret) {
-		ret = hio_cloud_wait_initialized(K_SECONDS(5));
+		ret = hio_cloud_wait_initialized(TEST_INIT_TIMEOUT);
 	}
 
 	if (ret) {

@@ -56,7 +56,12 @@ int hio_cloud_msg_pack_encoder(struct hio_buf *buf, uint64_t hash, const uint8_t
 
 int hio_cloud_msg_pack_config(struct hio_buf *buf)
 {
+#if TEST_CONFIG_PACK_FAIL
+	/* e.g. the config does not fit */
+	return -ENOSPC;
+#else
 	return 0;
+#endif
 }
 
 int hio_cloud_msg_unpack_config(struct hio_buf *buf, struct hio_cloud_msg_dlconfig *config)

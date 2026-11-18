@@ -66,6 +66,7 @@ struct fake_log_entry {
 	uint8_t head[FAKE_HEAD_LEN];
 	size_t len;
 	int ret;
+	int64_t at; /* k_uptime_get() */
 };
 
 int fake_log_count(void);
@@ -77,14 +78,18 @@ void fake_fail_first_of_type(uint8_t type, int err);
 
 /* ---- Mock MCUboot image state and stored update id (src/mock_fw.c) ---- */
 
-/* TEST_FW 0: no update id stored, 1: id stored and acked, 2: id stored, the ack fails,
- * 3: id stored, but the image is confirmed (MCUboot reverted the update) */
+/* TEST_FW 0: no update id stored, 1: id stored and acked, 2: id stored, the first ack fails,
+ * 3: id stored, but the image is confirmed (MCUboot reverted the update), 4: id stored, but the
+ * image cannot be confirmed */
 extern const uint8_t TEST_FW_UPDATE_ID[16];
 
 /* Before hio_cloud_init(): the image state and the update id of TEST_FW */
 void mock_fw_setup(void);
 int mock_boot_confirm_calls(void);
 bool mock_fw_update_id_stored(void);
+
+/* For the init work, which pauses 10 s between the failed attempts of a step (TEST_FW 2) */
+#define TEST_INIT_TIMEOUT K_SECONDS(60)
 
 /* Clears the records and the configuration */
 void fake_reset(void);

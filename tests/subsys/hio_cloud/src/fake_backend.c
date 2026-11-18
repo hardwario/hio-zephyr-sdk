@@ -137,6 +137,7 @@ static int fake_uplink(struct hio_buf *buf, bool *has_downlink, k_timeout_t time
 		e = &m_log[m_log_count];
 		memcpy(e->head, mem, MIN(len, sizeof(e->head)));
 		e->len = len;
+		e->at = k_uptime_get();
 	}
 
 	m_log_count++;

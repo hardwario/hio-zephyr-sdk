@@ -28,6 +28,11 @@ if(NOT DEFINED TEST_FW)
   set(TEST_FW 1)
 endif()
 add_compile_definitions(TEST_FW=${TEST_FW})
+# The config cannot be packed, see src/stubs.c
+if(NOT DEFINED TEST_CONFIG_PACK_FAIL)
+  set(TEST_CONFIG_PACK_FAIL 0)
+endif()
+add_compile_definitions(TEST_CONFIG_PACK_FAIL=${TEST_CONFIG_PACK_FAIL})
 # Only hio_cloud.c: MCUboot itself is mocked (src/mock_fw.c)
 set_source_files_properties(${HIO_CLOUD_DIR}/hio_cloud.c PROPERTIES COMPILE_DEFINITIONS
                             CONFIG_MCUBOOT_IMG_MANAGER=1)

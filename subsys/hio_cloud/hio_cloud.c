@@ -35,6 +35,8 @@
 #define EVENT_INITIALIZED_SET BIT(1)
 #define WORK_Q_STACK_SIZE     4096
 #define WORK_Q_PRIORITY       K_LOWEST_APPLICATION_THREAD_PRIO
+/* Between the failed attempts of an init step, so a lasting error does not spin. */
+#define INIT_STEP_RETRY_DELAY K_SECONDS(10)
 
 LOG_MODULE_REGISTER(hio_cloud, CONFIG_HIO_CLOUD_LOG_LEVEL);
 
@@ -509,11 +511,14 @@ static int upload_config(void)
 
 		hio_buf_reset(&m_transfer_buf);
 
+		/* A local error comes again on every attempt: the init goes on
+		 * without the config. */
 		ret = hio_cloud_msg_pack_config(&m_transfer_buf);
 		if (ret) {
-			LOG_ERR("Call `hio_cloud_msg_pack_config` failed: %d", ret);
+			LOG_WRN("Call `hio_cloud_msg_pack_config` failed: %d, config not uploaded",
+				ret);
 			k_mutex_unlock(&m_lock);
-			return ret;
+			return 0;
 		}
 
 		if (hio_config_get_gen() == gen && hio_config_is_dirty() == dirty) {
@@ -531,9 +536,9 @@ static int upload_config(void)
 
 	ret = hio_cloud_msg_get_hash(&m_transfer_buf, &hash);
 	if (ret) {
-		LOG_ERR("Call `hio_cloud_msg_get_hash` failed: %d", ret);
+		LOG_WRN("Call `hio_cloud_msg_get_hash` failed: %d, config not uploaded", ret);
 		k_mutex_unlock(&m_lock);
-		return ret;
+		return 0;
 	}
 
 	if (m_session.config_hash != hash) {
@@ -560,20 +565,31 @@ static int upload_config(void)
 }
 
 #if defined(CONFIG_MCUBOOT_IMG_MANAGER)
+/* The image state at boot: the first call of firmware_confirmed() confirms the
+ * image, so boot_is_img_confirmed() tells nothing about the update after it. */
+static bool m_img_state_read;
+static bool m_img_confirmed_at_boot;
+
+/* Fails only when the ack is to be sent again; the update id is kept until then. */
 static int firmware_confirmed(void)
 {
 	int ret;
 
 	hio_cloud_uuid_t fuid;
 
+	if (!m_img_state_read) {
+		m_img_confirmed_at_boot = boot_is_img_confirmed();
+		m_img_state_read = true;
+	}
+
 	/* The session proves that the running image works: keep it, also when the update
 	 * did not come from the cloud (e.g. AT$FW) or its id was not stored */
-	bool was_confirmed = boot_is_img_confirmed();
-
-	if (!was_confirmed) {
+	if (!boot_is_img_confirmed()) {
 		if (boot_write_img_confirmed()) {
+			/* MCUboot reverts the image at the next reset, so there is no update
+			 * to ack; the old image drops the id after that reset. */
 			LOG_ERR("Failed to confirm image");
-			return -EIO; // Failed to confirm image
+			return 0;
 		}
 
 		LOG_INF("Marked image as OK");
@@ -584,7 +600,7 @@ static int firmware_confirmed(void)
 		return 0; // No firmware update ID
 	}
 
-	if (was_confirmed) {
+	if (m_img_confirmed_at_boot) {
 		/* The image of the update did not take (MCUboot reverted it), or the update
 		 * was handled before: there is nothing to ack */
 		LOG_WRN("Image confirmed before, dropping the firmware update id");
@@ -625,9 +641,9 @@ static int firmware_confirmed(void)
 }
 #endif
 
-/* Retries the step until it succeeds. Returns -EPERM without retrying when
- * the step requires a session that is not set, so the caller can restart
- * from CREATE SESSION. */
+/* Retries the step until it succeeds, with a pause between the attempts.
+ * Returns -EPERM without retrying when the step requires a session that is not
+ * set, so the caller can restart from CREATE SESSION. */
 static int init_step(const char *name, int (*step)(void))
 {
 	int ret;
@@ -644,6 +660,7 @@ static int init_step(const char *name, int (*step)(void))
 		}
 		if (ret) {
 			LOG_ERR("%s failed: %d", name, ret);
+			k_sleep(INIT_STEP_RETRY_DELAY);
 			continue;
 		}
 
@@ -664,9 +681,12 @@ static void init_work_handler(struct k_work *work)
 
 		/* The session proves the new image can reach the cloud: confirm
 		 * it and ack the update before the long uploads below, so a
-		 * reboot during them cannot revert a working image. */
+		 * reboot during them cannot revert a working image. A failed ack
+		 * is sent again, as any failed step. */
 #if defined(CONFIG_MCUBOOT_IMG_MANAGER)
-		firmware_confirmed();
+		if (init_step("CONFIRM FIRMWARE", firmware_confirmed)) {
+			continue;
+		}
 #endif
 
 		if (init_step("UPLOAD DECODER", upload_decoder)) {

@@ -13,7 +13,7 @@ tests:
       - native_sim
     integration_platforms:
       - native_sim
-  # The ack of a firmware update fails
+  # The first ack of a firmware update fails
   hio_cloud.send.fw_ack_fail:
     tags: hio hio_cloud
     extra_args: TEST_FW=2
@@ -25,6 +25,22 @@ tests:
   hio_cloud.send.fw_reverted:
     tags: hio hio_cloud
     extra_args: TEST_FW=3
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+  # An update id stored, but the image cannot be confirmed
+  hio_cloud.send.fw_confirm_fail:
+    tags: hio hio_cloud
+    extra_args: TEST_FW=4
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
+  # The config cannot be packed
+  hio_cloud.send.config_pack_fail:
+    tags: hio hio_cloud
+    extra_args: TEST_CONFIG_PACK_FAIL=1
     platform_allow:
       - native_sim
     integration_platforms:
