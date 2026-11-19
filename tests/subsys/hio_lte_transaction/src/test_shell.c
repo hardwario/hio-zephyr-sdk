@@ -34,6 +34,8 @@ extern void (*fake_flow_scan_rat_hook)(void);
 extern atomic_t fake_flow_ncellmeas_test_count;
 extern void fake_flow_ncellmeas_done(const char *error);
 extern uint32_t fake_flow_stop_ms;
+extern uint32_t fake_attach_timeout_ms;
+extern uint32_t fake_retry_delay_ms;
 
 static const struct hio_lte_socket_config m_cfg = {.port = 5002, .addr = "192.0.2.1"};
 
@@ -156,6 +158,8 @@ static void shell_after(void *fixture)
 
 	(void)hio_lte_remove_callback(&m_slow_scan_done_cb);
 	fake_flow_stop_ms = 0;
+	fake_attach_timeout_ms = 60000;
+	fake_retry_delay_ms = 0;
 	fsm_end_ncellmeas();
 	fsm_down();
 }
@@ -210,6 +214,39 @@ static void fsm_to_prepare(void)
 	zassert_ok(hio_lte_enable(&m_cfg));
 	k_sleep(K_MSEC(50));
 	zassert_true(fsm_in("prepare"));
+}
+
+/* Deregistered, the third attach fails: its retry delay, below the one of the
+ * automatic scan. */
+static void fsm_to_retry_delay(void)
+{
+	int attempt = 0;
+
+	fsm_bring_up();
+	fsm_boot_ncellmeas();
+	k_sleep(K_MSEC(50));
+	zassert_true(fsm_in("ready"));
+	fake_attach_timeout_ms = 100;
+	fake_retry_delay_ms = 5 * 60 * 1000;
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_DEREGISTERED);
+
+	/* Two zero delays (5 s CFUN=4 settle each) before the third attempt. */
+	for (int i = 0; i < 300; i++) {
+		zassert_ok(hio_lte_get_curr_attach_info(&attempt, NULL, NULL, NULL));
+		if (attempt == 3 && fsm_in("retry_delay")) {
+			break;
+		}
+		if (fsm_in("prepare")) {
+			fake_flow_event_cb(HIO_LTE_FSM_EVENT_SIMDETECTED);
+		}
+		k_sleep(K_MSEC(100));
+	}
+
+	zassert_equal(attempt, 3);
+	zassert_true(fsm_in("retry_delay"));
+	/* Past its CFUN=4 settle, in the delay itself. */
+	k_sleep(K_SECONDS(6));
+	zassert_true(fsm_in("retry_delay"));
 }
 
 ZTEST(hio_lte_shell, test_scan_alone_prints_help)
@@ -792,6 +829,19 @@ ZTEST(hio_lte_shell, test_ncellmeas_now_refused_in_error)
 	if (!IS_ENABLED(CONFIG_HIO_LTE_NCELLMEAS)) {
 		zassert_ok(hio_lte_wait_for_ncellmeas(K_NO_WAIT), "requested");
 	}
+}
+
+/* The retry delay takes a scan, a measurement would wait there for the next
+ * attach (up to hours): none is requested. */
+ZTEST(hio_lte_shell, test_ncellmeas_now_refused_in_retry_delay)
+{
+	fsm_to_retry_delay();
+
+	zassert_equal(run("lte ncellmeas now"), -EBUSY);
+	zassert_str_equal(m_out, "measurement not possible: not registered, retrying attach "
+				 "(fsm-state: retry_delay)\n");
+	zassert_ok(hio_lte_wait_for_ncellmeas(K_NO_WAIT), "requested");
+	zassert_true(fsm_in("retry_delay"));
 }
 
 ZTEST(hio_lte_shell, test_ncellmeas_now_refused_while_scanning)

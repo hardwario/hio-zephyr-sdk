@@ -1256,6 +1256,13 @@ static int ncellmeas_fsm(const struct shell *shell)
 
 	hio_lte_get_fsm_state(&state);
 	const char *reason = request_blocked(state);
+
+	/* The retry delay takes a scan, a measurement waits there for the next
+	 * attach (up to hours). */
+	if (!reason && !strcmp(state, "retry_delay")) {
+		reason = "not registered, retrying attach";
+	}
+
 	if (reason) {
 		shell_error(shell, "measurement not possible: %s (fsm-state: %s)", reason, state);
 		return -EBUSY;
