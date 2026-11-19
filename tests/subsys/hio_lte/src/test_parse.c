@@ -335,6 +335,7 @@ ZTEST(parser, test_urc_ncellmeas_two_cells_no_neighboring)
 	zassert_equal(param.cells[0].pci, 7, "cells[0].pci not equal");
 	zassert_equal(param.cells[0].rsrp, 63, "cells[0].rsrp not equal");
 	zassert_equal(param.cells[0].rsrq, 31, "cells[0].rsrq not equal");
+	zassert_true(param.cells[0].serving, "cells[0].serving not true");
 	zassert_equal(param.cells[0].neighbor_count, 0, "cells[0].neighbor_count not equal");
 	zassert_is_null(param.cells[0].ncells, "cells[0].ncells not equal pointer");
 
@@ -347,8 +348,26 @@ ZTEST(parser, test_urc_ncellmeas_two_cells_no_neighboring)
 	zassert_equal(param.cells[1].pci, 9, "cells[1].pci not equal");
 	zassert_equal(param.cells[1].rsrp, 62, "cells[1].rsrp not equal");
 	zassert_equal(param.cells[1].rsrq, 30, "cells[1].rsrq not equal");
+	zassert_false(param.cells[1].serving, "cells[1].serving not false");
 	zassert_equal(param.cells[1].neighbor_count, 0, "cells[1].neighbor_count not equal");
 	zassert_is_null(param.cells[1].ncells, "cells[1].ncells not equal pointer");
+}
+
+/* The MNC keeps its length: 310004 is not 31004. */
+ZTEST(parser, test_urc_ncellmeas_mnc_digits)
+{
+	struct hio_lte_ncellmeas_param param;
+	int ret = hio_lte_parse_urc_ncellmeas(
+		"0,\"00011B07\",\"26295\",\"00B7\",10512,9034,2300,7,63,31,150344527,"
+		"1,0,\"00011B08\",\"310004\",\"00B7\",65535,0,2300,9,62,30,150345527,0,0",
+		5, &param);
+
+	zassert_ok(ret);
+	zassert_equal(param.cells[0].mnc, 95);
+	zassert_equal(param.cells[0].mnc_digits, 2);
+	zassert_equal(param.cells[1].mcc, 310);
+	zassert_equal(param.cells[1].mnc, 4);
+	zassert_equal(param.cells[1].mnc_digits, 3);
 }
 
 ZTEST(parser, test_urc_ncellmeas_complex)

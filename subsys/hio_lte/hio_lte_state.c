@@ -396,6 +396,7 @@ void hio_lte_state_set_ncellmeas_param(const struct hio_lte_ncellmeas_param *par
 	memcpy(&m_ncellmeas_param, param, sizeof(m_ncellmeas_param));
 
 	m_ncellmeas_param.act = m_cereg_param.act;
+	m_ncellmeas_param.uptime_s = k_uptime_seconds();
 
 	k_mutex_unlock(&m_lock);
 }

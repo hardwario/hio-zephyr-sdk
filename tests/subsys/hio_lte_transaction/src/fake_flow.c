@@ -240,11 +240,25 @@ int hio_lte_flow_abort(void)
 	return 0;
 }
 
-int hio_lte_talk_ncellmeas(int p1, int p2)
+atomic_t fake_flow_ncellmeas_count = ATOMIC_INIT(0);
+
+static nrf_modem_at_resp_handler_t m_ncellmeas_resp_cb;
+
+int hio_lte_talk_ncellmeas_cb(int p1, int p2, nrf_modem_at_resp_handler_t cb)
 {
 	ARG_UNUSED(p1);
 	ARG_UNUSED(p2);
+	m_ncellmeas_resp_cb = cb;
+	atomic_inc(&fake_flow_ncellmeas_count);
 	return 0;
+}
+
+/* The modem's response to the last AT%NCELLMEAS (in ISR context there). */
+void fake_flow_ncellmeas_resp(const char *resp)
+{
+	if (m_ncellmeas_resp_cb) {
+		m_ncellmeas_resp_cb(resp);
+	}
 }
 
 /* Used by the 'lte' shell commands only. */

@@ -96,6 +96,8 @@ static void radio_off_after_ready(void)
 {
 	set_cereg(HIO_LTE_CEREG_PARAM_STAT_REGISTERED_ROAMING);
 	fsm_bring_up();
+	/* The radio stays on for a requested measurement. */
+	fsm_boot_ncellmeas();
 
 	for (int i = 0; i < 40 && fake_flow_last_cfun != 4; i++) {
 		k_sleep(K_MSEC(50));

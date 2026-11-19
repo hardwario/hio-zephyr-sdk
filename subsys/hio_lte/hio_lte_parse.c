@@ -702,6 +702,8 @@ static inline int parse_ncellmeas_cell(const char **p_ptr,
 		return ret;
 	}
 
+	cell->mnc_digits = strlen(tmp_str) - 3;
+
 	if (!(p = hio_tok_sep(p))) {
 		return -EPROTO;
 	}
@@ -797,9 +799,13 @@ static inline int parse_ncellmeas_cell(const char **p_ptr,
 		return -EPROTO;
 	}
 
-	if (!(p = hio_tok_uint8(p, &def, NULL)) || !def) { /* skip: serving */
+	uint8_t serving;
+
+	if (!(p = hio_tok_uint8(p, &def, &serving)) || !def) {
 		return -EBADMSG;
 	}
+
+	cell->serving = serving;
 
 	if (!(p = hio_tok_sep(p))) {
 		return -EPROTO;

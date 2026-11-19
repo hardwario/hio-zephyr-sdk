@@ -83,6 +83,7 @@ static K_EVENT_DEFINE(m_states_event);
 #define CONNECTED_BIT BIT(2)
 #define DISABLED_BIT  BIT(3)
 #define SCAN_DONE_BIT BIT(4)
+#define NCELLMEAS_DONE_BIT BIT(5)
 
 #define FLAG_CSCON           BIT(0)
 #define FLAG_GNSS_ENABLE     BIT(1)
@@ -94,6 +95,9 @@ static K_EVENT_DEFINE(m_states_event);
 #define FLAG_SOCKET_RECONFIG 5
 #define FLAG_SCAN_REQ        6
 #define FLAG_SCAN_AUTO       7
+/* Set by a request, cleared when a measurement starts or ends: do not wait
+ * for the next connection. 8 is FLAG_NCELLMEAS_REQ (BIT(3)). */
+#define FLAG_NCELLMEAS_NOW   9
 atomic_t m_flag = ATOMIC_INIT(0);
 
 /* Safety net if a scan step never completes; the scan itself has no timeout. */
@@ -118,6 +122,7 @@ static bool m_scan_settling;
 static bool m_scan_to_retry_delay;
 static bool m_scan_finished;
 static k_timepoint_t m_scan_timer_end;
+static k_timepoint_t m_ncellmeas_timer_end;
 /* Set while RETRY_DELAY is left for a scan, so its delay resumes after it. */
 static bool m_retry_resume;
 static k_timepoint_t m_retry_end;
@@ -828,24 +833,30 @@ int hio_lte_get_ncellmeas_param(struct hio_lte_ncellmeas_param *param)
 
 int hio_lte_schedule_ncellmeas(void)
 {
+	int ret = 0;
+
 	if (g_hio_lte_config.test) {
 		LOG_WRN("LTE Test mode enabled");
 		return -ENOTSUP;
 	}
 
 	if (atomic_test_and_set_bit(&m_flag, FLAG_NCELLMEAS_REQ)) {
-		return -EALREADY;
+		ret = -EALREADY;
+	} else {
+		k_event_clear(&m_states_event, NCELLMEAS_DONE_BIT);
 	}
 
-	k_mutex_lock(&m_state_lock, K_FOREVER);
-	enum fsm_state current = m_state;
-	k_mutex_unlock(&m_state_lock);
+	/* Also when requested already: one left by the watchdog waits for the
+	 * next connection otherwise. A running one serves it either way. */
+	atomic_set_bit(&m_flag, FLAG_NCELLMEAS_NOW);
+	delegate_event(HIO_LTE_FSM_EVENT_NCELLMEAS_REQ);
 
-	if (current == FSM_STATE_SLEEP) {
-		delegate_event(HIO_LTE_FSM_EVENT_READY);
-	}
+	return ret;
+}
 
-	return 0;
+int hio_lte_wait_for_ncellmeas(k_timeout_t timeout)
+{
+	return k_event_wait(&m_states_event, NCELLMEAS_DONE_BIT, false, timeout) ? 0 : -ETIMEDOUT;
 }
 
 int hio_lte_scan(enum hio_lte_scan_mode mode)
@@ -904,6 +915,25 @@ int hio_lte_get_cereg_history(struct hio_lte_cereg_event *events, size_t max, si
 int hio_lte_get_last_reject(struct hio_lte_cereg_event *event)
 {
 	return hio_lte_state_get_last_reject(event);
+}
+
+/* Requested and not tried since: measure without waiting for the next
+ * connection. */
+static bool ncellmeas_now(void)
+{
+	return atomic_test_bit(&m_flag, FLAG_NCELLMEAS_REQ) &&
+	       atomic_test_bit(&m_flag, FLAG_NCELLMEAS_NOW);
+}
+
+/* The done bit while the request is still set: a request made in between is
+ * served by this result, never left pending with the bit set. A repeat made
+ * while it ran ends with it. */
+static void ncellmeas_done(void)
+{
+	k_event_post(&m_states_event, NCELLMEAS_DONE_BIT);
+	atomic_clear_bit(&m_flag, FLAG_NCELLMEAS_NOW);
+	atomic_clear_bit(&m_flag, FLAG_NCELLMEAS_REQ);
+	hio_lte_notify(HIO_LTE_EVENT_NCELLMEAS_DONE);
 }
 
 /* The scan drops registration (CFUN=2), so it ends with a reattach unless it
@@ -968,6 +998,7 @@ static int on_leave_disabled(void)
 	// atomic_clear_bit(&m_flag, FLAG_NCELLMEAS_REQ);
 	if (IS_ENABLED(CONFIG_HIO_LTE_NCELLMEAS)) {
 		atomic_set_bit(&m_flag, FLAG_NCELLMEAS_REQ);
+		k_event_clear(&m_states_event, NCELLMEAS_DONE_BIT);
 	}
 
 	return 0;
@@ -1463,6 +1494,10 @@ static int on_enter_ready(void)
 		delegate_event(HIO_LTE_FSM_EVENT_SEND);
 	}
 
+	if (ncellmeas_now()) {
+		delegate_event(HIO_LTE_FSM_EVENT_NCELLMEAS_REQ);
+	}
+
 	start_timer(K_MSEC(500));
 
 	return 0;
@@ -1498,6 +1533,21 @@ static int ready_event_handler(enum hio_lte_fsm_event event)
 		break;
 	case HIO_LTE_FSM_EVENT_CSCON_0:
 		if (atomic_test_bit(&m_flag, FLAG_NCELLMEAS_REQ)) {
+			transition_state(FSM_STATE_NCELLMEAS);
+		}
+		break;
+	case HIO_LTE_FSM_EVENT_NCELLMEAS:
+		/* The result just after the watchdog. */
+		if (atomic_test_bit(&m_flag, FLAG_NCELLMEAS_REQ)) {
+			ncellmeas_done();
+			start_timer(K_MSEC(500)); /* The radio off without PSM. */
+		}
+		break;
+	case HIO_LTE_FSM_EVENT_NCELLMEAS_REQ:
+		/* With the connection open its release starts it, with the radio
+		 * off the sleep state does. */
+		if (ncellmeas_now() && !atomic_test_bit(&m_flag, FLAG_CSCON) &&
+		    !atomic_test_bit(&m_flag, FLAG_CFUN4)) {
 			transition_state(FSM_STATE_NCELLMEAS);
 		}
 		break;
@@ -1554,6 +1604,10 @@ static int on_enter_sleep(void)
 		delegate_event(HIO_LTE_FSM_EVENT_SEND);
 	}
 
+	if (ncellmeas_now()) {
+		delegate_event(HIO_LTE_FSM_EVENT_NCELLMEAS_REQ);
+	}
+
 	return 0;
 }
 
@@ -1562,6 +1616,17 @@ static int sleep_event_handler(enum hio_lte_fsm_event event)
 	switch (event) {
 	case HIO_LTE_FSM_EVENT_SCAN:
 		return begin_scan(false);
+	case HIO_LTE_FSM_EVENT_NCELLMEAS_REQ:
+		if (!ncellmeas_now()) {
+			break;
+		}
+		/* In PSM the modem measures as it is, with the radio off it
+		 * attaches first. */
+		if (!atomic_test_bit(&m_flag, FLAG_CFUN4)) {
+			transition_state(FSM_STATE_NCELLMEAS);
+			break;
+		}
+		__fallthrough;
 	case HIO_LTE_FSM_EVENT_SEND:
 		__fallthrough;
 	case HIO_LTE_FSM_EVENT_READY:
@@ -1847,11 +1912,44 @@ static int coneval_event_handler(enum hio_lte_fsm_event event)
 	return 0;
 }
 
+/* A refused AT%NCELLMEAS sends no result: end the request as failed. */
+static void ncellmeas_refused_work_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+
+	k_mutex_lock(&m_state_lock, K_FOREVER);
+	bool measuring = m_state == FSM_STATE_NCELLMEAS;
+	k_mutex_unlock(&m_state_lock);
+
+	if (!measuring) {
+		return;
+	}
+
+	hio_lte_state_set_ncellmeas_param(
+		&(struct hio_lte_ncellmeas_param){.valid = true, .status = 1});
+	delegate_event(HIO_LTE_FSM_EVENT_NCELLMEAS);
+}
+
+static K_WORK_DEFINE(m_ncellmeas_refused_work, ncellmeas_refused_work_handler);
+
+/* ISR context. */
+static void ncellmeas_resp_handler(const char *resp)
+{
+	if (strstr(resp, "ERROR")) {
+		LOG_WRN("NCELLMEAS refused: %.*s", (int)strcspn(resp, "\r\n"), resp);
+		k_work_submit_to_queue(&m_work_q, &m_ncellmeas_refused_work);
+	}
+}
+
 static int on_enter_ncellmeas(void)
 {
+	atomic_clear_bit(&m_flag, FLAG_NCELLMEAS_NOW);
+	/* start_timer() does not replace a pending timer. */
+	stop_timer();
+	m_ncellmeas_timer_end = sys_timepoint_calc(NCELLMEAS_TIMEOUT);
 	start_timer(NCELLMEAS_TIMEOUT);
 
-	int ret = hio_lte_talk_ncellmeas(5, HIO_LTE_NCELLMEAS_CELL_MAX);
+	int ret = hio_lte_talk_ncellmeas_cb(5, HIO_LTE_NCELLMEAS_CELL_MAX, ncellmeas_resp_handler);
 	if (ret < 0) {
 		LOG_ERR("Enable NCELLMEAS failed: %d", ret);
 		return ret;
@@ -1864,11 +1962,17 @@ static int ncellmeas_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
 	case HIO_LTE_FSM_EVENT_TIMEOUT:
+		/* Not the watchdog: a stale timer of the previous state or the
+		 * deadline of a transaction waiting for the measurement. */
+		if (!sys_timepoint_expired(m_ncellmeas_timer_end)) {
+			break;
+		}
+		/* Waits for the next connection, also when repeated meanwhile. */
+		atomic_clear_bit(&m_flag, FLAG_NCELLMEAS_NOW);
 		transition_state(FSM_STATE_READY);
 		break;
 	case HIO_LTE_FSM_EVENT_NCELLMEAS:
-		atomic_clear_bit(&m_flag, FLAG_NCELLMEAS_REQ);
-		hio_lte_notify(HIO_LTE_EVENT_NCELLMEAS_DONE);
+		ncellmeas_done();
 		transition_state(FSM_STATE_READY);
 		break;
 	case HIO_LTE_FSM_EVENT_ERROR:
@@ -2131,8 +2235,9 @@ static int init(void)
 	}
 
 	m_state = FSM_STATE_DISABLED;
-	/* on_enter_disabled() does not run for the initial state. */
-	k_event_post(&m_states_event, DISABLED_BIT);
+	/* on_enter_disabled() does not run for the initial state. Nothing is
+	 * requested yet. */
+	k_event_post(&m_states_event, DISABLED_BIT | NCELLMEAS_DONE_BIT);
 
 	k_work_queue_init(&m_work_q);
 

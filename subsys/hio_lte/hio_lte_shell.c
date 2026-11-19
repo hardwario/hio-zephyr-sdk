@@ -457,14 +457,21 @@ static int rsrp_dbm(int16_t index)
 	return index - 141;
 }
 
+/* As the modem writes it: a three-digit MNC keeps its leading zeros. */
+static void fmt_plmn(char *buf, size_t size, uint16_t mcc, uint16_t mnc, uint8_t mnc_digits)
+{
+	snprintf(buf, size, "%03u%0*u", mcc, mnc_digits == 3 ? 3 : 2, mnc);
+}
+
 struct scan_plmn {
 	uint16_t mcc;
 	uint16_t mnc;
+	uint8_t mnc_digits;
 	const char *str; /* From the network list, NULL if only cells have it. */
 };
 
-static void scan_plmn_add(struct scan_plmn *list, size_t *n, size_t max, uint16_t mcc,
-			  uint16_t mnc, const char *str)
+static void scan_plmn_add(struct scan_plmn *list, size_t *n, size_t max, uint16_t mcc, uint16_t mnc,
+			  uint8_t mnc_digits, const char *str)
 {
 	for (size_t i = 0; i < *n; i++) {
 		if (list[i].mcc == mcc && list[i].mnc == mnc) {
@@ -476,7 +483,8 @@ static void scan_plmn_add(struct scan_plmn *list, size_t *n, size_t max, uint16_
 	}
 
 	if (*n < max) {
-		list[(*n)++] = (struct scan_plmn){.mcc = mcc, .mnc = mnc, .str = str};
+		list[(*n)++] = (struct scan_plmn){
+			.mcc = mcc, .mnc = mnc, .mnc_digits = mnc_digits, .str = str};
 	}
 }
 
@@ -550,7 +558,7 @@ static void print_scan_plmn(const struct shell *shell, const struct hio_lte_scan
 	if (p->str) {
 		snprintf(plmn, sizeof(plmn), "%s", p->str);
 	} else {
-		snprintf(plmn, sizeof(plmn), "%03u%02u", p->mcc, p->mnc);
+		fmt_plmn(plmn, sizeof(plmn), p->mcc, p->mnc, p->mnc_digits);
 	}
 
 	if (stat_ltem < 0 && stat_nbiot < 0) {
@@ -587,13 +595,15 @@ static void print_scan_groups(const struct shell *shell, const struct hio_lte_sc
 
 	for (size_t i = 0; i < entries; i++) {
 		if (scan_entry_plmn(&r->entries[i], &mcc, &mnc)) {
-			scan_plmn_add(plmns, &n, ARRAY_SIZE(plmns), mcc, mnc, r->entries[i].plmn);
+			scan_plmn_add(plmns, &n, ARRAY_SIZE(plmns), mcc, mnc, 0,
+				      r->entries[i].plmn);
 		}
 	}
 	listed = n;
 
 	for (size_t i = 0; i < r->cell_count; i++) {
-		scan_plmn_add(plmns, &n, ARRAY_SIZE(plmns), r->cells[i].mcc, r->cells[i].mnc, NULL);
+		scan_plmn_add(plmns, &n, ARRAY_SIZE(plmns), r->cells[i].mcc, r->cells[i].mnc,
+			      r->cells[i].mnc_digits, NULL);
 	}
 
 	for (size_t i = 1; i < n; i++) {
@@ -692,10 +702,10 @@ static void scan_test_mode(enum hio_lte_scan_mode mode)
 	hio_lte_flow_scan_end();
 }
 
-static int cmd_scan(const struct shell *shell, size_t argc, char **argv)
+static int scan_mode_parse(const struct shell *shell, size_t argc, char **argv,
+			   enum hio_lte_scan_mode *mode)
 {
-	int ret;
-	enum hio_lte_scan_mode mode = HIO_LTE_SCAN_ALL;
+	*mode = HIO_LTE_SCAN_ALL;
 
 	if (argc > 2) {
 		shell_error(shell, "only one argument is accepted");
@@ -705,16 +715,28 @@ static int cmd_scan(const struct shell *shell, size_t argc, char **argv)
 
 	if (argc == 2) {
 		if (!strcmp(argv[1], "all")) {
-			mode = HIO_LTE_SCAN_ALL;
+			*mode = HIO_LTE_SCAN_ALL;
 		} else if (!strcmp(argv[1], "plmn")) {
-			mode = HIO_LTE_SCAN_PLMN;
+			*mode = HIO_LTE_SCAN_PLMN;
 		} else if (!strcmp(argv[1], "cells")) {
-			mode = HIO_LTE_SCAN_CELLS;
+			*mode = HIO_LTE_SCAN_CELLS;
 		} else {
 			shell_error(shell, "unknown mode: %s", argv[1]);
 			shell_help(shell);
 			return -EINVAL;
 		}
+	}
+
+	return 0;
+}
+
+static int cmd_scan_now(const struct shell *shell, size_t argc, char **argv)
+{
+	enum hio_lte_scan_mode mode;
+
+	int ret = scan_mode_parse(shell, argc, argv, &mode);
+	if (ret) {
+		return ret;
 	}
 
 	if (g_hio_lte_config.test) {
@@ -760,6 +782,32 @@ static int cmd_scan(const struct shell *shell, size_t argc, char **argv)
 	}
 
 	return ret;
+}
+
+static int cmd_scan_schedule(const struct shell *shell, size_t argc, char **argv)
+{
+	enum hio_lte_scan_mode mode;
+
+	int ret = scan_mode_parse(shell, argc, argv, &mode);
+	if (ret) {
+		return ret;
+	}
+
+	if (g_hio_lte_config.test) {
+		shell_error(shell, "not supported in test mode");
+		return -ENOEXEC;
+	}
+
+	ret = hio_lte_scan(mode);
+	if (ret && ret != -EALREADY) {
+		LOG_ERR("Call `hio_lte_scan` failed: %d", ret);
+		shell_error(shell, "command failed");
+		return ret;
+	}
+
+	shell_info(shell, "command succeeded");
+
+	return 0;
 }
 
 static int cmd_scan_show(const struct shell *shell, size_t argc, char **argv)
@@ -945,6 +993,114 @@ static int cmd_ncellmeas_schedule(const struct shell *shell, size_t argc, char *
 	return 0;
 }
 
+static int print_ncellmeas(const struct shell *shell)
+{
+	/* Until it is done, the cells are those of the previous one. */
+	if (hio_lte_wait_for_ncellmeas(K_NO_WAIT)) {
+		shell_print(shell, "ncellmeas: in progress");
+		shell_print(shell, "command succeeded");
+		return 0;
+	}
+
+	struct hio_lte_ncellmeas_param param;
+
+	hio_lte_get_ncellmeas_param(&param);
+
+	if (!param.valid) {
+		shell_print(shell, "no measurement yet");
+		shell_print(shell, "command succeeded");
+		return 0;
+	}
+
+	char ago[24];
+	char result[16] = "ok";
+
+	if (param.status == 1) {
+		strcpy(result, "failed");
+	} else if (param.status) {
+		snprintf(result, sizeof(result), "status %u", param.status);
+	}
+
+	hio_util_fmt_duration(k_uptime_seconds() - param.uptime_s, ago, sizeof(ago));
+	shell_print(shell, "ncellmeas: %s ago, %s", ago, result);
+
+	/* By index: the ncells pointers do not survive the copies. */
+	size_t ncell = 0;
+
+	for (size_t i = 0; i < param.num_cells; i++) {
+		const struct hio_lte_ncellmeas_cell_param *c = &param.cells[i];
+		char plmn[12];
+
+		fmt_plmn(plmn, sizeof(plmn), c->mcc, c->mnc, c->mnc_digits);
+		shell_print(shell,
+			    "cell: %08X, plmn: %s, tac: %04X, "
+			    "earfcn: %u, pci: %u, rsrp: %d dBm%s",
+			    c->eci, plmn, c->tac, c->earfcn, c->pci, rsrp_dbm(c->rsrp),
+			    c->serving ? ", serving" : "");
+
+		for (size_t j = 0; j < c->neighbor_count && ncell < param.num_ncells; j++) {
+			const struct hio_lte_ncellmeas_ncell_param *n = &param.ncells[ncell++];
+
+			shell_print(shell, "  neighbour: earfcn: %u, pci: %u, rsrp: %d dBm",
+				    n->earfcn, n->pci, rsrp_dbm(n->rsrp));
+		}
+	}
+
+	shell_print(shell, "command succeeded");
+
+	return 0;
+}
+
+static int cmd_ncellmeas_now(const struct shell *shell, size_t argc, char **argv)
+{
+	int ret;
+
+	if (g_hio_lte_config.test) {
+		shell_error(shell, "not supported in test mode");
+		return -ENOEXEC;
+	}
+
+	/* The request would wait for the enable. */
+	if (!hio_lte_wait_for_disable(K_NO_WAIT)) {
+		shell_error(shell, "command failed: %d", -ENODEV);
+		return -ENODEV;
+	}
+
+	ret = hio_lte_schedule_ncellmeas();
+	if (ret == -EALREADY) {
+		shell_print(shell, "measurement already in progress, waiting for it");
+	} else if (ret) {
+		shell_error(shell, "command failed: %d", ret);
+		return ret;
+	}
+
+	shell_print(shell, "measuring, this takes minutes...");
+
+	int64_t start = k_uptime_get();
+	while (hio_lte_wait_for_ncellmeas(K_SECONDS(30))) {
+		int64_t elapsed = (k_uptime_get() - start) / MSEC_PER_SEC;
+
+		/* Beyond an attach from the radio off (5 min), the release of its
+		 * connection and the measurement watchdog (1 min): it waits for
+		 * the next connection. */
+		if (elapsed >= 10 * 60) {
+			shell_error(shell, "measurement did not finish");
+			return -ETIMEDOUT;
+		}
+		char took[24];
+
+		hio_util_fmt_duration(elapsed, took, sizeof(took));
+		shell_print(shell, "still measuring (%s)", took);
+	}
+
+	return print_ncellmeas(shell);
+}
+
+static int cmd_ncellmeas_show(const struct shell *shell, size_t argc, char **argv)
+{
+	return print_ncellmeas(shell);
+}
+
 static int print_help(const struct shell *shell, size_t argc, char **argv)
 {
 	if (argc > 1) {
@@ -987,9 +1143,35 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 SHELL_STATIC_SUBCMD_SET_CREATE(
 	sub_lte_scan,
 
+	SHELL_CMD_ARG(now, NULL,
+	              "Scan and wait for the result (format: [all|plmn|cells]).",
+	              cmd_scan_now, 1, 1),
+
+	SHELL_CMD_ARG(schedule, NULL,
+	              "Request a scan, see 'show' (format: [all|plmn|cells]).",
+	              cmd_scan_schedule, 1, 1),
+
 	SHELL_CMD_ARG(show, NULL,
 	              "Show the last scan result.",
 	              cmd_scan_show, 1, 0),
+
+	SHELL_SUBCMD_SET_END
+);
+
+SHELL_STATIC_SUBCMD_SET_CREATE(
+	sub_lte_ncellmeas,
+
+	SHELL_CMD_ARG(now, NULL,
+	              "Measure and wait for the result.",
+	              cmd_ncellmeas_now, 1, 0),
+
+	SHELL_CMD_ARG(schedule, NULL,
+	              "Request a measurement, see 'show'.",
+	              cmd_ncellmeas_schedule, 1, 0),
+
+	SHELL_CMD_ARG(show, NULL,
+	              "Show the last measurement.",
+	              cmd_ncellmeas_show, 1, 0),
 
 	SHELL_SUBCMD_SET_END
 );
@@ -1037,14 +1219,13 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 	              cmd_history, 1, 0),
 
 	SHELL_CMD_ARG(scan, &sub_lte_scan,
-	              "Scan cells and networks of the configured RATs and wait for the "
-	              "result; interrupts attach and reconnects (format: "
-	              "[all|plmn|cells]). Leaves the modem in CFUN=2 in test mode.",
-	              cmd_scan, 1, 1),
+	              "Scan cells and networks of the configured RATs; interrupts "
+	              "attach and reconnects. Leaves the modem in CFUN=2 in test mode.",
+	              print_help, 1, 1),
 
-	SHELL_CMD_ARG(ncellmeas-schedule, NULL,
-	              "Schedule NCELLMEAS measurement.",
-	              cmd_ncellmeas_schedule, 1, 0),
+	SHELL_CMD_ARG(ncellmeas, &sub_lte_ncellmeas,
+	              "Measure the neighbour cells.",
+	              print_help, 1, 1),
 
 
 	SHELL_SUBCMD_SET_END

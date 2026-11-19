@@ -5,3 +5,11 @@ tests:
     integration_platforms:
       - native_sim
     tags: hio sysbuild
+  # CONFIG_HIO_LTE_NCELLMEAS=y, as in the ksb application
+  hio_lte.transaction.ncellmeas:
+    sysbuild: true
+    extra_args: HIO_LTE_NCELLMEAS=1
+    platform_allow: native_sim
+    integration_platforms:
+      - native_sim
+    tags: hio sysbuild

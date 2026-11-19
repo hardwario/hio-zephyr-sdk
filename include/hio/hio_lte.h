@@ -234,6 +234,10 @@ int hio_lte_wait_for_connected(k_timeout_t timeout);
 /**
  * @brief Send data and optionally receive a response.
  *
+ * A requested neighbour cell measurement that is running holds the
+ * transaction until it ends, up to its watchdog (60 s), see
+ * @ref hio_lte_schedule_ncellmeas.
+ *
  * @param param  Operation parameters (see @ref hio_lte_send_recv_param).
  * @retval 0     Success (see @p *recv_len for bytes received).
  * @retval <0    Negative error code.
@@ -445,12 +449,14 @@ struct hio_lte_ncellmeas_cell_param {
 	uint32_t eci;    /**< E-UTRA Cell Identifier. */
 	uint16_t mcc;    /**< Mobile Country Code. */
 	uint16_t mnc;    /**< Mobile Network Code. */
+	uint8_t mnc_digits; /**< Digits of the MNC as the modem wrote it (2 or 3). */
 	uint16_t tac;    /**< Tracking Area Code. */
 	uint16_t adv;    /**< Timing Advance. */
 	uint32_t earfcn; /**< EARFCN. */
 	uint16_t pci;    /**< Physical Cell ID. */
 	int16_t rsrp;    /**< Level index Reference Signal Received Power. Range: -17 to 255. */
 	int16_t rsrq;    /**< Level index Reference Signal Received Quality. Range: -17 to 255. */
+	bool serving;    /**< The serving cell. */
 
 	uint8_t neighbor_count;                       /**< Number of neighbor cells reported. */
 	struct hio_lte_ncellmeas_ncell_param *ncells; /**< Pointer to first neighbor cell entry. */
@@ -462,6 +468,7 @@ struct hio_lte_ncellmeas_param {
 	enum hio_lte_cereg_param_act act; /**< Access technology. */
 	uint8_t num_cells;                /**< Number of neighbor cell measurement entries. */
 	uint8_t num_ncells;               /**< Total number of neighbor cells reported. */
+	uint32_t uptime_s;                /**< Uptime of the measurement. */
 	struct hio_lte_ncellmeas_cell_param cells[HIO_LTE_NCELLMEAS_CELL_MAX];
 	struct hio_lte_ncellmeas_ncell_param ncells[HIO_LTE_NCELLMEAS_NCELL_MAX];
 };
@@ -471,14 +478,29 @@ int hio_lte_get_ncellmeas_param(struct hio_lte_ncellmeas_param *param);
 /**
  * @brief Schedule a new Neighbor Cell Measurement (NCELLMEAS) cycle.
  *
- * After the measurement completes, the cached values returned by
- * @ref hio_lte_get_ncellmeas_param are updated.
+ * It runs once the RRC connection is idle; a modem in PSM measures right away,
+ * one switched off (no PSM granted) attaches first. A measurement without a
+ * result (60 s watchdog) stays requested for the next connection; one the
+ * modem refuses ends as failed. After the measurement completes, the cached
+ * values returned by @ref hio_lte_get_ncellmeas_param are updated.
+ *
+ * While it runs, transactions (@ref hio_lte_send_recv) wait for it, up to the
+ * watchdog.
  *
  * @retval 0         Scheduled successfully.
- * @retval -EALREADY A measurement request is already pending.
+ * @retval -EALREADY A measurement request is already pending (it is tried
+ *                   again right away if it is not running).
  * @retval -ENOTSUP  Test mode is enabled.
  */
 int hio_lte_schedule_ncellmeas(void);
+
+/**
+ * @brief Wait for the end of the requested measurement.
+ *
+ * @retval 0          Ended, or nothing was requested.
+ * @retval -ETIMEDOUT Still requested or running.
+ */
+int hio_lte_wait_for_ncellmeas(k_timeout_t timeout);
 
 /**
  * @brief One registration status change (CEREG).
@@ -533,6 +555,7 @@ struct hio_lte_scan_cell {
 	uint32_t earfcn; /**< EARFCN. */
 	uint16_t mcc;    /**< Mobile country code. */
 	uint16_t mnc;    /**< Mobile network code. */
+	uint8_t mnc_digits; /**< Digits of the MNC as the modem wrote it (2 or 3). */
 	uint16_t tac;    /**< Tracking area code. */
 	uint16_t pci;    /**< Physical cell ID. */
 	int16_t rsrp;    /**< RSRP index (dBm = index - 141). */

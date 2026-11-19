@@ -93,7 +93,11 @@ static void process_urc_ncellmeas(const char *line)
 	if (ncellmeas_param.valid) {
 		LOG_INF("NCELLMEAS: %d cells, %d ncells", ncellmeas_param.num_cells,
 			ncellmeas_param.num_ncells);
-		hio_lte_state_set_ncellmeas_param(&ncellmeas_param);
+
+		/* The cell search of a scan is no measurement. */
+		if (!m_scan_cells_pending) {
+			hio_lte_state_set_ncellmeas_param(&ncellmeas_param);
+		}
 
 		if (m_scan_cells_pending) {
 			*scan_cells_status() = 0;
@@ -107,6 +111,7 @@ static void process_urc_ncellmeas(const char *line)
 					.earfcn = c->earfcn,
 					.mcc = c->mcc,
 					.mnc = c->mnc,
+					.mnc_digits = c->mnc_digits,
 					.tac = c->tac,
 					.pci = c->pci,
 					.rsrp = c->rsrp,

@@ -14,6 +14,11 @@ add_compile_definitions(CONFIG_HIO_LTE_SCAN_MAX_CELLS=14)
 add_compile_definitions(CONFIG_HIO_LTE_CEREG_HISTORY=3)
 add_compile_definitions(CONFIG_HIO_LTE_SCAN_AUTO=1)
 add_compile_definitions(CONFIG_HIO_LTE_SCAN_AUTO_EVERY=1)
+# The product configuration: a measurement requested on every enable.
+zephyr_get(HIO_LTE_NCELLMEAS)
+if(HIO_LTE_NCELLMEAS)
+  add_compile_definitions(CONFIG_HIO_LTE_NCELLMEAS=1)
+endif()
 
 set(HIO_LTE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../subsys/hio_lte)
 
@@ -36,3 +41,5 @@ target_sources(app PRIVATE src/test_transaction.c)
 target_sources(app PRIVATE src/test_scan.c)
 target_sources(app PRIVATE src/test_callbacks.c)
 target_sources(app PRIVATE src/test_no_psm.c)
+target_sources(app PRIVATE src/test_ncellmeas.c)
+target_sources(app PRIVATE src/test_shell.c)
