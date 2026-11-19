@@ -481,7 +481,8 @@ int hio_lte_get_ncellmeas_param(struct hio_lte_ncellmeas_param *param);
  * It runs once the RRC connection is idle; a modem in PSM measures right away,
  * one switched off (no PSM granted) attaches first. A measurement without a
  * result (60 s watchdog) stays requested for the next connection; one the
- * modem refuses ends as failed. After the measurement completes, the cached
+ * modem refuses ends as failed; a disable drops it without a result. After
+ * the measurement completes, the cached
  * values returned by @ref hio_lte_get_ncellmeas_param are updated.
  *
  * While it runs, transactions (@ref hio_lte_send_recv) wait for it, up to the
@@ -490,6 +491,7 @@ int hio_lte_get_ncellmeas_param(struct hio_lte_ncellmeas_param *param);
  * @retval 0         Scheduled successfully.
  * @retval -EALREADY A measurement request is already pending (it is tried
  *                   again right away if it is not running).
+ * @retval -EBUSY    A scan is requested or running (it ends with a reattach).
  * @retval -ENOTSUP  Test mode is enabled.
  */
 int hio_lte_schedule_ncellmeas(void);
@@ -497,7 +499,7 @@ int hio_lte_schedule_ncellmeas(void);
 /**
  * @brief Wait for the end of the requested measurement.
  *
- * @retval 0          Ended, or nothing was requested.
+ * @retval 0          Ended (also dropped by a disable), or nothing was requested.
  * @retval -ETIMEDOUT Still requested or running.
  */
 int hio_lte_wait_for_ncellmeas(k_timeout_t timeout);
@@ -584,8 +586,8 @@ struct hio_lte_scan_result {
 	int cells_nbiot_status; /**< NB-IoT cell search: 0 ok, -ENODATA not run, error. */
 	uint8_t cell_count;     /**< Cells found by both searches. */
 	struct hio_lte_scan_cell cells[CONFIG_HIO_LTE_SCAN_MAX_CELLS];
-	int plmn_status;     /**< 0 ok, -EINTR partial, -EBUSY, -ENODATA not run, other error. */
-	uint8_t count;       /**< Networks found; entries holds at most the first ones. */
+	int plmn_status;     /**< 0 ok, -EINTR partial, -EBUSY, -ENODATA not run, error; first. */
+	uint8_t count;       /**< Networks found, per PLMN and act; entries holds the first. */
 	struct hio_lte_scan_entry entries[CONFIG_HIO_LTE_SCAN_MAX_ENTRIES];
 };
 
@@ -594,8 +596,9 @@ struct hio_lte_scan_result {
  *
  * Runs in CFUN=1 (the modem attaches) and takes priority over an ongoing
  * attach; the connection is re-established after it. Covers the access
- * technologies of the LTE mode config, a cell search for each. Completion is signalled
- * by @ref HIO_LTE_EVENT_SCAN_DONE.
+ * technologies of the LTE mode config, for each a cell search and a network
+ * search, registered in it. Completion is signalled by
+ * @ref HIO_LTE_EVENT_SCAN_DONE.
  *
  * @retval 0         Scan requested.
  * @retval -EALREADY A scan is already requested or running.

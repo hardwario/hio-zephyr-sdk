@@ -80,6 +80,13 @@ static int *scan_cells_status(void)
 								  : &m_scan.cells_ltem_status;
 }
 static bool m_scan_plmn_pending;
+/* The networks of one search, merged into m_scan by the work handler. */
+static struct hio_lte_scan_entry m_scan_plmn_found[CONFIG_HIO_LTE_SCAN_MAX_ENTRIES];
+static size_t m_scan_plmn_count;
+static int m_scan_plmn_status;
+static uint8_t m_scan_plmn_act;
+/* Searches merged into m_scan. */
+static int m_scan_plmn_runs;
 /* The error line of a refused search, logged by the work handler. */
 static char m_scan_cells_error[32];
 static char m_scan_plmn_error[32];
@@ -176,7 +183,8 @@ static void process_urc(const char *line, void *user_data)
 	}
 
 	if (g_hio_lte_config.test) {
-		/* Test mode: only feed 'lte scan', never the FSM. */
+		/* Test mode: only feed 'lte scan now' and 'lte ncellmeas now',
+		 * never the FSM. */
 		if (!strncmp(line, "%NCELLMEAS: ", 12)) {
 			process_urc_ncellmeas(line + 12);
 		}
@@ -1257,7 +1265,14 @@ static void scan_plmn_work_handler(struct k_work *work)
 		LOG_WRN("PLMN scan error: %s", m_scan_plmn_error);
 	}
 
-	LOG_INF("PLMN scan done: %d, networks: %u", m_scan.plmn_status, m_scan.count);
+	LOG_INF("PLMN scan done: %d, networks: %zu", m_scan_plmn_status, m_scan_plmn_count);
+
+	/* Not of an aborted scan. */
+	if (m_scan_plmn_pending) {
+		hio_lte_util_scan_merge_networks(&m_scan, m_scan_plmn_found, m_scan_plmn_count,
+						 m_scan_plmn_act, m_scan_plmn_status);
+		m_scan_plmn_runs++;
+	}
 
 	m_scan_plmn_pending = false;
 
@@ -1275,10 +1290,10 @@ static void scan_plmn_resp_handler(const char *resp)
 
 	const char *list = strstr(resp, "%COPS: ");
 	if (list) {
-		ret = hio_lte_parse_cops_list(list + strlen("%COPS: "), m_scan.entries,
-					      ARRAY_SIZE(m_scan.entries), &count);
+		ret = hio_lte_parse_cops_list(list + strlen("%COPS: "), m_scan_plmn_found,
+					      ARRAY_SIZE(m_scan_plmn_found), &count);
 	}
-	m_scan.count = MIN(count, UINT8_MAX);
+	m_scan_plmn_count = count;
 
 	const char *cme = strstr(resp, "+CME ERROR: ");
 	const char *error = cme ? cme : strstr(resp, "ERROR");
@@ -1287,11 +1302,11 @@ static void scan_plmn_resp_handler(const char *resp)
 	}
 	if (cme) {
 		int code = atoi(cme + strlen("+CME ERROR: "));
-		m_scan.plmn_status = code == 521 ? -EINTR : code == 516 ? -EBUSY : -EIO;
+		m_scan_plmn_status = code == 521 ? -EINTR : code == 516 ? -EBUSY : -EIO;
 	} else if (error) {
-		m_scan.plmn_status = -EIO;
+		m_scan_plmn_status = -EIO;
 	} else {
-		m_scan.plmn_status = list ? ret : -EBADMSG;
+		m_scan_plmn_status = list ? ret : -EBADMSG;
 	}
 
 	k_work_submit(&m_scan_plmn_work);
@@ -1327,6 +1342,7 @@ void hio_lte_flow_scan_begin(enum hio_lte_scan_mode mode, bool auto_triggered)
 {
 	m_scan_cells_pending = false;
 	m_scan_plmn_pending = false;
+	m_scan_plmn_runs = 0;
 	memset(&m_scan, 0, sizeof(m_scan));
 	m_scan.mode = mode;
 	m_scan.auto_triggered = auto_triggered;
@@ -1399,24 +1415,29 @@ int hio_lte_flow_scan_cells_wait(k_timeout_t timeout)
 	return k_sem_take(&m_scan_cells_sem, timeout);
 }
 
-/* Always completes through COPS_DONE, also when it fails to start. */
-int hio_lte_flow_scan_plmn_start(void)
+/* Always completes through COPS_DONE, also when it fails to start. The modem
+ * lists only the networks of the RAT it is registered in (mfw 2.0.2). */
+int hio_lte_flow_scan_plmn_start(uint8_t act)
 {
 	int ret = -ENOTCONN;
 
 	k_sem_reset(&m_scan_plmn_sem);
 	m_scan_plmn_error[0] = '\0';
+	m_scan_plmn_act = act;
+	m_scan_plmn_count = 0;
+	/* Before the command: its response may be handled before the return.
+	 * Also when it fails to start, its status is merged. */
+	m_scan_plmn_pending = true;
 
 	if (nrf_modem_is_initialized()) {
 		ret = hio_lte_talk_at_pcops_list_async(scan_plmn_resp_handler);
 		if (!ret) {
-			m_scan_plmn_pending = true;
 			return 0;
 		}
 	}
 
 	LOG_ERR("PLMN scan not started: %d", ret);
-	m_scan.plmn_status = ret;
+	m_scan_plmn_status = ret;
 	k_work_submit(&m_scan_plmn_work);
 
 	return ret;
@@ -1437,11 +1458,62 @@ void hio_lte_flow_scan_abort(void)
 		hio_lte_flow_cmd("AT%NCELLMEASSTOP");
 	}
 
-	if (m_scan_plmn_pending) {
-		m_scan.plmn_status = -ECANCELED;
+	/* Per configured RAT, unless only the cells were wanted. */
+	int wanted = 0;
+
+	if (m_scan.mode != HIO_LTE_SCAN_CELLS) {
+		wanted = !!strstr(g_hio_lte_config.mode, "lte-m") +
+			 !!strstr(g_hio_lte_config.mode, "nb-iot");
 	}
 
+	m_scan.plmn_status = hio_lte_util_scan_cut_status(m_scan.plmn_status, m_scan_plmn_pending,
+							  m_scan_plmn_runs < wanted);
+	/* A late response is not merged into the published result. */
+	m_scan_plmn_pending = false;
+
 	hio_lte_flow_scan_end();
+}
+
+/* The error line of a refused test mode measurement. */
+static char m_ncellmeas_error[32];
+
+/* ISR context. A refused %NCELLMEAS never sends the result URC. */
+static void ncellmeas_resp_handler(const char *resp)
+{
+	const char *cme = strstr(resp, "+CME ERROR: ");
+	const char *error = cme ? cme : strstr(resp, "ERROR");
+
+	if (error) {
+		scan_copy_error(m_ncellmeas_error, sizeof(m_ncellmeas_error), error);
+		k_sem_give(&m_scan_cells_sem);
+	}
+}
+
+/* Test mode: the URC is stored as the FSM's (process_urc_ncellmeas()). */
+int hio_lte_flow_ncellmeas_start(void)
+{
+	k_sem_reset(&m_scan_cells_sem);
+	m_ncellmeas_error[0] = '\0';
+
+	if (!nrf_modem_is_initialized()) {
+		return -ENOTCONN;
+	}
+
+	return hio_lte_talk_ncellmeas_cb(5, HIO_LTE_NCELLMEAS_CELL_MAX, ncellmeas_resp_handler);
+}
+
+int hio_lte_flow_ncellmeas_wait(k_timeout_t timeout, char *error, size_t size)
+{
+	if (k_sem_take(&m_scan_cells_sem, timeout)) {
+		return -EAGAIN;
+	}
+
+	if (m_ncellmeas_error[0]) {
+		snprintf(error, size, "%s", m_ncellmeas_error);
+		return -EIO;
+	}
+
+	return 0;
 }
 
 /* Shut the modem down without AT, for when the AT channel is stuck. */

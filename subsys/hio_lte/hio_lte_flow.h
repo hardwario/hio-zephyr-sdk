@@ -77,10 +77,15 @@ void hio_lte_flow_scan_end(void);
 int hio_lte_flow_scan_rat(bool lte_m, bool nb_iot);
 int hio_lte_flow_scan_cells_start(uint8_t act);
 int hio_lte_flow_scan_cells_wait(k_timeout_t timeout);
-int hio_lte_flow_scan_plmn_start(void);
+/* The networks of the search in act (0: either) are merged into the scan. */
+int hio_lte_flow_scan_plmn_start(uint8_t act);
 int hio_lte_flow_scan_plmn_wait(k_timeout_t timeout);
 void hio_lte_flow_scan_abort(void);
 int hio_lte_flow_abort(void);
+/* Test mode: a measurement without the FSM, stored as the FSM's. The wait
+ * gives 0, -EIO when refused (the modem's error line in error) or -EAGAIN. */
+int hio_lte_flow_ncellmeas_start(void);
+int hio_lte_flow_ncellmeas_wait(k_timeout_t timeout, char *error, size_t size);
 int hio_lte_flow_xmodemtrace(int lvl);
 
 int hio_lte_flow_set_psk(const char *identity, const char *psk_hex);

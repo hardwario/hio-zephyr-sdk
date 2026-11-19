@@ -19,6 +19,7 @@
 
 extern int fake_flow_last_cfun;
 extern void (*fake_flow_cfun_hook)(int cfun);
+extern atomic_t fake_flow_scan_plmn_count;
 
 static void set_cereg(enum hio_lte_cereg_param_stat stat)
 {
@@ -77,6 +78,8 @@ static void no_psm_before(void *fixture)
 	ARG_UNUSED(fixture);
 
 	fsm_down();
+	/* The scan has a step per configured RAT. */
+	strcpy(g_hio_lte_config.mode, "lte-m,nb-iot");
 	fake_flow_last_cfun = -1;
 	fake_flow_cfun_hook = cfun4_reports_not_registered;
 }
@@ -197,4 +200,26 @@ ZTEST(hio_lte_no_psm, test_scan_turns_radio_on)
 
 	set_cereg(HIO_LTE_CEREG_PARAM_STAT_NOT_REGISTERED);
 	assert_cereg_stat(HIO_LTE_CEREG_PARAM_STAT_NOT_REGISTERED);
+}
+
+/* The modem is in CFUN=4 already, the first switch of the scan brings no
+ * "+CEREG: 0": the NB-IoT registration of before must not count for the
+ * network search in LTE-M. */
+ZTEST(hio_lte_no_psm, test_scan_from_radio_off_waits_for_registration)
+{
+	radio_off_after_ready();
+	atomic_clear(&fake_flow_scan_plmn_count);
+
+	zassert_ok(hio_lte_scan(HIO_LTE_SCAN_ALL));
+	/* No CSCON: the cell search starts after the attach window. */
+	k_sleep(K_MSEC(10200));
+	zassert_true(fsm_in("scan"));
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_NCELLMEAS);
+	k_sleep(K_MSEC(50));
+	zassert_equal(atomic_get(&fake_flow_scan_plmn_count), 0,
+		      "searched on the registration of before");
+
+	fsm_scan_registers();
+	k_sleep(K_MSEC(50));
+	zassert_equal(atomic_get(&fake_flow_scan_plmn_count), 1, "not searched once registered");
 }

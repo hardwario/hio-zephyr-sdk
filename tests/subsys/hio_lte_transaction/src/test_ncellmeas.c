@@ -543,3 +543,26 @@ ZTEST(hio_lte_ncellmeas, test_repeat_not_left_for_next_enable)
 	zassert_true(fsm_in("ready"), "measured before the release");
 	zassert_equal(atomic_get(&fake_flow_ncellmeas_count), 1);
 }
+
+/* A disable drops a request and releases its waiter; it is not left for the
+ * next enable. */
+ZTEST(hio_lte_ncellmeas, test_disable_drops_request)
+{
+	fsm_bring_up();
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_CSCON_1);
+	k_sleep(K_MSEC(50));
+	zassert_equal(hio_lte_schedule_ncellmeas(), FIRST_NCELLMEAS_RET);
+	zassert_equal(hio_lte_wait_for_ncellmeas(K_NO_WAIT), -ETIMEDOUT);
+
+	fsm_down();
+	zassert_ok(hio_lte_wait_for_ncellmeas(K_NO_WAIT), "waiter not released");
+	zassert_equal(atomic_get(&m_done_count), 0, "reported as measured");
+
+	if (!IS_ENABLED(CONFIG_HIO_LTE_NCELLMEAS)) {
+		fsm_bring_up();
+		k_sleep(K_SECONDS(1));
+		zassert_true(fsm_in("ready"));
+		zassert_equal(atomic_get(&fake_flow_ncellmeas_count), 0, "left for the enable");
+		zassert_ok(hio_lte_wait_for_ncellmeas(K_NO_WAIT));
+	}
+}

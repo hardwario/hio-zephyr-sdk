@@ -662,47 +662,122 @@ static int print_scan_result(const struct shell *shell)
 	return 0;
 }
 
-/* Test mode: no FSM, run the same steps directly. Without its CSCON and
+/* A state that does not take a request soon: the reason, or NULL. The request
+ * is dropped there (disabled) or waits (reset loop, error). */
+static const char *request_blocked(const char *state)
+{
+	if (!strcmp(state, "disabled")) {
+		return "LTE is disabled";
+	} else if (!strcmp(state, "reset_loop")) {
+		return "modem reset loop, attach blocked";
+	} else if (!strcmp(state, "error")) {
+		return "LTE error, retrying";
+	}
+
+	return NULL;
+}
+
+/* Until the next line, each 30 s from the start of the scan. */
+static int64_t scan_tick_ms(int64_t start)
+{
+	return 30000 - (k_uptime_get() - start) % 30000;
+}
+
+/* Beyond the bounds of the steps something is wrong. */
+static int scan_tick(const struct shell *shell, int64_t start)
+{
+	int64_t elapsed = (k_uptime_get() - start) / MSEC_PER_SEC;
+
+	if (elapsed > 35 * 60) {
+		shell_error(shell, "scan did not finish");
+		return -ETIMEDOUT;
+	}
+
+	char took[24];
+
+	hio_util_fmt_duration(elapsed, took, sizeof(took));
+	shell_print(shell, "still scanning (%s)", took);
+
+	return 0;
+}
+
+/* Test mode: wait for a search (wait gives 0 when it ended) or, without one,
+ * until end. */
+static int scan_test_wait(const struct shell *shell, int64_t start, int (*wait)(k_timeout_t),
+			  int64_t end)
+{
+	for (;;) {
+		int64_t tick = scan_tick_ms(start);
+		int64_t left = end - k_uptime_get();
+
+		if (wait) {
+			if (!wait(K_MSEC(tick))) {
+				return 0;
+			}
+		} else if (left <= tick) {
+			k_sleep(K_MSEC(MAX(left, 0)));
+			return 0;
+		} else {
+			k_sleep(K_MSEC(tick));
+		}
+
+		int ret = scan_tick(shell, start);
+		if (ret) {
+			return ret;
+		}
+	}
+}
+
+/* Test mode: no FSM, the same steps run directly. Without its CSCON and
  * CEREG events, a fixed wait after the switch to CFUN=1 lets the attach
  * register and release its RRC connection (~8 s on the bench). */
-static void scan_test_mode(enum hio_lte_scan_mode mode)
+static int scan_test_mode(const struct shell *shell, enum hio_lte_scan_mode mode)
 {
-	const k_timeout_t attach_wait = K_SECONDS(20);
-	const k_timeout_t step_timeout = K_MINUTES(15);
-	bool lte_m = strstr(g_hio_lte_config.mode, "lte-m");
-	bool nb_iot = strstr(g_hio_lte_config.mode, "nb-iot");
+	const int64_t attach_wait_ms = 20 * MSEC_PER_SEC;
+	int64_t start = k_uptime_get();
+	int ret = 0;
+
+	shell_print(shell, "scanning, this takes minutes...");
 
 	hio_lte_flow_scan_begin(mode, false);
 
-	for (int i = 0; i < 2 && mode != HIO_LTE_SCAN_PLMN; i++) {
-		bool nbiot_step = i == 1;
+	for (int i = 0; i < 2 && !ret; i++) {
+		bool nbiot = i == 1;
+		uint8_t act = nbiot ? HIO_LTE_CEREG_PARAM_ACT_NBIOT : HIO_LTE_CEREG_PARAM_ACT_LTE;
 
-		if (nbiot_step ? !nb_iot : !lte_m) {
+		if (!strstr(g_hio_lte_config.mode, nbiot ? "nb-iot" : "lte-m")) {
 			continue;
 		}
 
-		hio_lte_flow_scan_rat(!nbiot_step, nbiot_step);
-		k_sleep(attach_wait);
+		hio_lte_flow_scan_rat(!nbiot, nbiot);
+		ret = scan_test_wait(shell, start, NULL, k_uptime_get() + attach_wait_ms);
 
-		uint8_t act = nbiot_step ? HIO_LTE_CEREG_PARAM_ACT_NBIOT : HIO_LTE_CEREG_PARAM_ACT_LTE;
-		if (!hio_lte_flow_scan_cells_start(act) &&
-		    hio_lte_flow_scan_cells_wait(step_timeout)) {
-			hio_lte_flow_scan_abort();
-			return;
+		if (!ret && mode != HIO_LTE_SCAN_PLMN && !hio_lte_flow_scan_cells_start(act)) {
+			ret = scan_test_wait(shell, start, hio_lte_flow_scan_cells_wait, 0);
+		}
+
+		/* In the same attach: %COPS=? lists the networks of its RAT. */
+		if (!ret && mode != HIO_LTE_SCAN_CELLS && !hio_lte_flow_scan_plmn_start(act)) {
+			ret = scan_test_wait(shell, start, hio_lte_flow_scan_plmn_wait, 0);
 		}
 	}
 
-	if (mode != HIO_LTE_SCAN_CELLS) {
-		hio_lte_flow_scan_rat(lte_m, nb_iot);
-		k_sleep(attach_wait);
-
-		if (!hio_lte_flow_scan_plmn_start() && hio_lte_flow_scan_plmn_wait(step_timeout)) {
-			hio_lte_flow_scan_abort();
-			return;
-		}
+	if (ret) {
+		hio_lte_flow_scan_abort();
+		return ret;
 	}
 
 	hio_lte_flow_scan_end();
+
+	/* The last switch was to one RAT: back to both configured. */
+	bool lte_m = strstr(g_hio_lte_config.mode, "lte-m");
+	bool nb_iot = strstr(g_hio_lte_config.mode, "nb-iot");
+
+	if (lte_m && nb_iot) {
+		hio_lte_flow_scan_rat(true, true);
+	}
+
+	return 0;
 }
 
 static int scan_mode_parse(const struct shell *shell, size_t argc, char **argv,
@@ -733,6 +808,93 @@ static int scan_mode_parse(const struct shell *shell, size_t argc, char **argv,
 	return 0;
 }
 
+/* Request the scan and wait for it. */
+static int scan_fsm(const struct shell *shell, enum hio_lte_scan_mode mode)
+{
+	const char *state;
+	const char *reason;
+	int64_t start;
+	int64_t last;
+	int64_t prev;
+
+	hio_lte_get_fsm_state(&state);
+	reason = request_blocked(state);
+	if (reason) {
+		shell_error(shell, "scan not possible: %s (fsm-state: %s)", reason, state);
+		return -EBUSY;
+	}
+
+	/* The result of this request has another start than prev. Joined to a
+	 * scan, the last before it: that scan may end before a read after. */
+	hio_lte_state_get_scan_starts(&start, &prev);
+
+	int ret = hio_lte_scan(mode);
+	if (ret == -EALREADY) {
+		shell_print(shell, "scan already in progress, waiting for it");
+	} else if (ret) {
+		shell_error(shell, "command failed: %d", ret);
+		return ret;
+	} else {
+		/* None was running: one that ended since is not this one. */
+		hio_lte_state_get_scan_starts(&start, &prev);
+	}
+
+	/* Cannot be interrupted anyway, so hold the shell until it is done. The
+	 * connection is re-established after the scan. */
+	shell_print(shell, "scanning, this takes minutes...");
+
+	int64_t command = k_uptime_get();
+
+	start = 0;
+	for (;;) {
+		k_timeout_t wait;
+
+		if (!start) {
+			hio_lte_state_get_scan_starts(&start, &last);
+		}
+
+		if (start) {
+			wait = K_MSEC(scan_tick_ms(start));
+		} else {
+			/* Not started: a state that blocks it ends the wait, the
+			 * request stays. A disable (also of a reconnect) drops
+			 * it once the modem is off: the done bit ends the wait. */
+			hio_lte_get_fsm_state(&state);
+			reason = request_blocked(state);
+			if (reason && strcmp(state, "disabled")) {
+				shell_error(shell, "scan not possible: %s (fsm-state: %s)", reason,
+					    state);
+				return -EBUSY;
+			}
+
+			wait = K_SECONDS(1);
+		}
+
+		if (!hio_lte_wait_for_scan(wait)) {
+			break;
+		}
+
+		if (start) {
+			ret = scan_tick(shell, start);
+			if (ret) {
+				return ret;
+			}
+		} else if (k_uptime_get() - command > 35 * 60 * MSEC_PER_SEC) {
+			shell_error(shell, "scan did not finish");
+			return -ETIMEDOUT;
+		}
+	}
+
+	/* Dropped (a reconnect, LTE disabled): no result of its own. */
+	hio_lte_state_get_scan_starts(&start, &last);
+	if (last == prev) {
+		shell_error(shell, "scan dropped");
+		return -ECANCELED;
+	}
+
+	return 0;
+}
+
 static int cmd_scan_now(const struct shell *shell, size_t argc, char **argv)
 {
 	enum hio_lte_scan_mode mode;
@@ -742,41 +904,9 @@ static int cmd_scan_now(const struct shell *shell, size_t argc, char **argv)
 		return ret;
 	}
 
-	if (g_hio_lte_config.test) {
-		shell_print(shell, "scanning (can take minutes)...");
-		scan_test_mode(mode);
-		ret = print_scan_result(shell);
-		if (!ret) {
-			shell_info(shell, "command succeeded");
-		}
+	ret = g_hio_lte_config.test ? scan_test_mode(shell, mode) : scan_fsm(shell, mode);
+	if (ret) {
 		return ret;
-	}
-
-	ret = hio_lte_scan(mode);
-	if (ret == -EALREADY) {
-		shell_print(shell, "scan already in progress, waiting for it");
-	} else if (ret) {
-		shell_error(shell, "command failed: %d", ret);
-		return ret;
-	}
-
-	/* Cannot be interrupted anyway, so hold the shell until it is done. The
-	 * connection is re-established after the scan. */
-	shell_print(shell, "scanning, this takes minutes...");
-
-	int64_t start = k_uptime_get();
-	while (hio_lte_wait_for_scan(K_SECONDS(30))) {
-		int64_t elapsed = (k_uptime_get() - start) / MSEC_PER_SEC;
-
-		/* Beyond the scan watchdogs: something is wrong. */
-		if (elapsed > 35 * 60) {
-			shell_error(shell, "scan did not finish");
-			return -ETIMEDOUT;
-		}
-		char took[24];
-
-		hio_util_fmt_duration(elapsed, took, sizeof(took));
-		shell_print(shell, "still scanning (%s)", took);
 	}
 
 	ret = print_scan_result(shell);
@@ -821,7 +951,12 @@ static int cmd_scan_show(const struct shell *shell, size_t argc, char **argv)
 		return -EINVAL;
 	}
 
-	return print_scan_result(shell);
+	int ret = print_scan_result(shell);
+	if (!ret) {
+		shell_info(shell, "command succeeded");
+	}
+
+	return ret;
 }
 
 static int cmd_test_prepare(const struct shell *shell, size_t argc, char **argv)
@@ -985,7 +1120,10 @@ static int cmd_ncellmeas_schedule(const struct shell *shell, size_t argc, char *
 	}
 
 	ret = hio_lte_schedule_ncellmeas();
-	if (ret && ret != -EALREADY) {
+	if (ret == -EBUSY) {
+		shell_error(shell, "scan in progress");
+		return ret;
+	} else if (ret && ret != -EALREADY) {
 		LOG_ERR("Call `hio_lte_schedule_ncellmeas` failed: %d", ret);
 		shell_error(shell, "command failed");
 		return ret;
@@ -1054,24 +1192,85 @@ static int print_ncellmeas(const struct shell *shell)
 	return 0;
 }
 
-static int cmd_ncellmeas_now(const struct shell *shell, size_t argc, char **argv)
+static int ncellmeas_tick(const struct shell *shell, int64_t start)
 {
-	int ret;
+	int64_t elapsed = (k_uptime_get() - start) / MSEC_PER_SEC;
 
-	if (g_hio_lte_config.test) {
-		shell_error(shell, "not supported in test mode");
-		return -ENOEXEC;
+	/* Beyond an attach from the radio off (5 min), the release of its
+	 * connection and the measurement watchdog (1 min): it waits for the
+	 * next connection. */
+	if (elapsed >= 10 * 60) {
+		shell_error(shell, "measurement did not finish");
+		return -ETIMEDOUT;
 	}
 
-	/* The request would wait for the enable. */
-	if (!hio_lte_wait_for_disable(K_NO_WAIT)) {
-		shell_error(shell, "command failed: %d", -ENODEV);
-		return -ENODEV;
+	char took[24];
+
+	hio_util_fmt_duration(elapsed, took, sizeof(took));
+	shell_print(shell, "still measuring (%s)", took);
+
+	return 0;
+}
+
+/* Test mode: no FSM, the measurement runs directly. */
+static int ncellmeas_test_mode(const struct shell *shell)
+{
+	char error[32];
+	uint32_t count = hio_lte_state_get_ncellmeas_count();
+
+	int ret = hio_lte_flow_ncellmeas_start();
+	if (ret) {
+		shell_error(shell, "command failed: %d", ret);
+		return ret;
 	}
 
-	ret = hio_lte_schedule_ncellmeas();
+	shell_print(shell, "measuring, this takes minutes...");
+
+	int64_t start = k_uptime_get();
+	while ((ret = hio_lte_flow_ncellmeas_wait(K_SECONDS(30), error, sizeof(error))) ==
+	       -EAGAIN) {
+		if (ncellmeas_tick(shell, start)) {
+			hio_lte_flow_cmd("AT%NCELLMEASSTOP");
+			return -ETIMEDOUT;
+		}
+	}
+
+	if (ret) {
+		shell_error(shell, "measurement not possible: %s", error);
+		return ret;
+	}
+
+	/* A URC that does not parse is not stored. */
+	if (hio_lte_state_get_ncellmeas_count() == count) {
+		shell_error(shell, "measurement not possible: unreadable result");
+		return -EBADMSG;
+	}
+
+	return 0;
+}
+
+/* Request the measurement and wait for it. */
+static int ncellmeas_fsm(const struct shell *shell)
+{
+	const char *state;
+
+	hio_lte_get_fsm_state(&state);
+	const char *reason = request_blocked(state);
+	if (reason) {
+		shell_error(shell, "measurement not possible: %s (fsm-state: %s)", reason, state);
+		return -EBUSY;
+	}
+
+	uint32_t count = hio_lte_state_get_ncellmeas_count();
+
+	int ret = hio_lte_schedule_ncellmeas();
 	if (ret == -EALREADY) {
 		shell_print(shell, "measurement already in progress, waiting for it");
+	} else if (ret == -EBUSY) {
+		hio_lte_get_fsm_state(&state);
+		shell_error(shell, "measurement not possible: scan in progress (fsm-state: %s)",
+			    state);
+		return ret;
 	} else if (ret) {
 		shell_error(shell, "command failed: %d", ret);
 		return ret;
@@ -1081,19 +1280,26 @@ static int cmd_ncellmeas_now(const struct shell *shell, size_t argc, char **argv
 
 	int64_t start = k_uptime_get();
 	while (hio_lte_wait_for_ncellmeas(K_SECONDS(30))) {
-		int64_t elapsed = (k_uptime_get() - start) / MSEC_PER_SEC;
-
-		/* Beyond an attach from the radio off (5 min), the release of its
-		 * connection and the measurement watchdog (1 min): it waits for
-		 * the next connection. */
-		if (elapsed >= 10 * 60) {
-			shell_error(shell, "measurement did not finish");
-			return -ETIMEDOUT;
+		ret = ncellmeas_tick(shell, start);
+		if (ret) {
+			return ret;
 		}
-		char took[24];
+	}
 
-		hio_util_fmt_duration(elapsed, took, sizeof(took));
-		shell_print(shell, "still measuring (%s)", took);
+	/* Dropped (LTE disabled): no result of its own. */
+	if (hio_lte_state_get_ncellmeas_count() == count) {
+		shell_error(shell, "measurement dropped");
+		return -ECANCELED;
+	}
+
+	return 0;
+}
+
+static int cmd_ncellmeas_now(const struct shell *shell, size_t argc, char **argv)
+{
+	int ret = g_hio_lte_config.test ? ncellmeas_test_mode(shell) : ncellmeas_fsm(shell);
+	if (ret) {
+		return ret;
 	}
 
 	return print_ncellmeas(shell);

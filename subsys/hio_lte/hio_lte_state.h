@@ -47,6 +47,8 @@ int hio_lte_state_get_cereg_param(struct hio_lte_cereg_param *param);
 void hio_lte_state_set_cereg_param(const struct hio_lte_cereg_param *param);
 /* Set around the CFUN=4 of the ready state where the network grants no PSM. */
 void hio_lte_state_set_radio_off(bool off);
+/* The registration kept while the radio was off ends as not registered. */
+void hio_lte_state_forget_registration(void);
 
 int hio_lte_state_get_rai_param(struct hio_lte_rai_param *param);
 void hio_lte_state_set_rai_param(const struct hio_lte_rai_param *param);
@@ -61,6 +63,12 @@ int hio_lte_state_get_last_reject(struct hio_lte_cereg_event *event);
 
 int hio_lte_state_get_scan_result(struct hio_lte_scan_result *result);
 void hio_lte_state_set_scan_result(const struct hio_lte_scan_result *result);
+/* Uptimes of the start of the running scan (0: none) and of the last ended. */
+void hio_lte_state_scan_start(void);
+void hio_lte_state_scan_end(void);
+void hio_lte_state_get_scan_starts(int64_t *running, int64_t *last);
+/* Measurements stored since boot. */
+uint32_t hio_lte_state_get_ncellmeas_count(void);
 
 void hio_lte_state_set_dtls_ciphersuite_used(const int cipher);
 

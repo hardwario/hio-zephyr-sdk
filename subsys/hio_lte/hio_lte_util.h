@@ -61,6 +61,38 @@ int hio_lte_util_recv_timeout_sec(const struct hio_lte_cereg_param *cereg);
  */
 int hio_lte_util_send_timeout_sec(int remaining_sec);
 
+/**
+ * @brief Merge the networks of one search into the scan result.
+ *
+ * One entry per PLMN and act: the search in act gives the stat of the
+ * networks of act, a network of another act is only added. More than
+ * CONFIG_HIO_LTE_SCAN_MAX_ENTRIES are counted, not stored. The status of the
+ * networks is the first error.
+ *
+ * @param scan   Scan result being assembled.
+ * @param found  The networks found, the first MIN(count, CONFIG_HIO_LTE_SCAN_MAX_ENTRIES).
+ * @param count  Networks the search found.
+ * @param act    Access technology the modem searched in (0: either).
+ * @param status Result of the search.
+ */
+void hio_lte_util_scan_merge_networks(struct hio_lte_scan_result *scan,
+				      const struct hio_lte_scan_entry *found, size_t count,
+				      uint8_t act, int status);
+
+/**
+ * @brief The status of the networks of a scan cut short.
+ *
+ * The first error stays; a search cut short makes it cancelled, a search
+ * that did not run partial.
+ *
+ * @param status  Status of the networks so far.
+ * @param running A search was running.
+ * @param missed  A wanted search did not run.
+ *
+ * @return The status of the networks.
+ */
+int hio_lte_util_scan_cut_status(int status, bool running, bool missed);
+
 #ifdef __cplusplus
 }
 #endif

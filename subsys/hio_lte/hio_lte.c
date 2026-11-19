@@ -113,12 +113,13 @@ atomic_t m_flag = ATOMIC_INIT(0);
 /* A full scan takes minutes; shorter retry delays would be extended by it. */
 #define SCAN_AUTO_MIN_DELAY K_MINUTES(10)
 
-/* In this order; each step first switches the RAT. */
+/* In this order; the first step of a RAT switches to it. */
 enum scan_step {
 	SCAN_STEP_NONE,
 	SCAN_STEP_LTEM_CELLS,
+	SCAN_STEP_LTEM_PLMN,
 	SCAN_STEP_NBIOT_CELLS,
-	SCAN_STEP_PLMN,
+	SCAN_STEP_NBIOT_PLMN,
 	SCAN_STEP_DONE,
 };
 
@@ -854,6 +855,15 @@ int hio_lte_schedule_ncellmeas(void)
 		return -ENOTSUP;
 	}
 
+	/* It would wait for the reattach after the scan. */
+	k_mutex_lock(&m_state_lock, K_FOREVER);
+	bool scan = m_state == FSM_STATE_SCAN || atomic_test_bit(&m_flag, FLAG_SCAN_REQ);
+	k_mutex_unlock(&m_state_lock);
+
+	if (scan) {
+		return -EBUSY;
+	}
+
 	if (atomic_test_and_set_bit(&m_flag, FLAG_NCELLMEAS_REQ)) {
 		ret = -EALREADY;
 	} else {
@@ -884,31 +894,40 @@ int hio_lte_scan(enum hio_lte_scan_mode mode)
 		return -ENOTSUP;
 	}
 
+	int64_t running;
+	int64_t last;
+	int ret = 0;
+
+	/* Atomic with the start and the end of a scan: a request joins the
+	 * running scan or waits for the next, its done bit cleared. */
 	k_mutex_lock(&m_state_lock, K_FOREVER);
-	enum fsm_state current = m_state;
+
+	hio_lte_state_get_scan_starts(&running, &last);
+
+	if (m_state == FSM_STATE_DISABLED) {
+		ret = -ENODEV;
+	} else if (running) {
+		/* Not one that ended: the FSM leaves the scan after its end. */
+		ret = -EALREADY;
+	} else {
+		/* Before the flag: the FSM may pick the request up right after it. */
+		m_scan_mode = mode;
+		atomic_clear_bit(&m_flag, FLAG_SCAN_AUTO);
+
+		if (atomic_test_and_set_bit(&m_flag, FLAG_SCAN_REQ)) {
+			ret = -EALREADY;
+		} else {
+			k_event_clear(&m_states_event, SCAN_DONE_BIT);
+		}
+	}
+
 	k_mutex_unlock(&m_state_lock);
 
-	if (current == FSM_STATE_DISABLED) {
-		return -ENODEV;
+	if (!ret) {
+		delegate_event(HIO_LTE_FSM_EVENT_SCAN);
 	}
 
-	if (current == FSM_STATE_SCAN) {
-		return -EALREADY;
-	}
-
-	/* Before the flag: the FSM may pick the request up right after it. */
-	m_scan_mode = mode;
-	atomic_clear_bit(&m_flag, FLAG_SCAN_AUTO);
-
-	if (atomic_test_and_set_bit(&m_flag, FLAG_SCAN_REQ)) {
-		return -EALREADY;
-	}
-
-	k_event_clear(&m_states_event, SCAN_DONE_BIT);
-
-	delegate_event(HIO_LTE_FSM_EVENT_SCAN);
-
-	return 0;
+	return ret;
 }
 
 int hio_lte_wait_for_scan(k_timeout_t timeout)
@@ -991,6 +1010,13 @@ static int on_enter_disabled(void)
 	}
 	atomic_clear_bit(&m_flag, FLAG_SCAN_AUTO);
 	m_retry_resume = false;
+
+	/* Nor a measurement request (with CONFIG_HIO_LTE_NCELLMEAS the enable
+	 * makes a new one). */
+	atomic_clear_bit(&m_flag, FLAG_NCELLMEAS_NOW);
+	if (atomic_test_and_clear_bit(&m_flag, FLAG_NCELLMEAS_REQ)) {
+		k_event_post(&m_states_event, NCELLMEAS_DONE_BIT);
+	}
 
 	/* Signal callers blocked in hio_lte_disable() that DISABLED is reached. */
 	k_event_post(&m_states_event, DISABLED_BIT);
@@ -1296,10 +1322,16 @@ static int on_enter_retry_delay(void)
 #if defined(CONFIG_HIO_LTE_SCAN_AUTO)
 	/* The scan fills the delay, so it only runs in a long enough one. */
 	if (timeout.retry_delay.ticks >= SCAN_AUTO_MIN_DELAY.ticks &&
-	    m_scan_auto_count++ % CONFIG_HIO_LTE_SCAN_AUTO_EVERY == 0 &&
-	    !atomic_test_and_set_bit(&m_flag, FLAG_SCAN_REQ)) {
-		m_scan_mode = HIO_LTE_SCAN_ALL;
-		atomic_set_bit(&m_flag, FLAG_SCAN_AUTO);
+	    m_scan_auto_count++ % CONFIG_HIO_LTE_SCAN_AUTO_EVERY == 0) {
+		/* Atomic with hio_lte_scan(). */
+		k_mutex_lock(&m_state_lock, K_FOREVER);
+		if (!atomic_test_and_set_bit(&m_flag, FLAG_SCAN_REQ)) {
+			m_scan_mode = HIO_LTE_SCAN_ALL;
+			atomic_set_bit(&m_flag, FLAG_SCAN_AUTO);
+			/* A caller waits for this one. */
+			k_event_clear(&m_states_event, SCAN_DONE_BIT);
+		}
+		k_mutex_unlock(&m_state_lock);
 	}
 #endif
 
@@ -2021,12 +2053,23 @@ static void scan_arm(k_timeout_t timeout)
 	start_timer(timeout);
 }
 
+/* The stamp before the waiters see the end, atomic with hio_lte_scan(): a
+ * request after it waits for the next scan, with the done bit cleared. */
+static void scan_done(void)
+{
+	k_mutex_lock(&m_state_lock, K_FOREVER);
+	hio_lte_state_scan_end();
+	k_event_post(&m_states_event, SCAN_DONE_BIT);
+	k_mutex_unlock(&m_state_lock);
+
+	hio_lte_notify(HIO_LTE_EVENT_SCAN_DONE);
+}
+
 static void scan_finish(void)
 {
 	hio_lte_flow_scan_end();
 	m_scan_finished = true;
-	k_event_post(&m_states_event, SCAN_DONE_BIT);
-	hio_lte_notify(HIO_LTE_EVENT_SCAN_DONE);
+	scan_done();
 
 	if (m_scan_to_retry_delay) {
 		transition_state(FSM_STATE_RETRY_DELAY);
@@ -2041,24 +2084,46 @@ static bool scan_config_has(const char *rat)
 	return strstr(g_hio_lte_config.mode, rat) != NULL;
 }
 
-/* Steps follow the LTE mode config: a cell search per configured RAT, then
- * networks over all of them. */
-static bool scan_step_wanted(enum scan_step step)
+static bool scan_step_plmn(enum scan_step step)
+{
+	return step == SCAN_STEP_LTEM_PLMN || step == SCAN_STEP_NBIOT_PLMN;
+}
+
+static uint8_t scan_step_act(enum scan_step step)
 {
 	switch (step) {
 	case SCAN_STEP_LTEM_CELLS:
-		return m_scan_mode != HIO_LTE_SCAN_PLMN && scan_config_has("lte-m");
+	case SCAN_STEP_LTEM_PLMN:
+		return HIO_LTE_CEREG_PARAM_ACT_LTE;
 	case SCAN_STEP_NBIOT_CELLS:
-		return m_scan_mode != HIO_LTE_SCAN_PLMN && scan_config_has("nb-iot");
-	case SCAN_STEP_PLMN:
-		return m_scan_mode != HIO_LTE_SCAN_CELLS;
+	case SCAN_STEP_NBIOT_PLMN:
+		return HIO_LTE_CEREG_PARAM_ACT_NBIOT;
 	default:
-		return false;
+		return 0;
 	}
 }
 
+/* Steps follow the LTE mode config: per configured RAT a cell search and a
+ * network search. */
+static bool scan_step_wanted(enum scan_step step)
+{
+	bool plmn = scan_step_plmn(step);
+	bool nbiot = scan_step_act(step) == HIO_LTE_CEREG_PARAM_ACT_NBIOT;
+
+	if (m_scan_mode == (plmn ? HIO_LTE_SCAN_CELLS : HIO_LTE_SCAN_PLMN)) {
+		return false;
+	}
+
+	return scan_config_has(nbiot ? "nb-iot" : "lte-m");
+}
+
+static bool scan_registered(void);
+static void scan_step_start(void);
+
 static void scan_next(void)
 {
+	uint8_t prev_act = scan_step_act(m_scan_step);
+
 	do {
 		m_scan_step++;
 	} while (m_scan_step < SCAN_STEP_DONE && !scan_step_wanted(m_scan_step));
@@ -2068,23 +2133,31 @@ static void scan_next(void)
 		return;
 	}
 
-	bool lte_m = m_scan_step == SCAN_STEP_LTEM_CELLS ||
-		     (m_scan_step == SCAN_STEP_PLMN && scan_config_has("lte-m"));
-	bool nb_iot = m_scan_step == SCAN_STEP_NBIOT_CELLS ||
-		      (m_scan_step == SCAN_STEP_PLMN && scan_config_has("nb-iot"));
+	uint8_t act = scan_step_act(m_scan_step);
+	bool switched = act != prev_act;
 
-	int ret = hio_lte_flow_scan_rat(lte_m, nb_iot);
-	if (ret < 0) {
-		LOG_ERR("Call `hio_lte_flow_scan_rat` failed: %d", ret);
+	if (switched) {
+		int ret = hio_lte_flow_scan_rat(act == HIO_LTE_CEREG_PARAM_ACT_LTE,
+						act == HIO_LTE_CEREG_PARAM_ACT_NBIOT);
+		if (ret < 0) {
+			LOG_ERR("Call `hio_lte_flow_scan_rat` failed: %d", ret);
+		}
 	}
 
-	if (m_scan_step == SCAN_STEP_PLMN) {
-		m_scan_phase = SCAN_PHASE_REGISTER;
-		scan_arm(SCAN_REGISTER_WINDOW);
-	} else {
+	if (!scan_step_plmn(m_scan_step)) {
 		m_scan_phase = SCAN_PHASE_ATTACH;
 		scan_arm(SCAN_ATTACH_WINDOW);
+		return;
 	}
+
+	/* After the cell search the attach of its RAT may have registered;
+	 * after a switch, the registration reported may be of the previous RAT. */
+	m_scan_phase = SCAN_PHASE_REGISTER;
+	if (!switched && scan_registered()) {
+		scan_step_start();
+		return;
+	}
+	scan_arm(SCAN_REGISTER_WINDOW);
 }
 
 static void scan_wait_release(void)
@@ -2109,9 +2182,10 @@ static void scan_step_start(void)
 			scan_next();
 		}
 		break;
-	case SCAN_STEP_PLMN:
+	case SCAN_STEP_LTEM_PLMN:
+	case SCAN_STEP_NBIOT_PLMN:
 		/* Completes through COPS_DONE, also on failure. */
-		hio_lte_flow_scan_plmn_start();
+		hio_lte_flow_scan_plmn_start(scan_step_act(m_scan_step));
 		break;
 	default:
 		break;
@@ -2171,10 +2245,22 @@ static void scan_timeout(void)
 
 static int on_enter_scan(void)
 {
+	/* Running before the request is taken, atomic with hio_lte_scan(): a
+	 * request made since is this scan's. */
+	k_mutex_lock(&m_state_lock, K_FOREVER);
+	hio_lte_state_scan_start();
 	atomic_clear_bit(&m_flag, FLAG_SCAN_REQ);
+	k_mutex_unlock(&m_state_lock);
+
 	/* Superseded: the scan ends with a reattach or in RETRY_DELAY. */
-	atomic_clear_bit(&m_flag, FLAG_CFUN4);
+	bool radio_off = atomic_test_and_clear_bit(&m_flag, FLAG_CFUN4);
 	hio_lte_state_set_radio_off(false);
+
+	/* Already in CFUN=4, the first switch brings no "+CEREG: 0": the
+	 * registration kept from before must not count for its RAT. */
+	if (radio_off) {
+		hio_lte_state_forget_registration();
+	}
 
 	hio_lte_flow_scan_begin(m_scan_mode, atomic_test_and_clear_bit(&m_flag, FLAG_SCAN_AUTO));
 	m_scan_finished = false;
@@ -2186,7 +2272,8 @@ static int on_enter_scan(void)
 	abort_pending_send_recv(-EBUSY);
 
 	/* The modem refuses both searches in CFUN=2 (mfw 2.0.2): the steps run
-	 * in CFUN=1, one RAT for each cell search. */
+	 * in CFUN=1 in one RAT, %COPS=? lists only the networks of the RAT of the
+	 * registration (mfw 2.0.2). */
 	m_scan_step = SCAN_STEP_NONE;
 	scan_next();
 
@@ -2199,8 +2286,7 @@ static int on_leave_scan(void)
 
 	if (!m_scan_finished) {
 		hio_lte_flow_scan_abort();
-		k_event_post(&m_states_event, SCAN_DONE_BIT);
-		hio_lte_notify(HIO_LTE_EVENT_SCAN_DONE);
+		scan_done();
 	}
 
 	return 0;
@@ -2241,7 +2327,7 @@ static int scan_event_handler(enum hio_lte_fsm_event event)
 		}
 		break;
 	case HIO_LTE_FSM_EVENT_COPS_DONE:
-		if (m_scan_phase == SCAN_PHASE_SEARCH && m_scan_step == SCAN_STEP_PLMN) {
+		if (m_scan_phase == SCAN_PHASE_SEARCH && scan_step_plmn(m_scan_step)) {
 			scan_next();
 		}
 		break;

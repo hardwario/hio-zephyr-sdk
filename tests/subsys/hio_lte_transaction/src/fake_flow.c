@@ -18,6 +18,8 @@
 #include <zephyr/kernel.h>
 
 #include <stdint.h>
+#include <stdio.h>
+#include <string.h>
 
 struct hio_lte_config g_hio_lte_config;
 
@@ -80,8 +82,15 @@ int hio_lte_flow_start(void)
 	return 0;
 }
 
+/* The time AT+CFUN=0 and the modem library shutdown take. */
+uint32_t fake_flow_stop_ms;
+
 int hio_lte_flow_stop(void)
 {
+	if (fake_flow_stop_ms) {
+		k_sleep(K_MSEC(fake_flow_stop_ms));
+	}
+
 	return 0;
 }
 
@@ -201,12 +210,26 @@ int64_t fake_flow_scan_cells_ms;
 /* Runs inside the RAT switch, as the URCs the modem sends meanwhile. */
 void (*fake_flow_scan_rat_hook)(void);
 
+/* The scan steps in order, e.g. "rat:m cells:7 plmn:7 ". */
+char fake_flow_scan_trace[128];
+
+static void scan_trace(const char *fmt, int arg)
+{
+	size_t len = strlen(fake_flow_scan_trace);
+
+	snprintf(fake_flow_scan_trace + len, sizeof(fake_flow_scan_trace) - len, fmt, arg);
+}
+
+/* Non-zero: the searches of test mode never end, their waits return it. */
+int fake_flow_scan_wait_ret;
+
 int hio_lte_flow_scan_rat(bool lte_m, bool nb_iot)
 {
 	if (fake_flow_scan_rat_hook) {
 		fake_flow_scan_rat_hook();
 	}
 
+	scan_trace(lte_m && nb_iot ? "rat:mn " : lte_m ? "rat:m " : "rat:n ", 0);
 	fake_flow_scan_rat_lte_m = lte_m;
 	fake_flow_scan_rat_nb_iot = nb_iot;
 	fake_flow_scan_rat_ms = k_uptime_get();
@@ -216,6 +239,7 @@ int hio_lte_flow_scan_rat(bool lte_m, bool nb_iot)
 
 int hio_lte_flow_scan_cells_start(uint8_t act)
 {
+	scan_trace("cells:%u ", act);
 	fake_flow_scan_cells_act = act;
 	fake_flow_scan_cells_ms = k_uptime_get();
 	atomic_inc(&fake_flow_scan_cells_count);
@@ -224,14 +248,19 @@ int hio_lte_flow_scan_cells_start(uint8_t act)
 
 int hio_lte_flow_scan_cells_wait(k_timeout_t timeout)
 {
-	ARG_UNUSED(timeout);
-	return 0;
+	if (fake_flow_scan_wait_ret) {
+		k_sleep(timeout);
+	}
+	return fake_flow_scan_wait_ret;
 }
 
 int64_t fake_flow_scan_plmn_ms;
+uint8_t fake_flow_scan_plmn_act;
 
-int hio_lte_flow_scan_plmn_start(void)
+int hio_lte_flow_scan_plmn_start(uint8_t act)
 {
+	scan_trace("plmn:%u ", act);
+	fake_flow_scan_plmn_act = act;
 	fake_flow_scan_plmn_ms = k_uptime_get();
 	atomic_inc(&fake_flow_scan_plmn_count);
 	return 0;
@@ -239,8 +268,10 @@ int hio_lte_flow_scan_plmn_start(void)
 
 int hio_lte_flow_scan_plmn_wait(k_timeout_t timeout)
 {
-	ARG_UNUSED(timeout);
-	return 0;
+	if (fake_flow_scan_wait_ret) {
+		k_sleep(timeout);
+	}
+	return fake_flow_scan_wait_ret;
 }
 
 atomic_t fake_flow_scan_abort_count = ATOMIC_INIT(0);
@@ -274,6 +305,40 @@ void fake_flow_ncellmeas_resp(const char *resp)
 	if (m_ncellmeas_resp_cb) {
 		m_ncellmeas_resp_cb(resp);
 	}
+}
+
+/* The measurement of test mode, without the FSM. */
+atomic_t fake_flow_ncellmeas_test_count = ATOMIC_INIT(0);
+int fake_flow_ncellmeas_start_ret;
+static K_SEM_DEFINE(m_ncellmeas_test_sem, 0, 1);
+static const char *m_ncellmeas_test_error;
+
+int hio_lte_flow_ncellmeas_start(void)
+{
+	k_sem_reset(&m_ncellmeas_test_sem);
+	atomic_inc(&fake_flow_ncellmeas_test_count);
+	return fake_flow_ncellmeas_start_ret;
+}
+
+int hio_lte_flow_ncellmeas_wait(k_timeout_t timeout, char *error, size_t size)
+{
+	if (k_sem_take(&m_ncellmeas_test_sem, timeout)) {
+		return -EAGAIN;
+	}
+
+	if (m_ncellmeas_test_error) {
+		snprintf(error, size, "%s", m_ncellmeas_test_error);
+		return -EIO;
+	}
+
+	return 0;
+}
+
+/* The URC (stored by the test before) or the refusal of the modem. */
+void fake_flow_ncellmeas_done(const char *error)
+{
+	m_ncellmeas_test_error = error;
+	k_sem_give(&m_ncellmeas_test_sem);
 }
 
 /* Used by the 'lte' shell commands only. */

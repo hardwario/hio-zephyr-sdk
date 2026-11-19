@@ -24,6 +24,9 @@ static struct hio_lte_cereg_param m_cereg_param = {0};
 static struct hio_lte_rai_param m_rai_param = {0};
 static struct hio_lte_ncellmeas_param m_ncellmeas_param = {0};
 static struct hio_lte_scan_result m_scan_result = {0};
+static int64_t m_scan_running_ms;
+static int64_t m_scan_last_ms;
+static uint32_t m_ncellmeas_count;
 
 /* Ring of CEREG changes; m_cereg_head is the next slot to write. */
 static struct hio_lte_cereg_event m_cereg_history[CONFIG_HIO_LTE_CEREG_HISTORY];
@@ -238,6 +241,13 @@ void hio_lte_state_set_radio_off(bool off)
 	k_mutex_unlock(&m_lock);
 }
 
+void hio_lte_state_forget_registration(void)
+{
+	k_mutex_lock(&m_lock, K_FOREVER);
+	m_cereg_param.stat = HIO_LTE_CEREG_PARAM_STAT_NOT_REGISTERED;
+	k_mutex_unlock(&m_lock);
+}
+
 int hio_lte_state_get_rai_param(struct hio_lte_rai_param *param)
 {
 	if (!param) {
@@ -385,6 +395,39 @@ void hio_lte_state_set_scan_result(const struct hio_lte_scan_result *result)
 	k_mutex_unlock(&m_lock);
 }
 
+void hio_lte_state_scan_start(void)
+{
+	k_mutex_lock(&m_lock, K_FOREVER);
+	/* Not 0, that is none. */
+	m_scan_running_ms = MAX(k_uptime_get(), 1);
+	k_mutex_unlock(&m_lock);
+}
+
+void hio_lte_state_scan_end(void)
+{
+	k_mutex_lock(&m_lock, K_FOREVER);
+	m_scan_last_ms = m_scan_running_ms;
+	m_scan_running_ms = 0;
+	k_mutex_unlock(&m_lock);
+}
+
+void hio_lte_state_get_scan_starts(int64_t *running, int64_t *last)
+{
+	k_mutex_lock(&m_lock, K_FOREVER);
+	*running = m_scan_running_ms;
+	*last = m_scan_last_ms;
+	k_mutex_unlock(&m_lock);
+}
+
+uint32_t hio_lte_state_get_ncellmeas_count(void)
+{
+	k_mutex_lock(&m_lock, K_FOREVER);
+	uint32_t count = m_ncellmeas_count;
+	k_mutex_unlock(&m_lock);
+
+	return count;
+}
+
 void hio_lte_state_set_ncellmeas_param(const struct hio_lte_ncellmeas_param *param)
 {
 	if (!param) {
@@ -397,6 +440,7 @@ void hio_lte_state_set_ncellmeas_param(const struct hio_lte_ncellmeas_param *par
 
 	m_ncellmeas_param.act = m_cereg_param.act;
 	m_ncellmeas_param.uptime_s = k_uptime_seconds();
+	m_ncellmeas_count++;
 
 	k_mutex_unlock(&m_lock);
 }

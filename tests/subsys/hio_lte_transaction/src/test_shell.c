@@ -27,6 +27,15 @@ extern int64_t fake_flow_scan_cells_ms;
 extern int64_t fake_flow_scan_plmn_ms;
 extern atomic_t fake_flow_ncellmeas_count;
 extern void fake_flow_ncellmeas_resp(const char *resp);
+extern char fake_flow_scan_trace[];
+extern int fake_flow_scan_wait_ret;
+extern atomic_t fake_flow_scan_abort_count;
+extern void (*fake_flow_scan_rat_hook)(void);
+extern atomic_t fake_flow_ncellmeas_test_count;
+extern void fake_flow_ncellmeas_done(const char *error);
+extern uint32_t fake_flow_stop_ms;
+
+static const struct hio_lte_socket_config m_cfg = {.port = 5002, .addr = "192.0.2.1"};
 
 /* The fixed wait of test mode before a search. */
 #define TEST_MODE_ATTACH_MS 20000
@@ -97,7 +106,7 @@ static void cmd_start(const char *cmd)
 
 static int cmd_join(void)
 {
-	zassert_ok(k_thread_join(&m_cmd_thread, K_MINUTES(20)), "%s did not return", m_cmd);
+	zassert_ok(k_thread_join(&m_cmd_thread, K_MINUTES(40)), "%s did not return", m_cmd);
 	take_output();
 
 	return m_cmd_ret;
@@ -131,12 +140,22 @@ static void shell_before(void *fixture)
 	atomic_clear(&fake_flow_scan_plmn_count);
 	atomic_clear(&fake_flow_scan_cells_count);
 	atomic_clear(&fake_flow_ncellmeas_count);
+	atomic_clear(&fake_flow_ncellmeas_test_count);
+	atomic_clear(&fake_flow_scan_abort_count);
+	fake_flow_scan_trace[0] = '\0';
+	fake_flow_scan_wait_ret = 0;
+	fake_flow_scan_rat_hook = NULL;
+	fake_flow_stop_ms = 0;
 }
+
+static struct hio_lte_cb m_slow_scan_done_cb;
 
 static void shell_after(void *fixture)
 {
 	ARG_UNUSED(fixture);
 
+	(void)hio_lte_remove_callback(&m_slow_scan_done_cb);
+	fake_flow_stop_ms = 0;
 	fsm_end_ncellmeas();
 	fsm_down();
 }
@@ -158,18 +177,39 @@ static void set_scan_result(void)
 	hio_lte_state_set_scan_result(&result);
 }
 
-/* The modem registers and ends the PLMN step of a requested scan. */
+/* The modem registers and ends the network search of each RAT of a requested
+ * PLMN scan. */
 static void finish_plmn_scan(void)
 {
-	zassert_true(fsm_in("scan"));
-	fsm_scan_registers();
-	for (int i = 0; i < 100 && atomic_get(&fake_flow_scan_plmn_count) == 0; i++) {
+	for (int rat = 1; rat <= 2; rat++) {
+		zassert_true(fsm_in("scan"));
+		fsm_scan_registers();
+		for (int i = 0; i < 100 && atomic_get(&fake_flow_scan_plmn_count) < rat; i++) {
+			k_sleep(K_MSEC(50));
+		}
+		zassert_equal(atomic_get(&fake_flow_scan_plmn_count), rat, "no PLMN search");
+
+		set_scan_result();
+		fake_flow_event_cb(HIO_LTE_FSM_EVENT_COPS_DONE);
 		k_sleep(K_MSEC(50));
 	}
-	zassert_equal(atomic_get(&fake_flow_scan_plmn_count), 1, "no PLMN search");
+}
 
-	set_scan_result();
-	fake_flow_event_cb(HIO_LTE_FSM_EVENT_COPS_DONE);
+/* With the flow check passing, ERROR resumes in 5 s. */
+static void fsm_to_error(void)
+{
+	fsm_bring_up();
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_ERROR);
+	k_sleep(K_MSEC(50));
+	zassert_true(fsm_in("error"));
+}
+
+/* PREPARE ignores a request, ATTACH takes it. */
+static void fsm_to_prepare(void)
+{
+	zassert_ok(hio_lte_enable(&m_cfg));
+	k_sleep(K_MSEC(50));
+	zassert_true(fsm_in("prepare"));
 }
 
 ZTEST(hio_lte_shell, test_scan_alone_prints_help)
@@ -231,14 +271,34 @@ ZTEST(hio_lte_shell, test_scan_now_already_in_progress)
 	assert_out("command succeeded");
 }
 
+/* Test mode: no FSM, the steps run directly, per RAT: the switch, the fixed
+ * wait for the attach, the cell search, the network search. */
 ZTEST(hio_lte_shell, test_scan_now_in_test_mode)
+{
+	g_hio_lte_config.test = true;
+	set_scan_result();
+
+	zassert_ok(run("lte scan now"));
+	/* Back in both configured RATs at the end. */
+	zassert_str_equal(fake_flow_scan_trace,
+			  "rat:m cells:7 plmn:7 rat:n cells:9 plmn:9 rat:mn ");
+	assert_out("scanning, this takes minutes...\nstill scanning (30s)\n");
+	assert_out("plmn: 23003, act: lte-m, stat: current");
+	assert_out("cells: 0\ncommand succeeded\n");
+	assert_not_out("still scanning (1m");
+	assert_not_out("not possible");
+}
+
+ZTEST(hio_lte_shell, test_scan_now_in_test_mode_modes)
 {
 	g_hio_lte_config.test = true;
 
 	zassert_ok(run("lte scan now plmn"));
-	assert_out("scanning (can take minutes)...");
-	assert_out("command succeeded");
-	zassert_equal(atomic_get(&fake_flow_scan_plmn_count), 1);
+	zassert_str_equal(fake_flow_scan_trace, "rat:m plmn:7 rat:n plmn:9 rat:mn ");
+
+	fake_flow_scan_trace[0] = '\0';
+	zassert_ok(run("lte scan now cells"));
+	zassert_str_equal(fake_flow_scan_trace, "rat:m cells:7 rat:n cells:9 rat:mn ");
 }
 
 /* No CSCON or CEREG events in test mode: a fixed wait after the switch to
@@ -248,19 +308,212 @@ ZTEST(hio_lte_shell, test_scan_now_in_test_mode_waits_for_attach)
 	g_hio_lte_config.test = true;
 	strcpy(g_hio_lte_config.mode, "nb-iot");
 
-	zassert_ok(run("lte scan now cells"));
+	zassert_ok(run("lte scan now"));
 	assert_out("command succeeded");
-	zassert_equal(atomic_get(&fake_flow_scan_cells_count), 1);
+	zassert_str_equal(fake_flow_scan_trace, "rat:n cells:9 plmn:9 ");
 	zassert_true(fake_flow_scan_cells_ms - fake_flow_scan_rat_ms >= TEST_MODE_ATTACH_MS,
 		     "cells searched %lld ms after the switch",
 		     fake_flow_scan_cells_ms - fake_flow_scan_rat_ms);
+	zassert_true(fake_flow_scan_plmn_ms - fake_flow_scan_cells_ms < 100,
+		     "networks not searched after the cells");
 
 	zassert_ok(run("lte scan now plmn"));
 	assert_out("command succeeded");
-	zassert_equal(atomic_get(&fake_flow_scan_plmn_count), 1);
 	zassert_true(fake_flow_scan_plmn_ms - fake_flow_scan_rat_ms >= TEST_MODE_ATTACH_MS,
 		     "networks searched %lld ms after the switch",
 		     fake_flow_scan_plmn_ms - fake_flow_scan_rat_ms);
+}
+
+/* A search that does not end: the scan gives up 35 min after its start. */
+ZTEST(hio_lte_shell, test_scan_now_in_test_mode_gives_up)
+{
+	g_hio_lte_config.test = true;
+	fake_flow_scan_wait_ret = -EAGAIN;
+
+	zassert_equal(run("lte scan now cells"), -ETIMEDOUT);
+	assert_out("still scanning (35m 00s)\nscan did not finish\n");
+	assert_not_out("35m 30s");
+	assert_not_out("command succeeded");
+	zassert_str_equal(fake_flow_scan_trace, "rat:m cells:7 ");
+	zassert_equal(atomic_get(&fake_flow_scan_abort_count), 1, "search not stopped");
+}
+
+ZTEST(hio_lte_shell, test_scan_now_refused_when_disabled)
+{
+	zassert_equal(run("lte scan now"), -EBUSY);
+	zassert_str_equal(m_out, "scan not possible: LTE is disabled (fsm-state: disabled)\n");
+}
+
+ZTEST(hio_lte_shell, test_scan_now_refused_in_error)
+{
+	fsm_to_error();
+
+	zassert_equal(run("lte scan now"), -EBUSY);
+	zassert_str_equal(m_out, "scan not possible: LTE error, retrying (fsm-state: error)\n");
+	k_sleep(K_SECONDS(6));
+	zassert_true(fsm_in("ready"), "a scan was requested");
+}
+
+ZTEST(hio_lte_shell, test_scan_now_refused_in_reset_loop)
+{
+	fsm_to_prepare();
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_RESET_LOOP);
+	k_sleep(K_MSEC(50));
+	zassert_true(fsm_in("reset_loop"));
+
+	zassert_equal(run("lte scan now"), -EBUSY);
+	zassert_str_equal(m_out, "scan not possible: modem reset loop, attach blocked "
+				 "(fsm-state: reset_loop)\n");
+}
+
+/* An error before the scan starts ends the wait; the request stays. */
+ZTEST(hio_lte_shell, test_scan_now_blocked_while_waiting)
+{
+	fsm_to_prepare();
+
+	cmd_start("lte scan now");
+	k_sleep(K_SECONDS(2));
+	zassert_true(fsm_in("prepare"));
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_ERROR);
+
+	zassert_equal(cmd_join(), -EBUSY);
+	zassert_str_equal(m_out, "scanning, this takes minutes...\n"
+				 "scan not possible: LTE error, retrying (fsm-state: error)\n");
+	k_sleep(K_SECONDS(6));
+	zassert_true(fsm_in("scan"), "the request did not stay");
+}
+
+/* Dropped before it started: no result of its own. The modem takes its
+ * time to stop, the state reads disabled before the request is dropped. */
+ZTEST(hio_lte_shell, test_scan_now_dropped)
+{
+	set_scan_result();
+	fsm_to_prepare();
+
+	cmd_start("lte scan now");
+	k_sleep(K_SECONDS(2));
+	fake_flow_stop_ms = 1500;
+	zassert_ok(hio_lte_disable());
+
+	zassert_equal(cmd_join(), -ECANCELED);
+	zassert_str_equal(m_out, "scanning, this takes minutes...\nscan dropped\n");
+}
+
+/* A reconnect drops it the same way, LTE comes back at once. */
+ZTEST(hio_lte_shell, test_scan_now_dropped_by_reconnect)
+{
+	set_scan_result();
+	fsm_to_prepare();
+
+	cmd_start("lte scan now");
+	k_sleep(K_SECONDS(2));
+	fake_flow_stop_ms = 1500;
+	zassert_ok(hio_lte_reconnect());
+
+	zassert_equal(cmd_join(), -ECANCELED);
+	zassert_str_equal(m_out, "scanning, this takes minutes...\nscan dropped\n");
+	k_sleep(K_MSEC(50));
+	zassert_true(fsm_in("prepare"), "LTE not back");
+}
+
+/* Ended while running: what it has is its result. */
+ZTEST(hio_lte_shell, test_scan_now_cut_short)
+{
+	set_scan_result();
+	fsm_bring_up();
+
+	cmd_start("lte scan now plmn");
+	k_sleep(K_SECONDS(2));
+	zassert_true(fsm_in("scan"));
+	zassert_ok(hio_lte_disable());
+
+	zassert_ok(cmd_join());
+	assert_out("plmn: 23003, act: lte-m, stat: current");
+	assert_out("command succeeded");
+	assert_not_out("dropped");
+}
+
+/* The lines count from the start of the scan, not from the command. */
+ZTEST(hio_lte_shell, test_scan_now_counts_from_scan_start)
+{
+	fsm_bring_up();
+	zassert_ok(hio_lte_scan(HIO_LTE_SCAN_PLMN));
+	k_sleep(K_SECONDS(20));
+
+	cmd_start("lte scan now");
+	k_sleep(K_SECONDS(15));
+	finish_plmn_scan();
+
+	zassert_ok(cmd_join());
+	assert_out("scan already in progress, waiting for it\n"
+		   "scanning, this takes minutes...\n"
+		   "still scanning (30s)\n");
+	assert_out("command succeeded");
+}
+
+static void slow_scan_done(struct hio_lte_cb *cb, enum hio_lte_event event)
+{
+	ARG_UNUSED(cb);
+
+	if (event == HIO_LTE_EVENT_SCAN_DONE) {
+		k_sleep(K_MSEC(200));
+	}
+}
+
+/* Requested as a scan ends, before the FSM leaves it: that scan is not this
+ * request's, the next one is. */
+ZTEST(hio_lte_shell, test_scan_now_as_scan_ends)
+{
+	fsm_bring_up();
+	m_slow_scan_done_cb.handler = slow_scan_done;
+	zassert_ok(hio_lte_add_callback(&m_slow_scan_done_cb));
+	zassert_ok(hio_lte_scan(HIO_LTE_SCAN_PLMN));
+	k_sleep(K_MSEC(50));
+	finish_plmn_scan();
+	zassert_true(fsm_in("scan"), "the callback does not hold the FSM");
+
+	cmd_start("lte scan now plmn");
+	k_sleep(K_MSEC(300));
+	zassert_true(fsm_in("prepare"));
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_SIMDETECTED);
+	k_sleep(K_MSEC(50));
+	atomic_clear(&fake_flow_scan_plmn_count);
+	finish_plmn_scan();
+
+	zassert_ok(cmd_join());
+	assert_not_out("already");
+	assert_not_out("dropped");
+	assert_out("plmn: 23003, act: lte-m, stat: current");
+	assert_out("command succeeded");
+}
+
+static bool m_blocked;
+
+/* The first RAT switch holds the FSM for 36 min. */
+static void block_scan(void)
+{
+	if (!m_blocked) {
+		m_blocked = true;
+		k_sleep(K_MINUTES(36));
+	}
+}
+
+/* Bounded 35 min from the start of the scan. */
+ZTEST(hio_lte_shell, test_scan_now_gives_up)
+{
+	fsm_bring_up();
+	m_blocked = false;
+	fake_flow_scan_rat_hook = block_scan;
+	zassert_ok(hio_lte_scan(HIO_LTE_SCAN_PLMN));
+	k_sleep(K_SECONDS(20));
+
+	cmd_start("lte scan now");
+
+	zassert_equal(cmd_join(), -ETIMEDOUT);
+	assert_out("still scanning (35m 00s)\nscan did not finish\n");
+	assert_not_out("35m 30s");
+	assert_not_out("command succeeded");
+	k_sleep(K_MINUTES(1));
 }
 
 ZTEST(hio_lte_shell, test_scan_schedule)
@@ -319,6 +572,15 @@ ZTEST(hio_lte_shell, test_scan_show_three_digit_mnc)
 
 	zassert_ok(run("lte scan show"));
 	assert_out("plmn: 310004, act: lte-m, stat: not in network list\n  cell: 00011B07");
+	assert_out("networks: 0 (0 with act), cells: 1\ncommand succeeded\n");
+}
+
+ZTEST(hio_lte_shell, test_scan_show_none)
+{
+	hio_lte_state_set_scan_result(&(struct hio_lte_scan_result){0});
+
+	zassert_ok(run("lte scan show"));
+	zassert_str_equal(m_out, "no scan yet\ncommand succeeded\n");
 }
 
 ZTEST(hio_lte_shell, test_scan_schedule_fails_when_disabled)
@@ -512,12 +774,76 @@ ZTEST(hio_lte_shell, test_ncellmeas_now_gives_up)
 	assert_not_out("command succeeded");
 }
 
-ZTEST(hio_lte_shell, test_ncellmeas_now_fails_when_disabled)
+ZTEST(hio_lte_shell, test_ncellmeas_now_refused_when_disabled)
 {
-	zassert_equal(run("lte ncellmeas now"), -ENODEV);
-	assert_out("command failed: -19");
-	assert_not_out("measuring");
+	zassert_equal(run("lte ncellmeas now"), -EBUSY);
+	zassert_str_equal(m_out,
+			  "measurement not possible: LTE is disabled (fsm-state: disabled)\n");
 	zassert_ok(hio_lte_wait_for_ncellmeas(K_NO_WAIT), "requested");
+}
+
+ZTEST(hio_lte_shell, test_ncellmeas_now_refused_in_error)
+{
+	fsm_to_error();
+
+	zassert_equal(run("lte ncellmeas now"), -EBUSY);
+	zassert_str_equal(m_out,
+			  "measurement not possible: LTE error, retrying (fsm-state: error)\n");
+	if (!IS_ENABLED(CONFIG_HIO_LTE_NCELLMEAS)) {
+		zassert_ok(hio_lte_wait_for_ncellmeas(K_NO_WAIT), "requested");
+	}
+}
+
+ZTEST(hio_lte_shell, test_ncellmeas_now_refused_while_scanning)
+{
+	fsm_bring_up();
+	zassert_ok(hio_lte_scan(HIO_LTE_SCAN_PLMN));
+	k_sleep(K_MSEC(50));
+	zassert_true(fsm_in("scan"));
+
+	zassert_equal(run("lte ncellmeas now"), -EBUSY);
+	zassert_str_equal(m_out, "measurement not possible: scan in progress (fsm-state: scan)\n");
+	if (!IS_ENABLED(CONFIG_HIO_LTE_NCELLMEAS)) {
+		zassert_ok(hio_lte_wait_for_ncellmeas(K_NO_WAIT), "requested");
+	}
+}
+
+/* A requested scan, not started yet, counts as well. */
+ZTEST(hio_lte_shell, test_ncellmeas_now_refused_while_scan_requested)
+{
+	fsm_to_prepare();
+	zassert_ok(hio_lte_scan(HIO_LTE_SCAN_PLMN));
+
+	zassert_equal(run("lte ncellmeas now"), -EBUSY);
+	zassert_str_equal(m_out,
+			  "measurement not possible: scan in progress (fsm-state: prepare)\n");
+}
+
+ZTEST(hio_lte_shell, test_ncellmeas_schedule_refused_while_scanning)
+{
+	fsm_bring_up();
+	zassert_ok(hio_lte_scan(HIO_LTE_SCAN_PLMN));
+	k_sleep(K_MSEC(50));
+
+	zassert_equal(run("lte ncellmeas schedule"), -EBUSY);
+	zassert_str_equal(m_out, "scan in progress\n");
+}
+
+/* A disable drops the request. */
+ZTEST(hio_lte_shell, test_ncellmeas_now_dropped)
+{
+	fsm_bring_up();
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_CSCON_1);
+	k_sleep(K_MSEC(50));
+
+	cmd_start("lte ncellmeas now");
+	k_sleep(K_SECONDS(1));
+	zassert_true(fsm_in("ready"));
+	zassert_ok(hio_lte_disable());
+
+	zassert_equal(cmd_join(), -ECANCELED);
+	assert_out("measuring, this takes minutes...\nmeasurement dropped\n");
+	assert_not_out("command succeeded");
 }
 
 /* The modem refuses the command: "failed" at once. */
@@ -549,13 +875,68 @@ ZTEST(hio_lte_shell, test_ncellmeas_show_three_digit_mnc)
 	assert_out("cell: 00011B07, plmn: 310004, tac: 00B7");
 }
 
+/* Test mode: no FSM, the measurement runs directly and is stored as the
+ * FSM's. */
 ZTEST(hio_lte_shell, test_ncellmeas_now_in_test_mode)
 {
 	g_hio_lte_config.test = true;
+	hio_lte_state_set_ncellmeas_param(&(struct hio_lte_ncellmeas_param){0});
 
-	zassert_equal(run("lte ncellmeas now"), -ENOEXEC);
-	assert_out("not supported in test mode");
-	assert_not_out("measuring");
+	cmd_start("lte ncellmeas now");
+	k_sleep(K_SECONDS(31));
+	set_ncellmeas();
+	fake_flow_ncellmeas_done(NULL);
+
+	zassert_ok(cmd_join());
+	assert_out("measuring, this takes minutes...\n"
+		   "still measuring (30s)\n"
+		   "ncellmeas: 0s ago, ok\n");
+	assert_ncellmeas_cells();
+	zassert_equal(atomic_get(&fake_flow_ncellmeas_test_count), 1);
+	zassert_equal(atomic_get(&fake_flow_ncellmeas_count), 0, "measured by the FSM");
+
+	zassert_ok(run("lte ncellmeas show"));
+	assert_ncellmeas_cells();
+}
+
+ZTEST(hio_lte_shell, test_ncellmeas_now_in_test_mode_refused)
+{
+	g_hio_lte_config.test = true;
+
+	cmd_start("lte ncellmeas now");
+	k_sleep(K_MSEC(50));
+	fake_flow_ncellmeas_done("+CME ERROR: 514");
+
+	zassert_equal(cmd_join(), -EIO);
+	zassert_str_equal(m_out, "measuring, this takes minutes...\n"
+				 "measurement not possible: +CME ERROR: 514\n");
+}
+
+/* A URC that does not parse stores nothing: not the measurement of before. */
+ZTEST(hio_lte_shell, test_ncellmeas_now_in_test_mode_unreadable)
+{
+	g_hio_lte_config.test = true;
+	set_ncellmeas();
+
+	cmd_start("lte ncellmeas now");
+	k_sleep(K_MSEC(50));
+	fake_flow_ncellmeas_done(NULL);
+
+	zassert_equal(cmd_join(), -EBADMSG);
+	zassert_str_equal(m_out, "measuring, this takes minutes...\n"
+				 "measurement not possible: unreadable result\n");
+}
+
+ZTEST(hio_lte_shell, test_ncellmeas_now_in_test_mode_gives_up)
+{
+	g_hio_lte_config.test = true;
+
+	cmd_start("lte ncellmeas now");
+
+	zassert_equal(cmd_join(), -ETIMEDOUT);
+	assert_out("still measuring (9m 30s)\nmeasurement did not finish\n");
+	assert_not_out("10m");
+	assert_not_out("command succeeded");
 }
 
 ZTEST(hio_lte_shell, test_ncellmeas_schedule)
