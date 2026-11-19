@@ -592,7 +592,7 @@ struct hio_lte_scan_result {
 /**
  * @brief Request a network scan.
  *
- * Runs in receive-only mode (CFUN=2) and takes priority over an ongoing
+ * Runs in CFUN=1 (the modem attaches) and takes priority over an ongoing
  * attach; the connection is re-established after it. Covers the access
  * technologies of the LTE mode config, a cell search for each. Completion is signalled
  * by @ref HIO_LTE_EVENT_SCAN_DONE.

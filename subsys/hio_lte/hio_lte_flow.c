@@ -80,6 +80,18 @@ static int *scan_cells_status(void)
 								  : &m_scan.cells_ltem_status;
 }
 static bool m_scan_plmn_pending;
+/* The error line of a refused search, logged by the work handler. */
+static char m_scan_cells_error[32];
+static char m_scan_plmn_error[32];
+
+/* ISR context: no logging there. */
+static void scan_copy_error(char *buf, size_t size, const char *error)
+{
+	size_t len = MIN(strcspn(error, "\r\n"), size - 1);
+
+	memcpy(buf, error, len);
+	buf[len] = '\0';
+}
 
 static void process_urc_ncellmeas(const char *line)
 {
@@ -1241,6 +1253,10 @@ int hio_lte_flow_cmd(const char *s)
 
 static void scan_plmn_work_handler(struct k_work *work)
 {
+	if (m_scan_plmn_error[0]) {
+		LOG_WRN("PLMN scan error: %s", m_scan_plmn_error);
+	}
+
 	LOG_INF("PLMN scan done: %d, networks: %u", m_scan.plmn_status, m_scan.count);
 
 	m_scan_plmn_pending = false;
@@ -1265,10 +1281,14 @@ static void scan_plmn_resp_handler(const char *resp)
 	m_scan.count = MIN(count, UINT8_MAX);
 
 	const char *cme = strstr(resp, "+CME ERROR: ");
+	const char *error = cme ? cme : strstr(resp, "ERROR");
+	if (error) {
+		scan_copy_error(m_scan_plmn_error, sizeof(m_scan_plmn_error), error);
+	}
 	if (cme) {
 		int code = atoi(cme + strlen("+CME ERROR: "));
 		m_scan.plmn_status = code == 521 ? -EINTR : code == 516 ? -EBUSY : -EIO;
-	} else if (strstr(resp, "ERROR")) {
+	} else if (error) {
 		m_scan.plmn_status = -EIO;
 	} else {
 		m_scan.plmn_status = list ? ret : -EBADMSG;
@@ -1279,7 +1299,7 @@ static void scan_plmn_resp_handler(const char *resp)
 
 static void scan_cells_fail_work_handler(struct k_work *work)
 {
-	LOG_ERR("Cell search refused by the modem");
+	LOG_WRN("Cell search refused: %s", m_scan_cells_error);
 
 	m_scan_cells_pending = false;
 	k_sem_give(&m_scan_cells_sem);
@@ -1293,7 +1313,11 @@ static K_WORK_DEFINE(m_scan_cells_fail_work, scan_cells_fail_work_handler);
 /* ISR context. A refused %NCELLMEAS never sends the result URC. */
 static void scan_cells_resp_handler(const char *resp)
 {
-	if (strstr(resp, "ERROR")) {
+	const char *cme = strstr(resp, "+CME ERROR: ");
+	const char *error = cme ? cme : strstr(resp, "ERROR");
+
+	if (error) {
+		scan_copy_error(m_scan_cells_error, sizeof(m_scan_cells_error), error);
 		*scan_cells_status() = -EIO;
 		k_work_submit(&m_scan_cells_fail_work);
 	}
@@ -1326,8 +1350,9 @@ void hio_lte_flow_scan_end(void)
 	}
 }
 
-/* RX only (CFUN=2) with the given access technologies. XSYSTEMMODE needs
- * CFUN=4, and the modem refuses CFUN=2 from CFUN=1. */
+/* CFUN=1 with the given access technologies: in CFUN=2 the modem refuses
+ * %NCELLMEAS (+CME ERROR: 517) and %COPS=? (mfw 2.0.2). The modem attaches.
+ * XSYSTEMMODE needs CFUN=4. */
 int hio_lte_flow_scan_rat(bool lte_m, bool nb_iot)
 {
 	int ret = hio_lte_flow_cfun(4);
@@ -1343,7 +1368,7 @@ int hio_lte_flow_scan_rat(bool lte_m, bool nb_iot)
 		return ret;
 	}
 
-	return hio_lte_flow_cfun(2);
+	return hio_lte_flow_cfun(1);
 }
 
 /* Result arrives as a %NCELLMEAS URC; cells are tagged with act. */
@@ -1380,6 +1405,7 @@ int hio_lte_flow_scan_plmn_start(void)
 	int ret = -ENOTCONN;
 
 	k_sem_reset(&m_scan_plmn_sem);
+	m_scan_plmn_error[0] = '\0';
 
 	if (nrf_modem_is_initialized()) {
 		ret = hio_lte_talk_at_pcops_list_async(scan_plmn_resp_handler);

@@ -194,11 +194,22 @@ uint8_t fake_flow_scan_cells_act;
 atomic_t fake_flow_scan_rat_count = ATOMIC_INIT(0);
 bool fake_flow_scan_rat_lte_m;
 bool fake_flow_scan_rat_nb_iot;
+/* Uptime of the last RAT switch and of the last cell search start. */
+int64_t fake_flow_scan_rat_ms;
+int64_t fake_flow_scan_cells_ms;
+
+/* Runs inside the RAT switch, as the URCs the modem sends meanwhile. */
+void (*fake_flow_scan_rat_hook)(void);
 
 int hio_lte_flow_scan_rat(bool lte_m, bool nb_iot)
 {
+	if (fake_flow_scan_rat_hook) {
+		fake_flow_scan_rat_hook();
+	}
+
 	fake_flow_scan_rat_lte_m = lte_m;
 	fake_flow_scan_rat_nb_iot = nb_iot;
+	fake_flow_scan_rat_ms = k_uptime_get();
 	atomic_inc(&fake_flow_scan_rat_count);
 	return 0;
 }
@@ -206,6 +217,7 @@ int hio_lte_flow_scan_rat(bool lte_m, bool nb_iot)
 int hio_lte_flow_scan_cells_start(uint8_t act)
 {
 	fake_flow_scan_cells_act = act;
+	fake_flow_scan_cells_ms = k_uptime_get();
 	atomic_inc(&fake_flow_scan_cells_count);
 	return 0;
 }
@@ -216,8 +228,11 @@ int hio_lte_flow_scan_cells_wait(k_timeout_t timeout)
 	return 0;
 }
 
+int64_t fake_flow_scan_plmn_ms;
+
 int hio_lte_flow_scan_plmn_start(void)
 {
+	fake_flow_scan_plmn_ms = k_uptime_get();
 	atomic_inc(&fake_flow_scan_plmn_count);
 	return 0;
 }

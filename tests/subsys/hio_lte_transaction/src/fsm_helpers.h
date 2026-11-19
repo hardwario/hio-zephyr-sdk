@@ -55,6 +55,14 @@ static inline void fsm_set_psm(int active_time)
 	hio_lte_state_set_cereg_param(&param);
 }
 
+/* The modem registers during a scan (+CEREG: 1): the state before the event,
+ * as in the flow. */
+static inline void fsm_scan_registers(void)
+{
+	fsm_set_psm(0);
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_REGISTERED);
+}
+
 /* hio_lte_schedule_ncellmeas() first after an enable: with
  * CONFIG_HIO_LTE_NCELLMEAS the enable has requested one. */
 #define FIRST_NCELLMEAS_RET (IS_ENABLED(CONFIG_HIO_LTE_NCELLMEAS) ? -EALREADY : 0)

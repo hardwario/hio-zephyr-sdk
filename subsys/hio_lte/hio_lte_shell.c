@@ -662,9 +662,12 @@ static int print_scan_result(const struct shell *shell)
 	return 0;
 }
 
-/* Test mode: no FSM, run the same steps directly. */
+/* Test mode: no FSM, run the same steps directly. Without its CSCON and
+ * CEREG events, a fixed wait after the switch to CFUN=1 lets the attach
+ * register and release its RRC connection (~8 s on the bench). */
 static void scan_test_mode(enum hio_lte_scan_mode mode)
 {
+	const k_timeout_t attach_wait = K_SECONDS(20);
 	const k_timeout_t step_timeout = K_MINUTES(15);
 	bool lte_m = strstr(g_hio_lte_config.mode, "lte-m");
 	bool nb_iot = strstr(g_hio_lte_config.mode, "nb-iot");
@@ -679,7 +682,7 @@ static void scan_test_mode(enum hio_lte_scan_mode mode)
 		}
 
 		hio_lte_flow_scan_rat(!nbiot_step, nbiot_step);
-		k_sleep(K_SECONDS(2));
+		k_sleep(attach_wait);
 
 		uint8_t act = nbiot_step ? HIO_LTE_CEREG_PARAM_ACT_NBIOT : HIO_LTE_CEREG_PARAM_ACT_LTE;
 		if (!hio_lte_flow_scan_cells_start(act) &&
@@ -691,7 +694,7 @@ static void scan_test_mode(enum hio_lte_scan_mode mode)
 
 	if (mode != HIO_LTE_SCAN_CELLS) {
 		hio_lte_flow_scan_rat(lte_m, nb_iot);
-		k_sleep(K_SECONDS(2));
+		k_sleep(attach_wait);
 
 		if (!hio_lte_flow_scan_plmn_start() && hio_lte_flow_scan_plmn_wait(step_timeout)) {
 			hio_lte_flow_scan_abort();
@@ -1220,7 +1223,7 @@ SHELL_STATIC_SUBCMD_SET_CREATE(
 
 	SHELL_CMD_ARG(scan, &sub_lte_scan,
 	              "Scan cells and networks of the configured RATs; interrupts "
-	              "attach and reconnects. Leaves the modem in CFUN=2 in test mode.",
+	              "attach and reconnects. Leaves the modem in CFUN=1 in test mode.",
 	              print_help, 1, 1),
 
 	SHELL_CMD_ARG(ncellmeas, &sub_lte_ncellmeas,

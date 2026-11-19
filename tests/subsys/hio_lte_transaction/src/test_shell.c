@@ -21,11 +21,15 @@
 #include <string.h>
 
 extern atomic_t fake_flow_scan_plmn_count;
+extern atomic_t fake_flow_scan_cells_count;
+extern int64_t fake_flow_scan_rat_ms;
+extern int64_t fake_flow_scan_cells_ms;
+extern int64_t fake_flow_scan_plmn_ms;
 extern atomic_t fake_flow_ncellmeas_count;
 extern void fake_flow_ncellmeas_resp(const char *resp);
 
-/* Past SCAN_SETTLE_DELAY. */
-#define SETTLE_MS 2200
+/* The fixed wait of test mode before a search. */
+#define TEST_MODE_ATTACH_MS 20000
 
 static const struct shell *m_sh;
 static char m_buf[CONFIG_SHELL_BACKEND_DUMMY_BUF_SIZE + 1];
@@ -125,6 +129,7 @@ static void shell_before(void *fixture)
 	fsm_set_psm(0);
 	strcpy(g_hio_lte_config.mode, "lte-m,nb-iot");
 	atomic_clear(&fake_flow_scan_plmn_count);
+	atomic_clear(&fake_flow_scan_cells_count);
 	atomic_clear(&fake_flow_ncellmeas_count);
 }
 
@@ -153,9 +158,11 @@ static void set_scan_result(void)
 	hio_lte_state_set_scan_result(&result);
 }
 
-/* The modem ends the PLMN step of a requested scan. */
+/* The modem registers and ends the PLMN step of a requested scan. */
 static void finish_plmn_scan(void)
 {
+	zassert_true(fsm_in("scan"));
+	fsm_scan_registers();
 	for (int i = 0; i < 100 && atomic_get(&fake_flow_scan_plmn_count) == 0; i++) {
 		k_sleep(K_MSEC(50));
 	}
@@ -234,6 +241,28 @@ ZTEST(hio_lte_shell, test_scan_now_in_test_mode)
 	zassert_equal(atomic_get(&fake_flow_scan_plmn_count), 1);
 }
 
+/* No CSCON or CEREG events in test mode: a fixed wait after the switch to
+ * CFUN=1 lets the attach register and release its RRC connection. */
+ZTEST(hio_lte_shell, test_scan_now_in_test_mode_waits_for_attach)
+{
+	g_hio_lte_config.test = true;
+	strcpy(g_hio_lte_config.mode, "nb-iot");
+
+	zassert_ok(run("lte scan now cells"));
+	assert_out("command succeeded");
+	zassert_equal(atomic_get(&fake_flow_scan_cells_count), 1);
+	zassert_true(fake_flow_scan_cells_ms - fake_flow_scan_rat_ms >= TEST_MODE_ATTACH_MS,
+		     "cells searched %lld ms after the switch",
+		     fake_flow_scan_cells_ms - fake_flow_scan_rat_ms);
+
+	zassert_ok(run("lte scan now plmn"));
+	assert_out("command succeeded");
+	zassert_equal(atomic_get(&fake_flow_scan_plmn_count), 1);
+	zassert_true(fake_flow_scan_plmn_ms - fake_flow_scan_rat_ms >= TEST_MODE_ATTACH_MS,
+		     "networks searched %lld ms after the switch",
+		     fake_flow_scan_plmn_ms - fake_flow_scan_rat_ms);
+}
+
 ZTEST(hio_lte_shell, test_scan_schedule)
 {
 	fsm_bring_up();
@@ -245,7 +274,8 @@ ZTEST(hio_lte_shell, test_scan_schedule)
 	zassert_true(fsm_in("scan"));
 	zassert_equal(hio_lte_wait_for_scan(K_NO_WAIT), -ETIMEDOUT);
 
-	k_sleep(K_MSEC(SETTLE_MS));
+	fsm_scan_registers();
+	k_sleep(K_MSEC(50));
 	zassert_equal(atomic_get(&fake_flow_scan_plmn_count), 1, "not the PLMN mode");
 	zassert_ok(run("lte scan schedule"), "already scanning is not an error");
 	assert_out("command succeeded");

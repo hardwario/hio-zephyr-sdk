@@ -102,12 +102,18 @@ atomic_t m_flag = ATOMIC_INIT(0);
 
 /* Safety net if a scan step never completes; the scan itself has no timeout. */
 #define SCAN_WATCHDOG_TIMEOUT K_MINUTES(15)
-/* Let the modem settle in CFUN=2 before the first scan step. */
-#define SCAN_SETTLE_DELAY K_SECONDS(2)
+/* Each step switches the RAT in CFUN=1, so the modem attaches. With the RRC
+ * connection of the attach open the cell search finds only the serving cell:
+ * the window for the connection to open, and the bound of the wait for its
+ * release. */
+#define SCAN_ATTACH_WINDOW    K_SECONDS(10)
+#define SCAN_RELEASE_TIMEOUT  K_SECONDS(60)
+/* %COPS=? marks the network of the registration as current. */
+#define SCAN_REGISTER_WINDOW  K_SECONDS(60)
 /* A full scan takes minutes; shorter retry delays would be extended by it. */
 #define SCAN_AUTO_MIN_DELAY K_MINUTES(10)
 
-/* In this order; each step first switches the RAT and settles. */
+/* In this order; each step first switches the RAT. */
 enum scan_step {
 	SCAN_STEP_NONE,
 	SCAN_STEP_LTEM_CELLS,
@@ -116,9 +122,17 @@ enum scan_step {
 	SCAN_STEP_DONE,
 };
 
+/* Of a step, each with the timer armed. */
+enum scan_phase {
+	SCAN_PHASE_ATTACH,   /* cells: does the attach open an RRC connection? */
+	SCAN_PHASE_RELEASE,  /* cells: waiting for the release of the connection */
+	SCAN_PHASE_REGISTER, /* networks: waiting for the registration */
+	SCAN_PHASE_SEARCH,   /* the search runs, the timer is its watchdog */
+};
+
 static enum hio_lte_scan_mode m_scan_mode;
 static enum scan_step m_scan_step;
-static bool m_scan_settling;
+static enum scan_phase m_scan_phase;
 static bool m_scan_to_retry_delay;
 static bool m_scan_finished;
 static k_timepoint_t m_scan_timer_end;
@@ -936,8 +950,8 @@ static void ncellmeas_done(void)
 	hio_lte_notify(HIO_LTE_EVENT_NCELLMEAS_DONE);
 }
 
-/* The scan drops registration (CFUN=2), so it ends with a reattach unless it
- * runs within the attach retry delay. */
+/* The scan switches the RATs, so it ends with a reattach unless it runs within
+ * the attach retry delay. */
 static int begin_scan(bool to_retry_delay)
 {
 	m_scan_to_retry_delay = to_retry_delay;
@@ -2064,13 +2078,24 @@ static void scan_next(void)
 		LOG_ERR("Call `hio_lte_flow_scan_rat` failed: %d", ret);
 	}
 
-	m_scan_settling = true;
-	scan_arm(SCAN_SETTLE_DELAY);
+	if (m_scan_step == SCAN_STEP_PLMN) {
+		m_scan_phase = SCAN_PHASE_REGISTER;
+		scan_arm(SCAN_REGISTER_WINDOW);
+	} else {
+		m_scan_phase = SCAN_PHASE_ATTACH;
+		scan_arm(SCAN_ATTACH_WINDOW);
+	}
+}
+
+static void scan_wait_release(void)
+{
+	m_scan_phase = SCAN_PHASE_RELEASE;
+	scan_arm(SCAN_RELEASE_TIMEOUT);
 }
 
 static void scan_step_start(void)
 {
-	m_scan_settling = false;
+	m_scan_phase = SCAN_PHASE_SEARCH;
 	scan_arm(SCAN_WATCHDOG_TIMEOUT);
 
 	switch (m_scan_step) {
@@ -2095,8 +2120,53 @@ static void scan_step_start(void)
 
 static bool scan_in_cells_step(void)
 {
-	return !m_scan_settling &&
+	return m_scan_phase == SCAN_PHASE_SEARCH &&
 	       (m_scan_step == SCAN_STEP_LTEM_CELLS || m_scan_step == SCAN_STEP_NBIOT_CELLS);
+}
+
+/* A REGISTERED of the previous RAT comes while the modem reports none. */
+static bool scan_registered(void)
+{
+	struct hio_lte_cereg_param param;
+
+	hio_lte_state_get_cereg_param(&param);
+
+	return param.stat == HIO_LTE_CEREG_PARAM_STAT_REGISTERED_HOME ||
+	       param.stat == HIO_LTE_CEREG_PARAM_STAT_REGISTERED_ROAMING;
+}
+
+static void scan_timeout(void)
+{
+	switch (m_scan_phase) {
+	case SCAN_PHASE_ATTACH:
+		/* Its CSCON 1 may wait behind the timeout. */
+		if (atomic_test_bit(&m_flag, FLAG_CSCON)) {
+			scan_wait_release();
+		} else {
+			scan_step_start();
+		}
+		break;
+	case SCAN_PHASE_RELEASE:
+		LOG_WRN("RRC connection not released, searching cells anyway");
+		scan_step_start();
+		break;
+	case SCAN_PHASE_REGISTER:
+		LOG_WRN("Not registered, searching networks anyway");
+		scan_step_start();
+		break;
+	case SCAN_PHASE_SEARCH:
+		if (scan_in_cells_step()) {
+			LOG_WRN("Cell search did not finish, stopping it");
+			hio_lte_flow_cmd("AT%NCELLMEASSTOP");
+			scan_next();
+			break;
+		}
+		/* Any AT command would now wait for %COPS=? forever. */
+		LOG_ERR("PLMN scan response did not arrive, shutting the modem down");
+		hio_lte_flow_abort();
+		transition_state(FSM_STATE_ERROR);
+		break;
+	}
 }
 
 static int on_enter_scan(void)
@@ -2115,8 +2185,8 @@ static int on_enter_scan(void)
 	k_event_clear(&m_states_event, ATTACHED_BIT | CONNECTED_BIT);
 	abort_pending_send_recv(-EBUSY);
 
-	/* Steps run in RX only mode (CFUN=2): no attach attempts, and the
-	 * search is not limited to the camped RAT as it is in CFUN=1. */
+	/* The modem refuses both searches in CFUN=2 (mfw 2.0.2): the steps run
+	 * in CFUN=1, one RAT for each cell search. */
 	m_scan_step = SCAN_STEP_NONE;
 	scan_next();
 
@@ -2140,21 +2210,26 @@ static int scan_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
 	case HIO_LTE_FSM_EVENT_TIMEOUT:
-		/* Ignore a stale timeout queued by the previous state. */
-		if (!sys_timepoint_expired(m_scan_timer_end)) {
-			break;
+		/* Ignore a stale timeout of the previous state or phase. */
+		if (sys_timepoint_expired(m_scan_timer_end)) {
+			scan_timeout();
 		}
-		if (m_scan_settling) {
+		break;
+	case HIO_LTE_FSM_EVENT_CSCON_1:
+		/* Not stale (of the previous RAT): still connected. */
+		if (m_scan_phase == SCAN_PHASE_ATTACH && atomic_test_bit(&m_flag, FLAG_CSCON)) {
+			scan_wait_release();
+		}
+		break;
+	case HIO_LTE_FSM_EVENT_CSCON_0:
+		/* Not stale: still released. */
+		if (m_scan_phase == SCAN_PHASE_RELEASE && !atomic_test_bit(&m_flag, FLAG_CSCON)) {
 			scan_step_start();
-		} else if (scan_in_cells_step()) {
-			LOG_WRN("Cell search did not finish, stopping it");
-			hio_lte_flow_cmd("AT%NCELLMEASSTOP");
-			scan_next();
-		} else {
-			/* Any AT command would now wait for %COPS=? forever. */
-			LOG_ERR("PLMN scan response did not arrive, shutting the modem down");
-			hio_lte_flow_abort();
-			transition_state(FSM_STATE_ERROR);
+		}
+		break;
+	case HIO_LTE_FSM_EVENT_REGISTERED:
+		if (m_scan_phase == SCAN_PHASE_REGISTER && scan_registered()) {
+			scan_step_start();
 		}
 		break;
 	case HIO_LTE_FSM_EVENT_SEND:
@@ -2166,7 +2241,7 @@ static int scan_event_handler(enum hio_lte_fsm_event event)
 		}
 		break;
 	case HIO_LTE_FSM_EVENT_COPS_DONE:
-		if (!m_scan_settling && m_scan_step == SCAN_STEP_PLMN) {
+		if (m_scan_phase == SCAN_PHASE_SEARCH && m_scan_step == SCAN_STEP_PLMN) {
 			scan_next();
 		}
 		break;
