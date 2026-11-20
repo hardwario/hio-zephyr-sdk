@@ -5,6 +5,9 @@
 #include <zephyr/ztest.h>
 
 #include <hio_lte_parse.h>
+
+#include <stdio.h>
+
 static void expect_ok(const char *s, int exp_plmn, int16_t exp_mcc, int16_t exp_mnc)
 {
 	int plmn;
@@ -230,13 +233,51 @@ ZTEST(parser, test_coneval)
 	zassert_equal(param.result, 0, "param.result not equal"); // success
 	zassert_equal(param.eest, 7, "param.eest not equal");     // energy_estimate
 	zassert_equal(param.ecl, 0, "param.ecl not equal");
-	zassert_equal(param.rsrp, -72, "param.rsrp not equal");
+	zassert_equal(param.rsrp, -73, "param.rsrp not equal");
 	zassert_equal(param.rsrq, -5, "param.rsrq not equal");
 	zassert_equal(param.snr, 23, "param.snr not equal");
 	zassert_equal(param.plmn, 23003, "param.plmn not equal");
 	zassert_equal(param.cid, 0x000AE520, "param.cid not equal");
 	zassert_equal(param.band, 20, "param.band not equal");
 	zassert_equal(param.earfcn, 6447, "param.earfcn not equal");
+}
+
+/* RSRP and RSRQ as Nordic's RSRP_IDX_TO_DBM and RSRQ_IDX_TO_DB, the half dB cut
+ * toward zero */
+ZTEST(parser, test_coneval_rsrp_rsrq)
+{
+	static const struct {
+		int rsrp_idx;
+		int rsrq_idx;
+		int rsrp;
+		int rsrq;
+	} cases[] = {
+		/* index < 0: RSRP index - 140, RSRQ (index - 39) / 2 */
+		{-17, -30, -157, -34},
+		{-1, -1, -141, -20},
+		/* from index 0: RSRP index - 141, RSRQ (index - 40) / 2 up to 34 */
+		{0, 0, -141, -20},
+		{1, 1, -140, -19},
+		{34, 32, -107, -4},
+		{35, 33, -106, -3},
+		{96, 34, -45, -3},
+		/* from RSRQ index 35: (index - 41) / 2 */
+		{97, 35, -44, -3},
+		{97, 46, -44, 2},
+	};
+
+	for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
+		char s[96];
+		struct hio_lte_conn_param param;
+
+		snprintf(s, sizeof(s),
+			 "0,1,7,%d,%d,0,\"000AE520\",\"23003\",135,6447,20,0,0,14,2,1,99",
+			 cases[i].rsrp_idx, cases[i].rsrq_idx);
+		zassert_ok(hio_lte_parse_coneval(s, &param), "%s", s);
+		zassert_equal(param.rsrp, cases[i].rsrp, "rsrp of %s", s);
+		zassert_equal(param.rsrq, cases[i].rsrq, "rsrq of %s", s);
+		zassert_equal(param.snr, -24, "snr of %s", s);
+	}
 }
 
 ZTEST(parser, test_cgcont)

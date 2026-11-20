@@ -3,6 +3,9 @@
 /* HIO includes */
 #include <hio/hio_tok.h>
 
+/* Nordic includes */
+#include <modem/modem_info.h>
+
 /* Zephyr includes */
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -529,9 +532,10 @@ int hio_lte_parse_coneval(const char *str, struct hio_lte_conn_param *params)
 	}
 
 	params->eest = energy_estimate;
-	params->rsrp = rsrp - 140;
-	params->rsrq = (rsrq - 39) / 2;
-	params->snr = snr - 24;
+	params->rsrp = hio_lte_rsrp_idx_to_dbm(rsrp);
+	/* The half dB cut toward zero */
+	params->rsrq = (int)hio_lte_rsrq_idx_to_db(rsrq);
+	params->snr = SNR_IDX_TO_DB(snr);
 	params->plmn = plmn;
 	params->earfcn = earfcn;
 	params->band = band;

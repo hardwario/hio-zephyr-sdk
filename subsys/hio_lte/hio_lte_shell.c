@@ -451,12 +451,6 @@ static const char *scan_status_str(int status)
 	}
 }
 
-/* nRF91x1 index to dBm ("reported value of RSRP - 141"). */
-static int rsrp_dbm(int16_t index)
-{
-	return index - 141;
-}
-
 /* As the modem writes it: a three-digit MNC keeps its leading zeros. */
 static void fmt_plmn(char *buf, size_t size, uint16_t mcc, uint16_t mnc, uint8_t mnc_digits)
 {
@@ -580,7 +574,7 @@ static void print_scan_plmn(const struct shell *shell, const struct hio_lte_scan
 		shell_print(shell,
 			    "  cell: %08X, act: %s, tac: %04X, earfcn: %u, pci: %u, rsrp: %d dBm",
 			    c->eci, cops_act_str(c->act), c->tac, c->earfcn, c->pci,
-			    rsrp_dbm(c->rsrp));
+			    hio_lte_rsrp_idx_to_dbm(c->rsrp));
 	}
 }
 
@@ -1173,8 +1167,8 @@ static int print_ncellmeas(const struct shell *shell)
 		shell_print(shell,
 			    "cell: %08X, plmn: %s, tac: %04X, "
 			    "earfcn: %u, pci: %u, rsrp: %d dBm%s",
-			    c->eci, plmn, c->tac, c->earfcn, c->pci, rsrp_dbm(c->rsrp),
-			    c->serving ? ", serving" : "");
+			    c->eci, plmn, c->tac, c->earfcn, c->pci,
+			    hio_lte_rsrp_idx_to_dbm(c->rsrp), c->serving ? ", serving" : "");
 
 		for (size_t j = 0; j < c->neighbor_count && c->ncell_first + j < param.num_ncells;
 		     j++) {
@@ -1182,7 +1176,7 @@ static int print_ncellmeas(const struct shell *shell)
 				&param.ncells[c->ncell_first + j];
 
 			shell_print(shell, "  neighbour: earfcn: %u, pci: %u, rsrp: %d dBm",
-				    n->earfcn, n->pci, rsrp_dbm(n->rsrp));
+				    n->earfcn, n->pci, hio_lte_rsrp_idx_to_dbm(n->rsrp));
 		}
 	}
 

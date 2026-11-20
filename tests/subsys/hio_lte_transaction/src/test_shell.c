@@ -612,6 +612,39 @@ ZTEST(hio_lte_shell, test_scan_show_three_digit_mnc)
 	assert_out("networks: 0 (0 with act), cells: 1\ncommand succeeded\n");
 }
 
+/* RSRP in dBm as Nordic's RSRP_IDX_TO_DBM: index - 140 below 0, index - 141 from 0 */
+ZTEST(hio_lte_shell, test_scan_show_rsrp_dbm)
+{
+	static const int16_t rsrp[] = {-17, 0, 1, 97};
+	struct hio_lte_scan_result result = {
+		.valid = true,
+		.mode = HIO_LTE_SCAN_CELLS,
+		.uptime_ms = k_uptime_get(),
+		.cells_ltem_status = 0,
+		.cells_nbiot_status = -ENODATA,
+		.plmn_status = -ENODATA,
+		.cell_count = ARRAY_SIZE(rsrp),
+	};
+
+	for (size_t i = 0; i < ARRAY_SIZE(rsrp); i++) {
+		result.cells[i] = (struct hio_lte_scan_cell){
+			.eci = i + 1,
+			.mcc = 230,
+			.mnc = 3,
+			.rsrp = rsrp[i],
+			.act = HIO_LTE_CEREG_PARAM_ACT_LTE,
+		};
+	}
+
+	hio_lte_state_set_scan_result(&result);
+
+	zassert_ok(run("lte scan show"));
+	assert_out("00000004, act: lte-m, tac: 0000, earfcn: 0, pci: 0, rsrp: -44 dBm\n"
+		   "  cell: 00000003, act: lte-m, tac: 0000, earfcn: 0, pci: 0, rsrp: -140 dBm\n"
+		   "  cell: 00000002, act: lte-m, tac: 0000, earfcn: 0, pci: 0, rsrp: -141 dBm\n"
+		   "  cell: 00000001, act: lte-m, tac: 0000, earfcn: 0, pci: 0, rsrp: -157 dBm\n");
+}
+
 ZTEST(hio_lte_shell, test_scan_show_none)
 {
 	hio_lte_state_set_scan_result(&(struct hio_lte_scan_result){0});
@@ -732,6 +765,41 @@ ZTEST(hio_lte_shell, test_ncellmeas_show_stored_neighbours_only)
 
 	zassert_ok(run("lte ncellmeas show"));
 	assert_out("  neighbour: earfcn: 6300, pci: 11, rsrp: -101 dBm\ncommand succeeded");
+}
+
+/* RSRP in dBm as Nordic's RSRP_IDX_TO_DBM, also below index 0 */
+ZTEST(hio_lte_shell, test_ncellmeas_show_rsrp_dbm)
+{
+	struct hio_lte_ncellmeas_param param = {
+		.valid = true,
+		.num_cells = 1,
+		.num_ncells = 1,
+		.cells =
+			{{.eci = 0x11B07, .mcc = 262, .mnc = 95, .rsrp = -17, .neighbor_count = 1}},
+		.ncells = {{.earfcn = 6300, .pci = 11, .rsrp = -1}},
+	};
+
+	hio_lte_state_set_ncellmeas_param(&param);
+
+	zassert_ok(run("lte ncellmeas show"));
+	assert_out("pci: 0, rsrp: -157 dBm\n"
+		   "  neighbour: earfcn: 6300, pci: 11, rsrp: -141 dBm\ncommand succeeded");
+}
+
+/* 'lte state' gives %CONEVAL as Nordic's modem_info converts it */
+ZTEST(hio_lte_shell, test_state_coneval)
+{
+	struct hio_lte_conn_param param;
+
+	zassert_ok(hio_lte_parse_coneval(
+		"0,1,7,68,32,47,\"000AE520\",\"23003\",135,6447,20,0,0,14,2,1,99", &param));
+	hio_lte_state_set_conn_param(&param);
+
+	int ret = run("lte state");
+
+	hio_lte_state_set_conn_param(&(struct hio_lte_conn_param){0});
+	zassert_ok(ret);
+	assert_out("eest: 7\necl: 0\nrsrp: -73\nrsrq: -4\nsnr: 23\nplmn: 23003\n");
 }
 
 ZTEST(hio_lte_shell, test_ncellmeas_show_in_progress)

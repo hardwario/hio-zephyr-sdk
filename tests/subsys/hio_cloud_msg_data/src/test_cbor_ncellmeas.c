@@ -57,7 +57,7 @@ static void encode(const struct hio_lte_ncellmeas_param *param, uint32_t num_cel
 }
 
 /* Decodes a cell up to its neighbor count, which it returns */
-static uint32_t decode_cell(uint32_t eci)
+static uint32_t decode_cell(uint32_t eci, float rsrp, float rsrq)
 {
 	uint32_t v;
 	float f;
@@ -67,8 +67,10 @@ static uint32_t decode_cell(uint32_t eci)
 	for (int i = 0; i < 6; i++) { /* mcc, mnc, tac, adv, earfcn, pci */
 		zassert_true(zcbor_uint32_decode(m_zd, &v));
 	}
-	zassert_true(zcbor_float32_decode(m_zd, &f)); /* rsrp */
-	zassert_true(zcbor_float32_decode(m_zd, &f)); /* rsrq */
+	zassert_true(zcbor_float32_decode(m_zd, &f));
+	zassert_equal(f, rsrp);
+	zassert_true(zcbor_float32_decode(m_zd, &f));
+	zassert_equal(f, rsrq);
 	zassert_true(zcbor_uint32_decode(m_zd, &v));
 
 	return v;
@@ -100,10 +102,10 @@ ZTEST(hio_cloud_cbor_ncellmeas, test_neighbors_of_a_copy)
 	memset(&m_parsed, 0, sizeof(m_parsed));
 
 	encode(&m_copy, 2);
-	zassert_equal(decode_cell(0x00011B07), 2);
+	zassert_equal(decode_cell(0x00011B07, -78.0f, -4.5f), 2);
 	decode_ncell(2300, 8, -81.0f, -5.5f, 92);
 	decode_ncell(2400, 10, -85.0f, -6.5f, 162);
-	zassert_equal(decode_cell(0x00011B08), 1);
+	zassert_equal(decode_cell(0x00011B08, -79.0f, -5.0f), 1);
 	decode_ncell(6300, 11, -101.0f, -10.0f, 10);
 	zassert_true(zcbor_list_end_decode(m_zd));
 }
@@ -122,9 +124,38 @@ ZTEST(hio_cloud_cbor_ncellmeas, test_only_stored_neighbors)
 	};
 
 	encode(&param, 3);
-	zassert_equal(decode_cell(1), 1);
+	zassert_equal(decode_cell(1, -141.0f, -20.0f), 1);
 	decode_ncell(6300, 11, -101.0f, -10.0f, 10);
-	zassert_equal(decode_cell(2), 0);
-	zassert_equal(decode_cell(3), 0);
+	zassert_equal(decode_cell(2, -141.0f, -20.0f), 0);
+	zassert_equal(decode_cell(3, -141.0f, -20.0f), 0);
+	zassert_true(zcbor_list_end_decode(m_zd));
+}
+
+/* RSRP and RSRQ as Nordic's RSRP_IDX_TO_DBM and RSRQ_IDX_TO_DB, in half dB */
+ZTEST(hio_cloud_cbor_ncellmeas, test_rsrp_rsrq)
+{
+	static const struct hio_lte_ncellmeas_param param = {
+		.valid = true,
+		.num_cells = 1,
+		.num_ncells = 7,
+		.cells = {{.eci = 1, .rsrp = 97, .rsrq = 46, .neighbor_count = 7}},
+		.ncells = {{.pci = 1, .rsrp = -17, .rsrq = -30},
+			   {.pci = 2, .rsrp = -1, .rsrq = -1},
+			   {.pci = 3, .rsrp = 0, .rsrq = 0},
+			   {.pci = 4, .rsrp = 1, .rsrq = 1},
+			   {.pci = 5, .rsrp = 34, .rsrq = 34},
+			   {.pci = 6, .rsrp = 35, .rsrq = 35},
+			   {.pci = 7, .rsrp = 96, .rsrq = 33}},
+	};
+
+	encode(&param, 1);
+	zassert_equal(decode_cell(1, -44.0f, 2.5f), 7);
+	decode_ncell(0, 1, -157.0f, -34.5f, 0);
+	decode_ncell(0, 2, -141.0f, -20.0f, 0);
+	decode_ncell(0, 3, -141.0f, -20.0f, 0);
+	decode_ncell(0, 4, -140.0f, -19.5f, 0);
+	decode_ncell(0, 5, -107.0f, -3.0f, 0);
+	decode_ncell(0, 6, -106.0f, -3.0f, 0);
+	decode_ncell(0, 7, -45.0f, -3.5f, 0);
 	zassert_true(zcbor_list_end_decode(m_zd));
 }

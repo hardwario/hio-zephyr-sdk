@@ -9,6 +9,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* Nordic includes */
+#include <modem/modem_info.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -426,6 +429,35 @@ int hio_lte_add_callback(struct hio_lte_cb *cb);
  */
 int hio_lte_remove_callback(struct hio_lte_cb *cb);
 
+/* -------- Signal Index Conversion -------- */
+
+/**
+ * @brief Convert an RSRP index of the modem (%CONEVAL, %NCELLMEAS) to dBm.
+ *
+ * Nordic's RSRP_IDX_TO_DBM: index - 140 below 0, index - 141 from 0 on.
+ *
+ * @param index RSRP index.
+ * @return RSRP in dBm.
+ */
+static inline int hio_lte_rsrp_idx_to_dbm(int index)
+{
+	return RSRP_IDX_TO_DBM(index);
+}
+
+/**
+ * @brief Convert an RSRQ index of the modem (%CONEVAL, %NCELLMEAS) to dB.
+ *
+ * Nordic's RSRQ_IDX_TO_DB, in half dB: (index - 39) / 2 below 0, (index - 40) / 2
+ * up to 34, (index - 41) / 2 from 35 on.
+ *
+ * @param index RSRQ index.
+ * @return RSRQ in dB.
+ */
+static inline float hio_lte_rsrq_idx_to_db(int index)
+{
+	return RSRQ_IDX_TO_DB(index);
+}
+
 /* -------- Neighbor Cell Measurements -------- */
 #define HIO_LTE_CELL_ECI_MAX            268435455
 #define HIO_LTE_CELL_ECI_INVALID        UINT32_MAX
@@ -560,8 +592,8 @@ struct hio_lte_scan_cell {
 	uint8_t mnc_digits; /**< Digits of the MNC as the modem wrote it (2 or 3). */
 	uint16_t tac;    /**< Tracking area code. */
 	uint16_t pci;    /**< Physical cell ID. */
-	int16_t rsrp;    /**< RSRP index (dBm = index - 141). */
-	int16_t rsrq;    /**< RSRQ index. */
+	int16_t rsrp;    /**< RSRP index (@ref hio_lte_rsrp_idx_to_dbm). */
+	int16_t rsrq;    /**< RSRQ index (@ref hio_lte_rsrq_idx_to_db). */
 	uint8_t act;     /**< @ref hio_lte_cereg_param_act. */
 };
 
