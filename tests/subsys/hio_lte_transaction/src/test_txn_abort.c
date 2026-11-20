@@ -21,12 +21,15 @@
 #include <string.h>
 
 extern atomic_t fake_flow_send_count;
+extern atomic_t fake_flow_start_count;
 extern uint32_t fake_flow_send_block_ms;
 extern uint32_t fake_flow_send_busy_ms;
 extern int fake_flow_send_ret;
 extern uint8_t fake_flow_wire[64];
 extern size_t fake_flow_wire_len;
 extern atomic_t fake_flow_in_io;
+extern atomic_t fake_flow_stop_in_io;
+extern uint32_t fake_flow_stop_ms;
 extern int64_t fake_flow_io_exit_ms;
 extern k_tid_t fake_flow_fsm_thread;
 extern size_t fake_flow_recv_len;
@@ -101,6 +104,8 @@ static void fakes_reset(void)
 	fake_flow_send_ret = 0;
 	fake_flow_wire_len = 0;
 	memset(fake_flow_wire, 0, sizeof(fake_flow_wire));
+	atomic_clear(&fake_flow_stop_in_io);
+	fake_flow_stop_ms = 0;
 	fake_flow_io_exit_ms = 0;
 	fake_flow_recv_len = 0;
 	fake_flow_recv_block_ms = 0;
@@ -845,4 +850,439 @@ ZTEST(hio_lte_txn_abort, test_open_socket_guard)
 	fake_flow_event_cb(HIO_LTE_FSM_EVENT_TIMEOUT);
 	zassert_equal(hio_lte_wait_for_connected(K_MSEC(200)), -ETIMEDOUT,
 		      "a stale TIMEOUT taken for SOCKET_OPENED");
+}
+
+/* 'lte reconnect' during the recv: the FSM thread reconnects only after the
+ * recv, the caller gets its reply. */
+ZTEST(hio_lte_txn_abort, test_reconnect_during_recv)
+{
+	static uint8_t rx[64];
+	static size_t len;
+	uint8_t reply[10];
+
+	fsm_to_ready_connected();
+	int starts = atomic_get(&fake_flow_start_count);
+
+	fake_flow_recv_len = sizeof(reply);
+	fake_flow_recv_block_ms = IO_BLOCK_MS;
+	memset(rx, 0, sizeof(rx));
+	memset(reply, fake_flow_recv_fill, sizeof(reply));
+	m_caller_param = (struct hio_lte_send_recv_param){
+		.send_buf = m_payload,
+		.send_len = sizeof(m_payload),
+		.recv_buf = rx,
+		.recv_size = sizeof(rx),
+		.recv_len = &len,
+		.timeout = K_SECONDS(5),
+	};
+	caller_start(K_PRIO_PREEMPT(0));
+
+	k_sleep(K_MSEC(100));
+	zassert_true(fsm_in("receive"));
+	zassert_ok(hio_lte_reconnect());
+	zassert_true(fsm_in("receive"), "the reconnect changed the state under the recv");
+
+	caller_join();
+	zassert_ok(m_caller_ret, "got %d", m_caller_ret);
+	zassert_equal(len, sizeof(reply));
+	zassert_mem_equal(rx, reply, sizeof(reply));
+	zassert_equal(atomic_get(&fake_flow_stop_in_io), 0,
+		      "the modem was stopped during the recv");
+
+	k_sleep(K_MSEC(500));
+	zassert_true(fsm_in("prepare"), "not reconnected");
+	zassert_equal(atomic_get(&fake_flow_start_count), starts + 1);
+}
+
+/* 'lte reconnect' during the send: the transaction still pending is ended with
+ * -ENOTCONN, after the send. */
+ZTEST(hio_lte_txn_abort, test_reconnect_during_send)
+{
+	fsm_to_ready_connected();
+	fake_flow_send_block_ms = IO_BLOCK_MS;
+	m_caller_param = (struct hio_lte_send_recv_param){
+		.send_buf = m_payload,
+		.send_len = sizeof(m_payload),
+		.timeout = K_SECONDS(5),
+	};
+	caller_start(K_PRIO_PREEMPT(0));
+
+	k_sleep(K_MSEC(100));
+	zassert_true(fsm_in("send"));
+	zassert_ok(hio_lte_reconnect());
+	zassert_true(fsm_in("send"), "the reconnect changed the state under the send");
+
+	caller_join();
+	zassert_equal(m_caller_ret, -ENOTCONN, "got %d", m_caller_ret);
+	zassert_true(m_caller_ret_ms >= fake_flow_io_exit_ms, "returned during the send");
+	zassert_equal(atomic_get(&fake_flow_stop_in_io), 0,
+		      "the modem was stopped during the send");
+
+	k_sleep(K_MSEC(500));
+	zassert_true(fsm_in("prepare"), "not reconnected");
+}
+
+/* A disable requested while the FSM thread is in the middle of a reconnect
+ * (stopping the modem) is not lost, and it is acknowledged by the disabled state
+ * the FSM stays in. */
+ZTEST(hio_lte_txn_abort, test_disable_during_reconnect)
+{
+	fsm_bring_up();
+	fake_flow_stop_ms = 300;
+
+	zassert_ok(hio_lte_reconnect());
+	k_sleep(K_MSEC(100));
+	zassert_ok(hio_lte_disable());
+	zassert_ok(hio_lte_wait_for_disable(K_SECONDS(3)));
+	zassert_true(fsm_in("disabled"), "acknowledged in %s", state_now());
+
+	k_sleep(K_SECONDS(1));
+	zassert_true(fsm_in("disabled"), "the disable was lost: %s", state_now());
+}
+
+/* A reconnect and a disable requested back to back: the disable is acknowledged
+ * only once the modem is down for good, no restart follows the ack. */
+ZTEST(hio_lte_txn_abort, test_disable_ack_after_reconnect)
+{
+	fsm_bring_up();
+
+	zassert_ok(hio_lte_reconnect());
+	zassert_ok(hio_lte_disable());
+	zassert_ok(hio_lte_wait_for_disable(K_SECONDS(3)));
+
+	int starts = atomic_get(&fake_flow_start_count);
+
+	k_sleep(K_SECONDS(1));
+	zassert_true(fsm_in("disabled"), "in %s", state_now());
+	zassert_equal(atomic_get(&fake_flow_start_count), starts,
+		      "the modem was started after the ack");
+}
+
+/* The timer of the state a reconnect interrupts fires before the FSM thread
+ * carries the reconnect out: its TIMEOUT does not reach the prepare state. */
+ZTEST(hio_lte_txn_abort, test_reconnect_stale_timeout)
+{
+	fsm_bring_up();
+
+	zassert_ok(hio_lte_reconnect());
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_TIMEOUT);
+	k_sleep(K_MSEC(200));
+	zassert_true(fsm_in("prepare"), "the reconnect ended in %s", state_now());
+}
+
+/* URCs fill the event queue while the send blocks, then a reconnect is
+ * requested: it is still carried out. */
+ZTEST(hio_lte_txn_abort, test_reconnect_with_full_queue)
+{
+	fsm_to_ready_connected();
+	int starts = atomic_get(&fake_flow_start_count);
+
+	fake_flow_send_block_ms = IO_BLOCK_MS;
+	m_caller_param = (struct hio_lte_send_recv_param){
+		.send_buf = m_payload,
+		.send_len = sizeof(m_payload),
+		.timeout = K_SECONDS(5),
+	};
+	caller_start(K_PRIO_PREEMPT(0));
+
+	k_sleep(K_MSEC(100));
+	zassert_true(fsm_in("send"));
+	fill_event_queue();
+	zassert_ok(hio_lte_reconnect());
+
+	caller_join();
+	zassert_equal(m_caller_ret, -ENOTCONN, "got %d", m_caller_ret);
+	k_sleep(K_MSEC(500));
+	zassert_equal(atomic_get(&fake_flow_start_count), starts + 1, "not reconnected");
+	zassert_true(fsm_in("prepare"), "in %s", state_now());
+}
+
+/* The later of a reconnect and a disable wins, also with the FSM thread running
+ * in between (in the middle of a slow modem stop); the codes of the call stay. */
+ZTEST(hio_lte_txn_abort, test_reconnect_and_disable)
+{
+	zassert_equal(hio_lte_reconnect(), -ENODEV);
+	g_hio_lte_config.test = true;
+	zassert_equal(hio_lte_reconnect(), -ENOTSUP);
+	g_hio_lte_config.test = false;
+	fake_flow_stop_ms = 300;
+
+	for (int gap_ms = 0; gap_ms <= 100; gap_ms += 100) {
+		fsm_bring_up();
+		zassert_ok(hio_lte_reconnect());
+		k_sleep(K_MSEC(gap_ms));
+		zassert_ok(hio_lte_disable());
+		k_sleep(K_SECONDS(2));
+		zassert_true(fsm_in("disabled"), "the reconnect undid the disable after it (%d ms)",
+			     gap_ms);
+
+		fsm_bring_up();
+		zassert_ok(hio_lte_disable());
+		k_sleep(K_MSEC(gap_ms));
+
+		int ret = hio_lte_reconnect();
+
+		zassert_true(ret == 0 || ret == -ENODEV, "got %d", ret);
+		k_sleep(K_SECONDS(2));
+		zassert_true(fsm_in("disabled"),
+			     "the reconnect undid the disable before it (%d ms)", gap_ms);
+	}
+
+	/* The disable is in the batch of events the FSM thread works on (behind
+	 * a socket check) when the reconnect is requested: the FSM thread finds
+	 * the reconnect in the disabled state and does nothing. */
+	fsm_bring_up();
+	k_sleep(K_MSEC(50));
+	zassert_true(fsm_in("ready"));
+	fake_flow_check_ms = IO_BLOCK_MS;
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_SEND);
+	zassert_ok(hio_lte_disable());
+	k_sleep(K_MSEC(100));
+
+	int starts = atomic_get(&fake_flow_start_count);
+
+	zassert_ok(hio_lte_reconnect());
+	k_sleep(K_SECONDS(2));
+	zassert_true(fsm_in("disabled"), "the reconnect undid the disable: %s", state_now());
+	zassert_equal(atomic_get(&fake_flow_start_count), starts, "the modem was started again");
+}
+
+/* 'lte reconnect' while the send blocks, and the send then fails (the usual
+ * reason to reconnect): the ERROR of the failed send, still queued when the FSM
+ * thread carries the reconnect out, does not reach the new cycle. */
+ZTEST(hio_lte_txn_abort, test_reconnect_during_failing_send)
+{
+	fsm_to_ready_connected();
+	int starts = atomic_get(&fake_flow_start_count);
+
+	fake_flow_send_block_ms = IO_BLOCK_MS;
+	fake_flow_send_ret = -EIO;
+	m_caller_param = (struct hio_lte_send_recv_param){
+		.send_buf = m_payload,
+		.send_len = sizeof(m_payload),
+		.timeout = K_SECONDS(5),
+	};
+	caller_start(K_PRIO_PREEMPT(0));
+
+	k_sleep(K_MSEC(100));
+	zassert_true(fsm_in("send"));
+	zassert_ok(hio_lte_reconnect());
+
+	caller_join();
+	zassert_equal(m_caller_ret, -ENOTCONN, "got %d", m_caller_ret);
+	k_sleep(K_MSEC(500));
+	zassert_true(fsm_in("prepare"), "the reconnect ended in %s", state_now());
+	zassert_equal(atomic_get(&fake_flow_start_count), starts + 1);
+}
+
+static uint32_t attach_count(void)
+{
+	struct hio_lte_metrics metrics;
+
+	zassert_ok(hio_lte_get_metrics(&metrics));
+	return metrics.attach_count;
+}
+
+/* SIMDETECTED of the modem session a reconnect ends is still queued: the new
+ * cycle waits for the SIM of its own session, the old event is not handled
+ * before the reconnect either. */
+ZTEST(hio_lte_txn_abort, test_reconnect_drops_stale_simdetected)
+{
+	static const struct hio_lte_socket_config cfg = {.port = 5002, .addr = "192.0.2.1"};
+
+	zassert_ok(hio_lte_enable(&cfg));
+	k_sleep(K_MSEC(50));
+	zassert_true(fsm_in("prepare"));
+	uint32_t attaches = attach_count();
+
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_SIMDETECTED);
+	zassert_ok(hio_lte_reconnect());
+	k_sleep(K_MSEC(200));
+	zassert_true(fsm_in("prepare"), "the new cycle took the old SIMDETECTED: %s", state_now());
+	zassert_equal(attach_count(), attaches, "attached on the old SIMDETECTED");
+}
+
+/* SIMDETECTED and REGISTERED of the old session both queued: the new cycle does
+ * not attach on them. */
+ZTEST(hio_lte_txn_abort, test_reconnect_drops_stale_registration)
+{
+	static const struct hio_lte_socket_config cfg = {.port = 5002, .addr = "192.0.2.1"};
+	bool attached = true;
+
+	zassert_ok(hio_lte_enable(&cfg));
+	k_sleep(K_MSEC(50));
+	zassert_true(fsm_in("prepare"));
+	uint32_t attaches = attach_count();
+
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_SIMDETECTED);
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_REGISTERED);
+	zassert_ok(hio_lte_reconnect());
+	k_sleep(K_MSEC(200));
+	zassert_true(fsm_in("prepare"), "the new cycle attached on old events: %s", state_now());
+	zassert_ok(hio_lte_is_attached(&attached));
+	zassert_false(attached);
+	zassert_equal(hio_lte_wait_for_connected(K_NO_WAIT), -ETIMEDOUT);
+	zassert_equal(attach_count(), attaches, "attached on the old events");
+}
+
+/* A disable queued behind a busy FSM thread (a socket check), not in the batch
+ * it works on, then a reconnect: the reconnect is skipped, the modem is not
+ * started for nothing before the disable. */
+ZTEST(hio_lte_txn_abort, test_disable_before_reconnect)
+{
+	fsm_bring_up();
+	k_sleep(K_MSEC(50));
+	zassert_true(fsm_in("ready"));
+	int starts = atomic_get(&fake_flow_start_count);
+
+	fake_flow_check_ms = IO_BLOCK_MS;
+	fake_flow_stop_ms = 300;
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_SEND);
+	k_sleep(K_MSEC(50));
+	zassert_ok(hio_lte_disable());
+	zassert_ok(hio_lte_reconnect());
+	zassert_ok(hio_lte_wait_for_disable(K_SECONDS(5)));
+	zassert_true(fsm_in("disabled"), "acknowledged in %s", state_now());
+	zassert_equal(atomic_get(&fake_flow_start_count), starts,
+		      "the modem was started for a reconnect requested after the disable");
+}
+
+static atomic_t m_cb_cscon_0;
+static atomic_t m_cb_cscon_1;
+static atomic_t m_cb_cscon_0_starts;
+
+static void cscon_cb_handler(struct hio_lte_cb *cb, enum hio_lte_event event)
+{
+	ARG_UNUSED(cb);
+
+	if (event == HIO_LTE_EVENT_CSCON_0) {
+		atomic_inc(&m_cb_cscon_0);
+		atomic_set(&m_cb_cscon_0_starts, atomic_get(&fake_flow_start_count));
+	} else if (event == HIO_LTE_EVENT_CSCON_1) {
+		atomic_inc(&m_cb_cscon_1);
+	}
+}
+
+static struct hio_lte_cb m_cscon_cb = {.handler = cscon_cb_handler};
+
+static void cscon_0_work_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_CSCON_0);
+}
+
+static K_WORK_DELAYABLE_DEFINE(m_cscon_0_work, cscon_0_work_handler);
+
+/* The modem reports the release of the RRC connection while it goes down for a
+ * reconnect (+CSCON: 0 before the OK of AT+CFUN=0), from the system work queue
+ * as at_monitor does: the callbacks hear of it, before the modem of the new
+ * cycle starts. */
+ZTEST(hio_lte_txn_abort, test_reconnect_reports_cscon_0)
+{
+	atomic_clear(&m_cb_cscon_0);
+	atomic_clear(&m_cb_cscon_1);
+	zassert_ok(hio_lte_add_callback(&m_cscon_cb));
+	fsm_to_ready_connected();
+	bool told_cscon_1 = atomic_get(&m_cb_cscon_1) == 1 && atomic_get(&m_cb_cscon_0) == 0;
+	int starts = atomic_get(&fake_flow_start_count);
+
+	fake_flow_stop_ms = 300;
+	k_work_schedule(&m_cscon_0_work, K_MSEC(100));
+	zassert_ok(hio_lte_reconnect());
+	k_sleep(K_SECONDS(1));
+	zassert_ok(hio_lte_remove_callback(&m_cscon_cb));
+
+	zassert_true(told_cscon_1, "the callbacks were not told CSCON 1 first");
+	zassert_true(fsm_in("prepare"), "in %s", state_now());
+	zassert_equal(atomic_get(&m_cb_cscon_0), 1, "the callbacks never heard of the release");
+	zassert_equal(atomic_get(&m_cb_cscon_0_starts), starts,
+		      "the release was reported after the modem of the new cycle started");
+	zassert_equal(atomic_get(&m_cb_cscon_1), 1);
+}
+
+/* A reconnect out of the reset loop state, whose leave starts a timer of 10 s:
+ * the prepare state waits 10 s for the SIM from its own modem start. */
+ZTEST(hio_lte_txn_abort, test_reconnect_from_reset_loop_sim_timeout)
+{
+	static const struct hio_lte_socket_config cfg = {.port = 5002, .addr = "192.0.2.1"};
+	int64_t started = 0;
+	int64_t timed_out = 0;
+
+	zassert_ok(hio_lte_enable(&cfg));
+	k_sleep(K_MSEC(50));
+	zassert_true(fsm_in("prepare"));
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_RESET_LOOP);
+	k_sleep(K_MSEC(5500));
+	zassert_true(fsm_in("reset_loop"), "in %s", state_now());
+
+	int starts = atomic_get(&fake_flow_start_count);
+
+	fake_flow_stop_ms = 2000;
+	zassert_ok(hio_lte_reconnect());
+
+	for (int i = 0; i < 2000 && !timed_out; i++) {
+		k_sleep(K_MSEC(10));
+		if (!started && atomic_get(&fake_flow_start_count) > starts) {
+			started = k_uptime_get();
+		}
+		if (started && fsm_in("error")) {
+			timed_out = k_uptime_get();
+		}
+	}
+
+	zassert_true(started, "the modem was not started");
+	zassert_true(timed_out, "no SIM timeout, in %s", state_now());
+	zassert_true(timed_out - started >= 9900, "the SIM timeout came after %d ms",
+		     (int)(timed_out - started));
+}
+
+/* A disable and then an enable, both requested while the FSM thread stops the
+ * modem for a reconnect: both are kept, in their order, so the modem is stopped
+ * and started again and the enable wins. */
+ZTEST(hio_lte_txn_abort, test_disable_enable_during_reconnect)
+{
+	static const struct hio_lte_socket_config cfg = {.port = 5002, .addr = "192.0.2.1"};
+
+	fsm_bring_up();
+	fake_flow_stop_ms = 300;
+	int starts = atomic_get(&fake_flow_start_count);
+
+	zassert_ok(hio_lte_reconnect());
+	k_sleep(K_MSEC(100));
+	zassert_ok(hio_lte_disable());
+	zassert_ok(hio_lte_enable(&cfg));
+	k_sleep(K_SECONDS(3));
+	zassert_true(fsm_in("prepare"), "the enable after the disable was lost: %s", state_now());
+	zassert_equal(atomic_get(&fake_flow_start_count), starts + 2,
+		      "the disable or the enable was lost");
+}
+
+/* A transaction published while the FSM thread stops the modem for a
+ * reconnect: its SEND goes with the old session, the new cycle still sends it
+ * once. */
+ZTEST(hio_lte_txn_abort, test_send_published_during_reconnect)
+{
+	fsm_to_ready_connected();
+	fake_flow_stop_ms = 300;
+
+	zassert_ok(hio_lte_reconnect());
+	k_sleep(K_MSEC(100));
+	m_caller_param = (struct hio_lte_send_recv_param){
+		.send_buf = m_payload,
+		.send_len = sizeof(m_payload),
+		.timeout = K_SECONDS(8),
+	};
+	caller_start(K_PRIO_PREEMPT(0));
+
+	k_sleep(K_SECONDS(1));
+	zassert_true(fsm_in("prepare"), "in %s", state_now());
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_SIMDETECTED);
+	k_sleep(K_MSEC(50));
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_REGISTERED);
+	k_sleep(K_MSEC(200));
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_CSCON_1);
+	caller_join();
+	zassert_ok(m_caller_ret, "got %d", m_caller_ret);
+	zassert_equal(atomic_get(&fake_flow_send_count), 1);
 }

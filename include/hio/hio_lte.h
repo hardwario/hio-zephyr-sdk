@@ -176,7 +176,9 @@ int hio_lte_enable(const struct hio_lte_socket_config *socket_config);
 /**
  * @brief Disconnect and reconnect LTE link.
  *
- * Useful for recovering from connection issues.
+ * Useful for recovering from connection issues. The call only requests the
+ * reconnect: the LTE thread carries it out once it is done with its current
+ * step (a send or receive in progress ends first).
  *
  * @retval 0   Success.
  * @retval -ENOTSUP Test mode is enabled or not enabled.

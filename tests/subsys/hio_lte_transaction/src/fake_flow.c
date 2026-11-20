@@ -61,9 +61,10 @@ uint32_t fake_flow_send_busy_ms;
 uint8_t fake_flow_wire[64];
 size_t fake_flow_wire_len;
 
-/* Inside a send or a recv, and the uptime at which the last send or recv
- * returned. */
+/* Inside a send or a recv, the calls of hio_lte_flow_stop() made meanwhile, and
+ * the uptime at which the last send or recv returned. */
 atomic_t fake_flow_in_io = ATOMIC_INIT(0);
+atomic_t fake_flow_stop_in_io = ATOMIC_INIT(0);
 int64_t fake_flow_io_exit_ms;
 
 /* The thread the FSM runs on (seen in the send). */
@@ -131,6 +132,10 @@ uint32_t fake_flow_stop_ms;
 
 int hio_lte_flow_stop(void)
 {
+	if (atomic_get(&fake_flow_in_io)) {
+		atomic_inc(&fake_flow_stop_in_io);
+	}
+
 	if (fake_flow_stop_ms) {
 		k_sleep(K_MSEC(fake_flow_stop_ms));
 	}

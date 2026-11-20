@@ -107,6 +107,8 @@ static K_EVENT_DEFINE(m_states_event);
 /* Set by a request, cleared when a measurement starts or ends: do not wait
  * for the next connection. 8 is FLAG_NCELLMEAS_REQ (BIT(3)). */
 #define FLAG_NCELLMEAS_NOW   9
+/* Set by hio_lte_reconnect(): a flag, not an event a full queue could drop. */
+#define FLAG_RECONNECT       10
 atomic_t m_flag = ATOMIC_INIT(0);
 
 /* Safety net if a scan step never completes; the scan itself has no timeout. */
@@ -257,6 +259,7 @@ static struct {
 } m_error_ctx = {0};
 
 static struct fsm_state_desc *get_fsm_state(enum fsm_state state);
+static void reconnect(void);
 
 static struct hio_lte_attach_timeout get_attach_timeout(int attempt)
 {
@@ -466,8 +469,9 @@ static void delegate_event(enum hio_lte_fsm_event event)
 	int ret = ring_buf_put(&m_event_rb, (uint8_t *)&event, 1);
 	k_mutex_unlock(&m_event_rb_lock);
 
-	if (ret < 0) {
-		LOG_WRN("Failed to put event in ring buffer");
+	/* The number of bytes stored. */
+	if (!ret) {
+		LOG_ERR("Event queue full, %s dropped", hio_lte_str_fsm_event(event));
 		return;
 	}
 
@@ -596,6 +600,12 @@ static void event_dispatch_work_handler(struct k_work *item)
 	uint8_t events[sizeof(m_event_buf)];
 	uint8_t events_cnt;
 
+	/* Ahead of the events queued before the request: they belong to the
+	 * modem session it ends. */
+	if (atomic_test_and_clear_bit(&m_flag, FLAG_RECONNECT)) {
+		reconnect();
+	}
+
 	k_mutex_lock(&m_event_rb_lock, K_FOREVER);
 	events_cnt = (uint8_t)ring_buf_get(&m_event_rb, events, ARRAY_SIZE(events));
 	k_mutex_unlock(&m_event_rb_lock);
@@ -667,17 +677,11 @@ int hio_lte_reconnect(void)
 		return -ENODEV;
 	}
 
-	stop_timer();
-
-	k_work_cancel(&m_event_dispatch_work);
-
-	k_mutex_lock(&m_event_rb_lock, K_FOREVER);
-	ring_buf_reset(&m_event_rb);
-	k_mutex_unlock(&m_event_rb_lock);
-
-	transition_state(FSM_STATE_DISABLED);
-
-	delegate_event(HIO_LTE_FSM_EVENT_ENABLE);
+	/* Only the FSM thread may change the state: from this thread, stopping
+	 * the modem would cut a send or recv in progress. A failed submit leaves
+	 * the flag to the next dispatch. */
+	atomic_set_bit(&m_flag, FLAG_RECONNECT);
+	k_work_submit_to_queue(&m_work_q, &m_event_dispatch_work);
 
 	return 0;
 }
@@ -1062,12 +1066,13 @@ static void abort_pending_send_recv(int result)
 	txn_end(result, false, false);
 }
 
-static int on_enter_disabled(void)
+/* Of the disabled state, and of a reconnect, which does not pass through it. */
+static void shut_down(void)
 {
 	int ret;
 
 	/* The modem is being shut down, so any pending transaction can no longer
-	 * complete. Covers every path into DISABLED (explicit disable, reconnect). */
+	 * complete. */
 	abort_pending_send_recv(-ENOTCONN);
 
 	hio_lte_state_set_radio_off(false);
@@ -1093,6 +1098,11 @@ static int on_enter_disabled(void)
 	if (atomic_test_and_clear_bit(&m_flag, FLAG_NCELLMEAS_REQ)) {
 		k_event_post(&m_states_event, NCELLMEAS_DONE_BIT);
 	}
+}
+
+static int on_enter_disabled(void)
+{
+	shut_down();
 
 	/* Signal callers blocked in hio_lte_disable() that DISABLED is reached. */
 	k_event_post(&m_states_event, DISABLED_BIT);
@@ -1100,10 +1110,9 @@ static int on_enter_disabled(void)
 	return 0;
 }
 
-static int on_leave_disabled(void)
+/* What the prepare state needs reset after the modem was shut down. */
+static void reset_for_start(void)
 {
-	k_event_clear(&m_states_event, DISABLED_BIT);
-
 	memset(&m_error_ctx, 0, sizeof(m_error_ctx));
 	m_attach_retry_count = 0;
 	m_scan_auto_count = 0;
@@ -1116,8 +1125,93 @@ static int on_leave_disabled(void)
 		atomic_set_bit(&m_flag, FLAG_NCELLMEAS_REQ);
 		k_event_clear(&m_states_event, NCELLMEAS_DONE_BIT);
 	}
+}
 
+static int on_leave_disabled(void)
+{
+	k_event_clear(&m_states_event, DISABLED_BIT);
+	reset_for_start();
 	return 0;
+}
+
+static bool disable_queued(void)
+{
+	uint8_t events[sizeof(m_event_buf)];
+
+	k_mutex_lock(&m_event_rb_lock, K_FOREVER);
+	uint32_t events_cnt = ring_buf_peek(&m_event_rb, events, sizeof(events));
+	k_mutex_unlock(&m_event_rb_lock);
+
+	return memchr(events, HIO_LTE_FSM_EVENT_DISABLE, events_cnt) != NULL;
+}
+
+/* Drop the queued events of the modem session a reconnect ends: its URCs, the
+ * events its states posted to themselves and the TIMEOUT of its timer. The
+ * requests to disable and enable stay, in their order. SEND, SCAN,
+ * NCELLMEAS_REQ and SOCKET_RECONFIG go too: a request the shutdown did not end
+ * keeps its pending transaction or its flag, which the new cycle picks up. */
+static void drop_session_events(void)
+{
+	uint8_t events[sizeof(m_event_buf)];
+	uint8_t cscon[sizeof(m_event_buf)];
+	uint32_t kept = 0;
+	uint32_t cscon_cnt = 0;
+
+	k_mutex_lock(&m_event_rb_lock, K_FOREVER);
+	uint32_t events_cnt = ring_buf_get(&m_event_rb, events, sizeof(events));
+
+	for (uint32_t i = 0; i < events_cnt; i++) {
+		if (events[i] == HIO_LTE_FSM_EVENT_DISABLE ||
+		    events[i] == HIO_LTE_FSM_EVENT_ENABLE) {
+			events[kept++] = events[i];
+		} else if (events[i] == HIO_LTE_FSM_EVENT_CSCON_0 ||
+			   events[i] == HIO_LTE_FSM_EVENT_CSCON_1) {
+			cscon[cscon_cnt++] = events[i];
+		}
+	}
+
+	ring_buf_put(&m_event_rb, events, kept);
+	k_mutex_unlock(&m_event_rb_lock);
+
+	/* The callbacks still hear of the connection of the old session. */
+	for (uint32_t i = 0; i < cscon_cnt; i++) {
+		hio_lte_notify(cscon[i] == HIO_LTE_FSM_EVENT_CSCON_0 ? HIO_LTE_EVENT_CSCON_0
+								     : HIO_LTE_EVENT_CSCON_1);
+	}
+}
+
+/* Requested by hio_lte_reconnect(): leave the current state, shut the modem
+ * down and go on to prepare. Not through the disabled state: other threads
+ * would take it for a disable, so a hio_lte_disable() meanwhile would return at
+ * once and be lost, and a queued one would be acknowledged before the restart.
+ * A disable queued already wins without a restart, one requested during the
+ * reconnect is handled after it. */
+static void reconnect(void)
+{
+	LOG_INF("reconnect, state: %s", fsm_state_str(m_state));
+
+	/* Disabled since the request: stay so. */
+	if (m_state == FSM_STATE_DISABLED) {
+		return;
+	}
+
+	/* No restart of the modem just before the disable. */
+	if (disable_queued()) {
+		LOG_INF("reconnect skipped, disable queued");
+		return;
+	}
+
+	stop_timer();
+
+	if (leaving_state(FSM_STATE_PREPARE) < 0) {
+		return;
+	}
+
+	shut_down();
+	/* After the stop, so that the URCs of the modem going down go too. */
+	drop_session_events();
+	reset_for_start();
+	entering_state(get_fsm_state(FSM_STATE_PREPARE));
 }
 
 static int disabled_event_handler(enum hio_lte_fsm_event event)
@@ -1252,7 +1346,7 @@ static int on_enter_prepare(void)
 		return ret;
 	}
 
-	start_timer(SIMDETECTED_TIMEOUT);
+	restart_timer(SIMDETECTED_TIMEOUT);
 
 	return 0;
 }
