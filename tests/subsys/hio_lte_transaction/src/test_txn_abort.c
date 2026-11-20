@@ -1286,3 +1286,97 @@ ZTEST(hio_lte_txn_abort, test_send_published_during_reconnect)
 	zassert_ok(m_caller_ret, "got %d", m_caller_ret);
 	zassert_equal(atomic_get(&fake_flow_send_count), 1);
 }
+
+/* The send of the transaction after an abandoned one fails, while its caller's
+ * SEND is still queued: the caller gets an error, not a delivery. */
+ZTEST(hio_lte_txn_abort, test_failed_send_after_abort)
+{
+	uint8_t buf[PAYLOAD_LEN];
+	struct hio_lte_send_recv_param param = {
+		.send_buf = buf,
+		.send_len = sizeof(buf),
+		.timeout = K_SECONDS(2),
+	};
+
+	memset(buf, 'N', sizeof(buf));
+	fsm_to_ready_connected();
+	fake_flow_check_ms = IO_BLOCK_MS;
+	m_caller_param = (struct hio_lte_send_recv_param){
+		.send_buf = m_payload,
+		.send_len = sizeof(m_payload),
+		.timeout = K_MSEC(100),
+	};
+	caller_start(K_PRIO_PREEMPT(0));
+	caller_join();
+	zassert_equal(m_caller_ret, -ETIMEDOUT);
+
+	fake_flow_send_ret = -EIO;
+
+	int ret = hio_lte_send_recv(&param);
+
+	zassert_not_equal(ret, 0, "a failed send reported as delivered");
+	zassert_equal(atomic_get(&fake_flow_send_count), 1);
+}
+
+/* Two transactions back to back, the send of the second fails while the SEND of
+ * the ready state is queued: its caller gets an error, not a delivery. */
+ZTEST(hio_lte_txn_abort, test_failed_send_back_to_back)
+{
+	uint8_t rx[64];
+	size_t len = 0;
+	struct hio_lte_send_recv_param first = {
+		.send_buf = m_payload,
+		.send_len = sizeof(m_payload),
+		.recv_buf = rx,
+		.recv_size = sizeof(rx),
+		.recv_len = &len,
+		.timeout = K_SECONDS(2),
+	};
+	struct hio_lte_send_recv_param second = {
+		.send_buf = m_payload,
+		.send_len = sizeof(m_payload),
+		.timeout = K_SECONDS(2),
+	};
+
+	fsm_to_ready_connected();
+	fake_flow_recv_len = 10;
+	zassert_ok(hio_lte_send_recv(&first));
+
+	fake_flow_send_ret = -EIO;
+
+	int ret = hio_lte_send_recv(&second);
+
+	zassert_not_equal(ret, 0, "a failed send reported as delivered");
+	zassert_equal(atomic_get(&fake_flow_send_count), 2);
+}
+
+/* A failed send whose ERROR is lost to a full event queue: the guard moves the
+ * send state on, the caller gets its error well before its deadline, and the
+ * failed send counts as one uplink error. */
+ZTEST(hio_lte_txn_abort, test_failed_send_guard)
+{
+	fsm_to_ready_connected();
+	uint32_t errors = uplink_errors();
+
+	fake_flow_send_block_ms = IO_BLOCK_MS;
+	fake_flow_send_ret = -EIO;
+	m_caller_param = (struct hio_lte_send_recv_param){
+		.send_buf = m_payload,
+		.send_len = sizeof(m_payload),
+		.timeout = K_SECONDS(15),
+	};
+	caller_start(K_PRIO_PREEMPT(0));
+
+	k_sleep(K_MSEC(100));
+	zassert_true(fsm_in("send"));
+	fill_event_queue();
+
+	k_sleep(K_MSEC(IO_BLOCK_MS));
+	zassert_true(fsm_in("send"), "the ERROR was not lost: %s", state_now());
+	k_sleep(K_SECONDS(6));
+	zassert_false(fsm_in("send"), "stuck in the send state");
+
+	caller_join();
+	zassert_equal(m_caller_ret, -ENOTCONN, "got %d", m_caller_ret);
+	zassert_equal(uplink_errors(), errors + 1);
+}

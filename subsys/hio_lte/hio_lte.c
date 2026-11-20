@@ -167,6 +167,8 @@ static uint32_t m_txn_gen;
 static uint32_t m_txn_gen_taken;
 static struct hio_lte_send_recv_param m_txn;
 static size_t m_txn_recv_len;
+/* The send of the taken transaction succeeded. */
+static bool m_txn_sent;
 /* The caller's deadline, published with m_send_recv_param. */
 static k_timepoint_t m_send_recv_end;
 
@@ -180,6 +182,7 @@ static bool txn_take(k_timepoint_t *end)
 		m_txn = *m_send_recv_param;
 		m_txn_recv_len = 0;
 		m_txn.recv_len = &m_txn_recv_len;
+		m_txn_sent = false;
 		m_txn_gen_taken = m_txn_gen;
 		*end = m_send_recv_end;
 		taken = true;
@@ -1950,10 +1953,14 @@ static int on_enter_send(void)
 	k_mutex_unlock(&m_metrics_lock);
 
 	if (ret < 0) {
-		stop_timer();
+		/* Stands in for the ERROR queued on the return if it gets lost:
+		 * the state no longer takes SEND or CSCON 1 for a delivery. */
+		restart_timer(EVENT_GUARD_TIMEOUT);
 		LOG_ERR("Call `hio_lte_flow_send` failed: %d", ret);
 		return ret;
 	}
+
+	m_txn_sent = true;
 
 	/* Send delivered on-air, so CSCON 1 has been granted. Re-arm the timer
 	 * as a short bound on the SEND event delivery that moves us on to
@@ -1976,6 +1983,12 @@ static int send_event_handler(enum hio_lte_fsm_event event)
 	case HIO_LTE_FSM_EVENT_CSCON_1:
 		__fallthrough;
 	case HIO_LTE_FSM_EVENT_SEND:
+		/* No delivery if the send failed (its ERROR follows) or did not
+		 * run. The caller's SEND of the next transaction or the one of
+		 * the ready state can be queued meanwhile. */
+		if (!m_txn_sent && txn_current()) {
+			break;
+		}
 		stop_timer();
 		if (txn_current()) {
 			LOG_INF("Send event on send state");
@@ -2008,12 +2021,16 @@ static int send_event_handler(enum hio_lte_fsm_event event)
 		 * -ENOTCONN (not -ETIMEDOUT) so the caller can tell "the network
 		 * did not let us transmit" from "we transmitted but the reply was
 		 * lost" and back off differently. First attempt is
-		 * m_send_attempt == 1, so the budget is 1 + retry_count. A send
-		 * skipped for a caller gone is no uplink error. */
+		 * m_send_attempt == 1, so the budget is 1 + retry_count. After a
+		 * failed send it is the guard of an ERROR lost, and the send
+		 * counted its uplink error already. A send skipped for a caller
+		 * gone is no uplink error. */
 		if (txn_current()) {
-			k_mutex_lock(&m_metrics_lock, K_FOREVER);
-			m_metrics.uplink_errors++;
-			k_mutex_unlock(&m_metrics_lock);
+			if (m_txn_sent) {
+				k_mutex_lock(&m_metrics_lock, K_FOREVER);
+				m_metrics.uplink_errors++;
+				k_mutex_unlock(&m_metrics_lock);
+			}
 
 			if (m_send_attempt > m_txn.retry_count) {
 				LOG_WRN("Send gave up after %d attempt(s): no connection granted",
