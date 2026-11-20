@@ -1380,3 +1380,86 @@ ZTEST(hio_lte_txn_abort, test_failed_send_guard)
 	zassert_equal(m_caller_ret, -ENOTCONN, "got %d", m_caller_ret);
 	zassert_equal(uplink_errors(), errors + 1);
 }
+
+static void start_caller(void)
+{
+	caller_start(K_PRIO_PREEMPT(0));
+}
+
+/* The timer of the ready state fires after the caller's SEND was queued and
+ * before the FSM thread handled it: its TIMEOUT, queued behind the SEND, is
+ * not taken by the send state for a send that got no connection. */
+static void send_stale_ready_timeout(int retry_count, bool with_reply)
+{
+	static uint8_t rx[64];
+	static size_t len;
+
+	fsm_to_ready_connected();
+	zassert_true(fsm_in("ready"), "in %s", state_now());
+	uint32_t errors = uplink_errors();
+
+	len = 0;
+	fake_flow_recv_len = with_reply ? 10 : 0;
+	m_caller_param = (struct hio_lte_send_recv_param){
+		.send_buf = m_payload,
+		.send_len = sizeof(m_payload),
+		.recv_buf = with_reply ? rx : NULL,
+		.recv_size = with_reply ? sizeof(rx) : 0,
+		.recv_len = with_reply ? &len : NULL,
+		.retry_count = retry_count,
+		.timeout = K_SECONDS(5),
+	};
+	post_before_timer_expiry("ready", start_caller);
+
+	caller_join();
+	/* A second send would follow the return. */
+	k_sleep(K_SECONDS(2));
+	zassert_ok(m_caller_ret, "a delivered send ended with %d", m_caller_ret);
+	zassert_equal(atomic_get(&fake_flow_send_count), 1, "sent %d times",
+		      (int)atomic_get(&fake_flow_send_count));
+	zassert_equal(uplink_errors(), errors, "a delivered send counted as an uplink error");
+}
+
+/* The cloud transfer's setting: no retry. */
+ZTEST(hio_lte_txn_abort, test_send_stale_ready_timeout)
+{
+	send_stale_ready_timeout(0, false);
+}
+
+ZTEST(hio_lte_txn_abort, test_send_stale_ready_timeout_retry)
+{
+	send_stale_ready_timeout(1, true);
+}
+
+/* As above, with the ready state entered after a caller gave up waiting for
+ * CSCON 1, more than 5 s after the guard of the coneval state: only the
+ * watchdog of the new send tells the stale TIMEOUT from its own. */
+ZTEST(hio_lte_txn_abort, test_send_stale_ready_timeout_after_abort)
+{
+	struct hio_lte_send_recv_param param = {
+		.send_buf = m_payload,
+		.send_len = sizeof(m_payload),
+		.timeout = K_MSEC(300),
+	};
+
+	fsm_bring_up();
+	uint32_t errors = uplink_errors();
+
+	k_sleep(K_SECONDS(6));
+	zassert_equal(hio_lte_send_recv(&param), -ETIMEDOUT);
+	k_sleep(K_MSEC(50));
+
+	m_caller_param = (struct hio_lte_send_recv_param){
+		.send_buf = m_payload,
+		.send_len = sizeof(m_payload),
+		.timeout = K_SECONDS(5),
+	};
+	post_before_timer_expiry("ready", start_caller);
+	k_sleep(K_MSEC(100));
+	fake_flow_event_cb(HIO_LTE_FSM_EVENT_CSCON_1);
+
+	caller_join();
+	zassert_ok(m_caller_ret, "a delivered send ended with %d", m_caller_ret);
+	zassert_equal(atomic_get(&fake_flow_send_count), 2);
+	zassert_equal(uplink_errors(), errors, "a delivered send counted as an uplink error");
+}

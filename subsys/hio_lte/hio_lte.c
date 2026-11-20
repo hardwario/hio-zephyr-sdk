@@ -1930,7 +1930,7 @@ static int on_enter_send(void)
 	 * never returns. The extra second keeps it strictly after SNDTIMEO so a
 	 * normal on-air timeout is reported by the send, not pre-empted here.
 	 * The normal path stops this timer right after the send returns. */
-	start_timer(K_SECONDS(sndtimeo_sec + SEND_WATCHDOG_GUARD_SEC));
+	restart_timer(K_SECONDS(sndtimeo_sec + SEND_WATCHDOG_GUARD_SEC));
 
 	/* Dropped by the caller meanwhile: its buffer may be reused already. */
 	if (!io_section_enter()) {
@@ -2011,9 +2011,14 @@ static int send_event_handler(enum hio_lte_fsm_event event)
 			transition_state(FSM_STATE_READY);
 		}
 		break;
-	case HIO_LTE_FSM_EVENT_READY:
-		__fallthrough;
 	case HIO_LTE_FSM_EVENT_TIMEOUT:
+		/* Not the watchdog: the timer of the ready state, due before the
+		 * SEND that stopped it was handled. */
+		if (!timer_due()) {
+			break;
+		}
+		__fallthrough;
+	case HIO_LTE_FSM_EVENT_READY:
 		/* Reaching TIMEOUT in the SEND state means the network never
 		 * granted a connection (CSCON 1) for this attempt — had it, the
 		 * FSM would have moved on to RECEIVE/CONEVAL. Retry up to
