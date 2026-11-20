@@ -36,6 +36,13 @@ LOG_MODULE_REGISTER(hio_lte, CONFIG_HIO_LTE_LOG_LEVEL);
 #define SEND_WATCHDOG_GUARD_SEC 1
 #define CONEVAL_TIMEOUT         K_SECONDS(30)
 #define NCELLMEAS_TIMEOUT       K_SECONDS(60)
+/* The caller's wait for the FSM to leave the send/recv IO section is unbounded:
+ * SNDTIMEO (up to 120 s) and RCVTIMEO (up to 60 s) bound the section. Past this
+ * it logs a warning. */
+#define TXN_IDLE_WARN_TIMEOUT   K_SECONDS(130)
+/* The bound on the wait of a state for the event it posted to itself to move on:
+ * one lost to a full event queue would leave the FSM in that state. */
+#define EVENT_GUARD_TIMEOUT     K_SECONDS(5)
 
 #define WORK_Q_STACK_SIZE 4096
 #define WORK_Q_PRIORITY   K_LOWEST_APPLICATION_THREAD_PRIO
@@ -84,6 +91,8 @@ static K_EVENT_DEFINE(m_states_event);
 #define DISABLED_BIT  BIT(3)
 #define SCAN_DONE_BIT BIT(4)
 #define NCELLMEAS_DONE_BIT BIT(5)
+/* Set while the FSM is outside the send/recv IO section (see io_section_enter). */
+#define TXN_IDLE_BIT       BIT(6)
 
 #define FLAG_CSCON           BIT(0)
 #define FLAG_GNSS_ENABLE     BIT(1)
@@ -156,8 +165,11 @@ static uint32_t m_txn_gen;
 static uint32_t m_txn_gen_taken;
 static struct hio_lte_send_recv_param m_txn;
 static size_t m_txn_recv_len;
+/* The caller's deadline, published with m_send_recv_param. */
+static k_timepoint_t m_send_recv_end;
 
-static bool txn_take(void)
+/* Take a copy of the published transaction and its deadline. */
+static bool txn_take(k_timepoint_t *end)
 {
 	bool taken = false;
 	k_spinlock_key_t key = k_spin_lock(&m_txn_lock);
@@ -167,6 +179,7 @@ static bool txn_take(void)
 		m_txn_recv_len = 0;
 		m_txn.recv_len = &m_txn_recv_len;
 		m_txn_gen_taken = m_txn_gen;
+		*end = m_send_recv_end;
 		taken = true;
 	}
 
@@ -186,7 +199,6 @@ static bool txn_current(void)
 /* End the transaction; only_taken skips it when the caller has moved on. */
 static void txn_end(int result, bool only_taken, bool with_recv_len)
 {
-	bool ended = false;
 	k_spinlock_key_t key = k_spin_lock(&m_txn_lock);
 
 	if (m_send_recv_param && (!only_taken || m_txn_gen == m_txn_gen_taken)) {
@@ -196,14 +208,34 @@ static void txn_end(int result, bool only_taken, bool with_recv_len)
 		m_send_recv_result = result;
 		m_send_recv_param = NULL;
 		m_txn_gen++;
-		ended = true;
+		/* Under the lock, so that a caller never wakes up on the end of
+		 * an older transaction. */
+		k_event_post(&m_states_event, SEND_RECV_BIT);
 	}
 
 	k_spin_unlock(&m_txn_lock, key);
+}
 
-	if (ended) {
-		k_event_post(&m_states_event, SEND_RECV_BIT);
+/* The FSM touches the caller's send_buf and recv_buf only inside the IO section
+ * (the flow send and recv), and the caller waits for TXN_IDLE_BIT before it
+ * returns. The bit is cleared before the check, while the caller drops its
+ * param before the wait: either the FSM sees the drop and skips the section,
+ * or the caller sees the cleared bit and waits for the section to end. */
+static bool io_section_enter(void)
+{
+	k_event_clear(&m_states_event, TXN_IDLE_BIT);
+
+	if (!txn_current()) {
+		k_event_post(&m_states_event, TXN_IDLE_BIT);
+		return false;
 	}
+
+	return true;
+}
+
+static void io_section_leave(void)
+{
+	k_event_post(&m_states_event, TXN_IDLE_BIT);
 }
 
 struct hio_lte_metrics m_metrics;
@@ -396,6 +428,25 @@ static void start_timer(k_timeout_t timeout)
 static void stop_timer(void)
 {
 	k_work_cancel_delayable(&m_timeout_work);
+}
+
+/* When the timer of the state is due, see restart_timer(). */
+static k_timepoint_t m_timer_end;
+
+/* start_timer() does not replace a pending timer; this one does, and remembers
+ * when it is due. */
+static void restart_timer(k_timeout_t timeout)
+{
+	stop_timer();
+	m_timer_end = sys_timepoint_calc(timeout);
+	start_timer(timeout);
+}
+
+/* A TIMEOUT before the timer of the state is due is a stale one of an earlier
+ * state. */
+static bool timer_due(void)
+{
+	return sys_timepoint_expired(m_timer_end);
 }
 
 static void delegate_event(enum hio_lte_fsm_event event)
@@ -708,6 +759,18 @@ int hio_lte_get_ceer(char **ceer)
 	return hio_lte_state_get_ceer(ceer);
 }
 
+/* Until the FSM is out of the IO section that may use the caller's buffers. */
+static void wait_txn_idle(void)
+{
+	if (k_event_wait(&m_states_event, TXN_IDLE_BIT, false, TXN_IDLE_WARN_TIMEOUT)) {
+		return;
+	}
+
+	LOG_WRN("Still waiting for the FSM to leave the send/recv");
+
+	k_event_wait(&m_states_event, TXN_IDLE_BIT, false, K_FOREVER);
+}
+
 int hio_lte_send_recv(const struct hio_lte_send_recv_param *param)
 {
 	/* Test mode: the modem belongs to the shell, keep the FSM down. */
@@ -730,14 +793,15 @@ int hio_lte_send_recv(const struct hio_lte_send_recv_param *param)
 
 	LOG_DBG("locked");
 
+	k_event_clear(&m_states_event, SEND_RECV_BIT);
+
 	k_spinlock_key_t key = k_spin_lock(&m_txn_lock);
 	m_send_recv_param = (struct hio_lte_send_recv_param *)param;
+	m_send_recv_end = end;
 	m_send_recv_result = 0;
 	m_send_attempt = 0;
 	m_txn_gen++;
 	k_spin_unlock(&m_txn_lock, key);
-
-	k_event_clear(&m_states_event, SEND_RECV_BIT);
 
 	delegate_event(HIO_LTE_FSM_EVENT_SEND);
 
@@ -745,22 +809,34 @@ int hio_lte_send_recv(const struct hio_lte_send_recv_param *param)
 
 	k_event_wait(&m_states_event, SEND_RECV_BIT, false, sys_timepoint_timeout(end));
 
-	if (sys_timepoint_expired(end)) {
-		/* param is the caller's stack struct: drop it before that frame is
-		 * reused. The cloud transfer layer owns retransmission. */
-		key = k_spin_lock(&m_txn_lock);
-		if (m_send_recv_param == param) {
-			m_send_recv_param = NULL;
-			m_txn_gen++;
-		}
-		k_spin_unlock(&m_txn_lock, key);
+	/* Ownership decides the result, not the time: a transaction the FSM has
+	 * ended keeps its result even past the deadline. One that is still ours
+	 * is dropped, as param is the caller's stack struct; the cloud transfer
+	 * layer owns retransmission. */
+	bool dropped = false;
+	int result;
 
-		k_mutex_unlock(&m_send_recv_lock);
-		delegate_event(HIO_LTE_FSM_EVENT_TIMEOUT);
-		return -ETIMEDOUT;
+	key = k_spin_lock(&m_txn_lock);
+	if (m_send_recv_param == param) {
+		m_send_recv_param = NULL;
+		m_txn_gen++;
+		dropped = true;
+		result = -ETIMEDOUT;
+	} else {
+		result = m_send_recv_result;
 	}
+	k_spin_unlock(&m_txn_lock, key);
 
-	int result = m_send_recv_result;
+	/* The caller's buffers are not touched after the return. */
+	wait_txn_idle();
+
+	if (dropped) {
+		LOG_WRN("Transaction timed out");
+		/* Before the unlock, so that it is queued ahead of the next
+		 * transaction. Only the send state acts on it: the state the FSM
+		 * is in keeps its own timer. */
+		delegate_event(HIO_LTE_FSM_EVENT_SEND_ABORT);
+	}
 
 	k_mutex_unlock(&m_send_recv_lock);
 
@@ -1454,6 +1530,10 @@ static int on_enter_open_socket(void)
 	 * (ATTACH, ERROR, RETRY_DELAY, ...) need no extra reopen. */
 	atomic_test_and_clear_bit(&m_flag, FLAG_SOCKET_RECONFIG);
 
+	/* Only the guard of a socket opened counts, see below. */
+	stop_timer();
+	m_timer_end = sys_timepoint_calc(K_FOREVER);
+
 	struct hio_lte_socket_config socket_config;
 	k_mutex_lock(&m_state_lock, K_FOREVER);
 	memcpy(&socket_config, &m_socket_config, sizeof(socket_config));
@@ -1478,6 +1558,8 @@ static int on_enter_open_socket(void)
 		return ret;
 	}
 
+	/* Its TIMEOUT stands in for a SOCKET_OPENED lost. */
+	restart_timer(EVENT_GUARD_TIMEOUT);
 	delegate_event(HIO_LTE_FSM_EVENT_SOCKET_OPENED);
 
 	return 0;
@@ -1486,6 +1568,12 @@ static int on_enter_open_socket(void)
 static int open_socket_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
+	case HIO_LTE_FSM_EVENT_TIMEOUT:
+		/* Not the guard: a stale timer of the previous state. */
+		if (!timer_due()) {
+			break;
+		}
+		__fallthrough;
 	case HIO_LTE_FSM_EVENT_SOCKET_OPENED:
 		k_event_post(&m_states_event, CONNECTED_BIT);
 		transition_state(FSM_STATE_CONEVAL);
@@ -1707,15 +1795,14 @@ static int sleep_event_handler(enum hio_lte_fsm_event event)
 static int on_enter_send(void)
 {
 	int ret;
+	k_timepoint_t end;
 
-	if (!txn_take()) {
+	if (!txn_take(&end)) {
 		delegate_event(HIO_LTE_FSM_EVENT_READY);
 		return 0;
 	}
 
 	k_mutex_lock(&m_metrics_lock, K_FOREVER);
-	m_metrics.uplink_count++;
-	m_metrics.uplink_bytes += m_txn.send_len;
 	ret = hio_rtc_get_ts(&m_metrics.uplink_last_ts);
 	if (ret) {
 		LOG_ERR("Call `hio_rtc_get_ts` failed: %d", ret);
@@ -1730,7 +1817,6 @@ static int on_enter_send(void)
 	 * caller's remaining deadline, capped at the hard ceiling: a send must
 	 * never block past the caller's own deadline, but K_FOREVER transfers
 	 * still get the full ceiling. */
-	k_timepoint_t end = sys_timepoint_calc(m_txn.timeout);
 	k_timeout_t remaining = sys_timepoint_timeout(end);
 	int remaining_sec =
 		K_TIMEOUT_EQ(remaining, K_FOREVER) ? -1 : k_ticks_to_sec_ceil32(remaining.ticks);
@@ -1749,15 +1835,29 @@ static int on_enter_send(void)
 	 * The normal path stops this timer right after the send returns. */
 	start_timer(K_SECONDS(sndtimeo_sec + SEND_WATCHDOG_GUARD_SEC));
 
+	/* Dropped by the caller meanwhile: its buffer may be reused already. */
+	if (!io_section_enter()) {
+		stop_timer();
+		delegate_event(HIO_LTE_FSM_EVENT_READY);
+		return 0;
+	}
+
 	ret = hio_lte_flow_send(&m_txn);
+
+	io_section_leave();
+
+	/* Only a send that ran counts, not one skipped for a caller gone. */
+	k_mutex_lock(&m_metrics_lock, K_FOREVER);
+	m_metrics.uplink_count++;
+	m_metrics.uplink_bytes += m_txn.send_len;
+	if (ret < 0) {
+		m_metrics.uplink_errors++;
+	}
+	k_mutex_unlock(&m_metrics_lock);
+
 	if (ret < 0) {
 		stop_timer();
 		LOG_ERR("Call `hio_lte_flow_send` failed: %d", ret);
-
-		k_mutex_lock(&m_metrics_lock, K_FOREVER);
-		m_metrics.uplink_errors++;
-		k_mutex_unlock(&m_metrics_lock);
-
 		return ret;
 	}
 
@@ -1798,13 +1898,15 @@ static int send_event_handler(enum hio_lte_fsm_event event)
 			transition_state(FSM_STATE_READY);
 		}
 		break;
+	case HIO_LTE_FSM_EVENT_SEND_ABORT:
+		/* The caller gave up on the transaction this state works on. */
+		if (!txn_current()) {
+			transition_state(FSM_STATE_READY);
+		}
+		break;
 	case HIO_LTE_FSM_EVENT_READY:
 		__fallthrough;
 	case HIO_LTE_FSM_EVENT_TIMEOUT:
-		k_mutex_lock(&m_metrics_lock, K_FOREVER);
-		m_metrics.uplink_errors++;
-		k_mutex_unlock(&m_metrics_lock);
-
 		/* Reaching TIMEOUT in the SEND state means the network never
 		 * granted a connection (CSCON 1) for this attempt — had it, the
 		 * FSM would have moved on to RECEIVE/CONEVAL. Retry up to
@@ -1812,11 +1914,18 @@ static int send_event_handler(enum hio_lte_fsm_event event)
 		 * -ENOTCONN (not -ETIMEDOUT) so the caller can tell "the network
 		 * did not let us transmit" from "we transmitted but the reply was
 		 * lost" and back off differently. First attempt is
-		 * m_send_attempt == 1, so the budget is 1 + retry_count. */
-		if (txn_current() && m_send_attempt > m_txn.retry_count) {
-			LOG_WRN("Send gave up after %d attempt(s): no connection granted",
-				m_send_attempt);
-			txn_end(-ENOTCONN, true, false);
+		 * m_send_attempt == 1, so the budget is 1 + retry_count. A send
+		 * skipped for a caller gone is no uplink error. */
+		if (txn_current()) {
+			k_mutex_lock(&m_metrics_lock, K_FOREVER);
+			m_metrics.uplink_errors++;
+			k_mutex_unlock(&m_metrics_lock);
+
+			if (m_send_attempt > m_txn.retry_count) {
+				LOG_WRN("Send gave up after %d attempt(s): no connection granted",
+					m_send_attempt);
+				txn_end(-ENOTCONN, true, false);
+			}
 		}
 		transition_state(FSM_STATE_READY);
 		break;
@@ -1846,26 +1955,46 @@ static int on_enter_receive(void)
 	int ret;
 	LOG_INF("on_enter_receive");
 
+	/* Every way out posts the event that moves the FSM on (an error return
+	 * posts ERROR); nothing else would if it got lost. No guard runs
+	 * during the recv: its TIMEOUT would wait in the queue. */
 	if (!txn_current()) {
+		restart_timer(EVENT_GUARD_TIMEOUT);
 		delegate_event(HIO_LTE_FSM_EVENT_READY);
 		return 0;
 	}
 
 	k_mutex_lock(&m_metrics_lock, K_FOREVER);
-	m_metrics.downlink_count++;
 	ret = hio_rtc_get_ts(&m_metrics.downlink_last_ts);
 	if (ret) {
 		LOG_ERR("Call `hio_rtc_get_ts` failed: %d", ret);
 	}
 	k_mutex_unlock(&m_metrics_lock);
 
+	if (!io_section_enter()) {
+		restart_timer(EVENT_GUARD_TIMEOUT);
+		delegate_event(HIO_LTE_FSM_EVENT_READY);
+		return 0;
+	}
+
 	ret = hio_lte_flow_recv(&m_txn);
+
+	io_section_leave();
+
+	/* From the end of the recv, which takes up to RCVTIMEO. */
+	restart_timer(EVENT_GUARD_TIMEOUT);
+
+	k_mutex_lock(&m_metrics_lock, K_FOREVER);
+	m_metrics.downlink_count++;
+	if (ret < 0) {
+		m_metrics.downlink_errors++;
+	} else {
+		m_metrics.downlink_bytes += m_txn_recv_len;
+	}
+	k_mutex_unlock(&m_metrics_lock);
+
 	if (ret < 0) {
 		LOG_ERR("Call `hio_lte_flow_recv` failed: %d", ret);
-
-		k_mutex_lock(&m_metrics_lock, K_FOREVER);
-		m_metrics.downlink_errors++;
-		k_mutex_unlock(&m_metrics_lock);
 
 		/* End the transaction: the reply did not arrive in the RCVTIMEO
 		 * window. Report -ETIMEDOUT to the caller instead of letting the
@@ -1876,10 +2005,6 @@ static int on_enter_receive(void)
 
 		return ret;
 	}
-
-	k_mutex_lock(&m_metrics_lock, K_FOREVER);
-	m_metrics.downlink_bytes += m_txn_recv_len;
-	k_mutex_unlock(&m_metrics_lock);
 
 	k_sleep(K_MSEC(100));
 	delegate_event(HIO_LTE_FSM_EVENT_RECV);
@@ -1892,6 +2017,14 @@ static int on_enter_receive(void)
 static int receive_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
+	case HIO_LTE_FSM_EVENT_TIMEOUT:
+		/* Not due: a stale timer of the send state, or the first guard
+		 * during a long recv. */
+		if (!timer_due()) {
+			break;
+		}
+		transition_state(FSM_STATE_READY);
+		break;
 	case HIO_LTE_FSM_EVENT_RECV:
 		if (!m_send_recv_param) {
 			transition_state(FSM_STATE_CONEVAL);
@@ -1899,8 +2032,6 @@ static int receive_event_handler(enum hio_lte_fsm_event event)
 		}
 		__fallthrough;
 	case HIO_LTE_FSM_EVENT_READY:
-		__fallthrough;
-	case HIO_LTE_FSM_EVENT_TIMEOUT:
 		transition_state(FSM_STATE_READY);
 		break;
 	case HIO_LTE_FSM_EVENT_DEREGISTERED:
@@ -1925,8 +2056,17 @@ static int on_enter_coneval(void)
 		LOG_WRN("Call `hio_lte_flow_coneval` failed: %d", ret);
 	}
 
+	/* Nothing else moves the FSM on if the READY gets lost. */
+	restart_timer(EVENT_GUARD_TIMEOUT);
 	delegate_event(HIO_LTE_FSM_EVENT_READY);
 
+	return 0;
+}
+
+/* Of a state that arms a guard on the event it posts to itself. */
+static int on_leave_guarded(void)
+{
+	stop_timer();
 	return 0;
 }
 
@@ -2008,8 +2148,7 @@ static int ncellmeas_event_handler(enum hio_lte_fsm_event event)
 {
 	switch (event) {
 	case HIO_LTE_FSM_EVENT_TIMEOUT:
-		/* Not the watchdog: a stale timer of the previous state or the
-		 * deadline of a transaction waiting for the measurement. */
+		/* Not the watchdog: a stale timer of the previous state. */
 		if (!sys_timepoint_expired(m_ncellmeas_timer_end)) {
 			break;
 		}
@@ -2351,12 +2490,12 @@ static struct fsm_state_desc m_fsm_states[] = {
 	{FSM_STATE_ATTACH, on_enter_attach, on_leave_attach, attach_event_handler},
 	{FSM_STATE_RETRY_DELAY, on_enter_retry_delay, on_leave_retry_delay, retry_delay_event_handler},
 	{FSM_STATE_RESET_LOOP, on_enter_reset_loop, on_leave_reset_loop, reset_loop_event_handler},
-	{FSM_STATE_OPEN_SOCKET, on_enter_open_socket, NULL, open_socket_event_handler},
+	{FSM_STATE_OPEN_SOCKET, on_enter_open_socket, on_leave_guarded, open_socket_event_handler},
 	{FSM_STATE_READY, on_enter_ready, on_leave_ready, ready_event_handler},
 	{FSM_STATE_SLEEP, on_enter_sleep, NULL, sleep_event_handler},
 	{FSM_STATE_SEND, on_enter_send, on_leave_send, send_event_handler},
-	{FSM_STATE_RECEIVE, on_enter_receive, NULL, receive_event_handler},
-	{FSM_STATE_CONEVAL, on_enter_coneval, NULL, coneval_event_handler},
+	{FSM_STATE_RECEIVE, on_enter_receive, on_leave_guarded, receive_event_handler},
+	{FSM_STATE_CONEVAL, on_enter_coneval, on_leave_guarded, coneval_event_handler},
 	{FSM_STATE_NCELLMEAS, on_enter_ncellmeas, on_leave_ncellmeas, ncellmeas_event_handler},
 	{FSM_STATE_SCAN, on_enter_scan, on_leave_scan, scan_event_handler},
 };
@@ -2397,8 +2536,8 @@ static int init(void)
 
 	m_state = FSM_STATE_DISABLED;
 	/* on_enter_disabled() does not run for the initial state. Nothing is
-	 * requested yet. */
-	k_event_post(&m_states_event, DISABLED_BIT | NCELLMEAS_DONE_BIT);
+	 * requested yet, and no send or recv is in progress. */
+	k_event_post(&m_states_event, DISABLED_BIT | NCELLMEAS_DONE_BIT | TXN_IDLE_BIT);
 
 	k_work_queue_init(&m_work_q);
 

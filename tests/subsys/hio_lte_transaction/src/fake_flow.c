@@ -49,21 +49,55 @@ int hio_lte_flow_init(HIO_LTE_FSM_EVENT_delegate_cb cb)
 	return 0;
 }
 
+/* The send's result, after its block. */
+int fake_flow_send_ret;
+
+/* Non-zero: the send keeps the CPU (busy wait) for this long, so a caller of
+ * lower priority cannot run before the FSM is done with the send. */
+uint32_t fake_flow_send_busy_ms;
+
+/* What the modem took from send_buf: copied when the send ends, as nrf_send
+ * reads the caller's buffer until it returns. */
+uint8_t fake_flow_wire[64];
+size_t fake_flow_wire_len;
+
+/* Inside a send or a recv, and the uptime at which the last send or recv
+ * returned. */
+atomic_t fake_flow_in_io = ATOMIC_INIT(0);
+int64_t fake_flow_io_exit_ms;
+
+/* The thread the FSM runs on (seen in the send). */
+k_tid_t fake_flow_fsm_thread;
+
 int hio_lte_flow_send(const struct hio_lte_send_recv_param *param)
 {
+	fake_flow_fsm_thread = k_current_get();
 	fake_flow_last_send_param = param;
 	atomic_inc(&fake_flow_send_count);
+	atomic_set(&fake_flow_in_io, 1);
 
 	if (fake_flow_send_block_ms != 0) {
 		k_sleep(K_MSEC(fake_flow_send_block_ms));
 	}
 
-	return 0;
+	if (fake_flow_send_busy_ms != 0) {
+		k_busy_wait(fake_flow_send_busy_ms * USEC_PER_MSEC);
+	}
+
+	fake_flow_wire_len = MIN(param->send_len, sizeof(fake_flow_wire));
+	memcpy(fake_flow_wire, param->send_buf, fake_flow_wire_len);
+
+	fake_flow_io_exit_ms = k_uptime_get();
+	atomic_set(&fake_flow_in_io, 0);
+
+	return fake_flow_send_ret;
 }
 
-/* Non-zero: block for fake_flow_recv_block_ms, then receive this many bytes. */
+/* Non-zero: block for fake_flow_recv_block_ms, then receive this many bytes,
+ * each fake_flow_recv_fill, written into the caller's recv_buf. */
 size_t fake_flow_recv_len;
 uint32_t fake_flow_recv_block_ms;
+uint8_t fake_flow_recv_fill = 0x5a;
 
 int hio_lte_flow_recv(const struct hio_lte_send_recv_param *param)
 {
@@ -71,13 +105,23 @@ int hio_lte_flow_recv(const struct hio_lte_send_recv_param *param)
 		return -ETIMEDOUT;
 	}
 
+	atomic_set(&fake_flow_in_io, 1);
 	k_sleep(K_MSEC(fake_flow_recv_block_ms));
-	*param->recv_len += fake_flow_recv_len;
+
+	size_t len = MIN(fake_flow_recv_len, param->recv_size - *param->recv_len);
+
+	memset((uint8_t *)param->recv_buf + *param->recv_len, fake_flow_recv_fill, len);
+	*param->recv_len += len;
+
+	fake_flow_io_exit_ms = k_uptime_get();
+	atomic_set(&fake_flow_in_io, 0);
+
 	return 0;
 }
 
 int hio_lte_flow_start(void)
 {
+	fake_flow_fsm_thread = k_current_get();
 	atomic_inc(&fake_flow_start_count);
 	return 0;
 }
@@ -124,11 +168,19 @@ int hio_lte_flow_sim_fplmn(void)
 	return 0;
 }
 
+/* The time the socket open takes. */
+uint32_t fake_flow_open_ms;
+
 int hio_lte_flow_open_socket(const struct hio_lte_socket_config *socket_config,
 			     bool load_dtls_session)
 {
 	ARG_UNUSED(socket_config);
 	ARG_UNUSED(load_dtls_session);
+
+	if (fake_flow_open_ms) {
+		k_sleep(K_MSEC(fake_flow_open_ms));
+	}
+
 	return 0;
 }
 
@@ -138,19 +190,36 @@ int hio_lte_flow_close_socket(bool save_dtls_session)
 	return 0;
 }
 
+/* The time the socket check takes. */
+uint32_t fake_flow_check_ms;
+
 int hio_lte_flow_check(void)
 {
+	if (fake_flow_check_ms) {
+		k_sleep(K_MSEC(fake_flow_check_ms));
+	}
+
 	return 0;
 }
+
+/* SNDTIMEO of the last send. */
+int fake_flow_sndtimeo_sec = -1;
 
 int hio_lte_flow_set_sndtimeo(int timeout_sec)
 {
-	ARG_UNUSED(timeout_sec);
+	fake_flow_sndtimeo_sec = timeout_sec;
 	return 0;
 }
 
+/* The time AT%CONEVAL takes. */
+uint32_t fake_flow_coneval_ms;
+
 int hio_lte_flow_coneval(void)
 {
+	if (fake_flow_coneval_ms) {
+		k_sleep(K_MSEC(fake_flow_coneval_ms));
+	}
+
 	return 0;
 }
 
@@ -362,8 +431,15 @@ int hio_config_shell_cmd(const struct shell *shell, size_t argc, char **argv)
 	return 0;
 }
 
+/* Runs inside the FSM's metrics update before a send or a recv. */
+void (*fake_rtc_hook)(void);
+
 int hio_rtc_get_ts(int64_t *ts)
 {
+	if (fake_rtc_hook) {
+		fake_rtc_hook();
+	}
+
 	if (ts != NULL) {
 		*ts = 0;
 	}

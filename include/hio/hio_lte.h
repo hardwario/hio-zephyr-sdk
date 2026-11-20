@@ -113,7 +113,7 @@ struct hio_lte_send_recv_param {
 			       * to grant a connection (each attempt waits for RRC). 0 (the
 			       * default) sends once and does not retry; N retries up to N
 			       * more times. Bounds the resend loop independently of
-			       * @ref timeout, which only limits how long one attempt waits.
+			       * @ref timeout, the deadline of the whole call.
 			       */
 };
 
@@ -240,6 +240,16 @@ int hio_lte_wait_for_connected(k_timeout_t timeout);
  * A requested neighbour cell measurement that is running holds the
  * transaction until it ends, up to its watchdog (60 s), see
  * @ref hio_lte_schedule_ncellmeas.
+ *
+ * After the call returns, the buffers of @p param (@c send_buf, @c recv_buf
+ * and @c recv_len) are not touched any more. A call whose timeout expires while
+ * the modem is sending or receiving into them returns only once that ends: the
+ * send is bounded by the time left to the timeout (at least 5 s), the receive
+ * by its own timeout. A reply received meanwhile is dropped and the call
+ * returns -ETIMEDOUT.
+ *
+ * The result is decided by who ended the transaction, not by the clock: one
+ * the LTE thread completed just at the timeout returns its own result.
  *
  * @param param  Operation parameters (see @ref hio_lte_send_recv_param).
  * @retval 0     Success (see @p *recv_len for bytes received).
