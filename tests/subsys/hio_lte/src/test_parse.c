@@ -640,6 +640,38 @@ ZTEST(parser, test_urc_ncellmeas_complex_b)
 	zassert_equal(param.cells[6].neighbor_count, 0, "cells[6].neighbor_count mismatch");
 }
 
+/* Nordic's RSRQ index goes down to -30 (RSRQ < -34.5 dB), on a cell and a neighbor */
+ZTEST(parser, test_urc_ncellmeas_rsrq_extended)
+{
+	struct hio_lte_ncellmeas_param param;
+	int ret = hio_lte_parse_urc_ncellmeas(
+		"0,\"00011B07\",\"26295\",\"00B7\",10512,9034,2300,7,63,-30,150344527,1,1,"
+		"2300,8,60,-30,92",
+		5, &param);
+
+	zassert_ok(ret);
+	zassert_true(param.valid);
+	zassert_equal(param.cells[0].rsrq, -30);
+	zassert_equal(param.ncells[0].rsrq, -30);
+}
+
+ZTEST(parser, test_urc_ncellmeas_rsrq_below_range)
+{
+	struct hio_lte_ncellmeas_param param;
+
+	zassert_equal(
+		hio_lte_parse_urc_ncellmeas(
+			"0,\"00011B07\",\"26295\",\"00B7\",10512,9034,2300,7,63,-31,150344527,1,0",
+			5, &param),
+		-ERANGE);
+	zassert_equal(
+		hio_lte_parse_urc_ncellmeas(
+			"0,\"00011B07\",\"26295\",\"00B7\",10512,9034,2300,7,63,31,150344527,1,1,"
+			"2300,8,60,-31,92",
+			5, &param),
+		-ERANGE);
+}
+
 /* Captured from msm200 on the bench (AT+COPS=?). */
 ZTEST(parser, test_cops_list_ok)
 {

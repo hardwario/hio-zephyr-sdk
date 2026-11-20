@@ -644,7 +644,7 @@ static inline int parse_ncellmeas_ncell(const char **p_ptr,
 		return -EBADMSG;
 	}
 
-	if (num < -17 || num > 255) {
+	if (num < -30 || num > 255) {
 		LOG_ERR("ncells RSRQ out of range: %ld", num);
 		return -ERANGE;
 	}
@@ -784,7 +784,7 @@ static inline int parse_ncellmeas_cell(const char **p_ptr,
 		return -EBADMSG;
 	}
 
-	if (num < -17 || num > 255) {
+	if (num < -30 || num > 255) {
 		LOG_ERR("RSRQ out of range: %ld", num);
 		return -ERANGE;
 	}

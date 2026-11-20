@@ -473,7 +473,7 @@ struct hio_lte_ncellmeas_ncell_param {
 	uint32_t earfcn; /**< EARFCN. */
 	uint16_t pci;    /**< Physical Cell ID. */
 	int16_t rsrp;    /**< Level index Reference Signal Received Power. Range: -17 to 255. */
-	int16_t rsrq;    /**< Level index Reference Signal Received Quality. Range: -17 to 255. */
+	int16_t rsrq;    /**< Level index Reference Signal Received Quality. Range: -30 to 255. */
 	int time_diff;   /**< Time Difference (ns or quantized units, depending on source). */
 };
 
@@ -487,7 +487,7 @@ struct hio_lte_ncellmeas_cell_param {
 	uint32_t earfcn; /**< EARFCN. */
 	uint16_t pci;    /**< Physical Cell ID. */
 	int16_t rsrp;    /**< Level index Reference Signal Received Power. Range: -17 to 255. */
-	int16_t rsrq;    /**< Level index Reference Signal Received Quality. Range: -17 to 255. */
+	int16_t rsrq;    /**< Level index Reference Signal Received Quality. Range: -30 to 255. */
 	bool serving;    /**< The serving cell. */
 
 	uint8_t neighbor_count; /**< Number of neighbor cells stored, from ncell_first on. */
