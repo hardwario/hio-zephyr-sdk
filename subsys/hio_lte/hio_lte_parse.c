@@ -886,11 +886,10 @@ int hio_lte_parse_urc_ncellmeas(const char *line, uint8_t search_type,
 
 		param->num_cells += 1;
 
-		if (cell->neighbor_count) {
-			cell->ncells =
-				&param->ncells[param->num_ncells]; /* point to the start of the
-								      neighboring cells */
+		/* An index, not a pointer: the parameters are copied */
+		cell->ncell_first = param->num_ncells;
 
+		if (cell->neighbor_count) {
 			for (int j = 0; j < cell->neighbor_count; ++j) {
 				if (!(p = hio_tok_sep(p))) {
 					return -EPROTO;

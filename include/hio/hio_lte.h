@@ -458,8 +458,8 @@ struct hio_lte_ncellmeas_cell_param {
 	int16_t rsrq;    /**< Level index Reference Signal Received Quality. Range: -17 to 255. */
 	bool serving;    /**< The serving cell. */
 
-	uint8_t neighbor_count;                       /**< Number of neighbor cells reported. */
-	struct hio_lte_ncellmeas_ncell_param *ncells; /**< Pointer to first neighbor cell entry. */
+	uint8_t neighbor_count; /**< Number of neighbor cells stored, from ncell_first on. */
+	uint8_t ncell_first;    /**< First neighbor: index in hio_lte_ncellmeas_param.ncells. */
 };
 
 struct hio_lte_ncellmeas_param {

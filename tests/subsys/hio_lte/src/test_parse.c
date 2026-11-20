@@ -286,7 +286,7 @@ ZTEST(parser, test_urc_ncellmeas_one_cell_four_neighboring)
 	zassert_equal(param.cells[0].rsrp, 63, "cells[0].rsrp not equal");
 	zassert_equal(param.cells[0].rsrq, 31, "cells[0].rsrq not equal");
 	zassert_equal(param.cells[0].neighbor_count, 4, "cells[0].neighbor_count not equal");
-	zassert_equal(param.cells[0].ncells, &param.ncells[0], "cells[0].ncells not equal pointer");
+	zassert_equal(param.cells[0].ncell_first, 0, "cells[0].ncell_first not equal");
 
 	zassert_equal(param.ncells[0].earfcn, 2300, "ncells[0].earfcn not equal");
 	zassert_equal(param.ncells[0].pci, 8, "ncells[0].pci not equal");
@@ -337,7 +337,7 @@ ZTEST(parser, test_urc_ncellmeas_two_cells_no_neighboring)
 	zassert_equal(param.cells[0].rsrq, 31, "cells[0].rsrq not equal");
 	zassert_true(param.cells[0].serving, "cells[0].serving not true");
 	zassert_equal(param.cells[0].neighbor_count, 0, "cells[0].neighbor_count not equal");
-	zassert_is_null(param.cells[0].ncells, "cells[0].ncells not equal pointer");
+	zassert_equal(param.cells[0].ncell_first, 0, "cells[0].ncell_first not equal");
 
 	zassert_equal(param.cells[1].eci, 0x00011B08, "cells[1].eci not equal");
 	zassert_equal(param.cells[1].mcc, 262, "cells[1].mcc not equal");
@@ -350,7 +350,7 @@ ZTEST(parser, test_urc_ncellmeas_two_cells_no_neighboring)
 	zassert_equal(param.cells[1].rsrq, 30, "cells[1].rsrq not equal");
 	zassert_false(param.cells[1].serving, "cells[1].serving not false");
 	zassert_equal(param.cells[1].neighbor_count, 0, "cells[1].neighbor_count not equal");
-	zassert_is_null(param.cells[1].ncells, "cells[1].ncells not equal pointer");
+	zassert_equal(param.cells[1].ncell_first, 0, "cells[1].ncell_first not equal");
 }
 
 /* The MNC keeps its length: 310004 is not 31004. */
@@ -395,7 +395,7 @@ ZTEST(parser, test_urc_ncellmeas_complex)
 	zassert_equal(param.cells[0].rsrp, 67, "cells[0].rsrp not equal");
 	zassert_equal(param.cells[0].rsrq, 31, "cells[0].rsrq not equal");
 	zassert_equal(param.cells[0].neighbor_count, 0, "cells[0].neighbor_count not equal");
-	zassert_is_null(param.cells[0].ncells, "cells[0].ncells not equal pointer");
+	zassert_equal(param.cells[0].ncell_first, 0, "cells[0].ncell_first not equal");
 
 	zassert_equal(param.cells[1].eci, 0x00011B07, "cells[1].eci not equal");
 	zassert_equal(param.cells[1].mcc, 262, "cells[1].mcc not equal");
@@ -407,7 +407,7 @@ ZTEST(parser, test_urc_ncellmeas_complex)
 	zassert_equal(param.cells[1].rsrp, 63, "cells[1].rsrp not equal");
 	zassert_equal(param.cells[1].rsrq, 31, "cells[1].rsrq not equal");
 	zassert_equal(param.cells[1].neighbor_count, 3, "cells[1].neighbor_count not equal");
-	zassert_equal(param.cells[1].ncells, &param.ncells[0], "cells[1].ncells not equal pointer");
+	zassert_equal(param.cells[1].ncell_first, 0, "cells[1].ncell_first not equal");
 
 	zassert_equal(param.cells[2].eci, 0x074FEB02, "cells[2].eci not equal");
 	zassert_equal(param.cells[2].mcc, 230, "cells[2].mcc not equal");
@@ -419,7 +419,7 @@ ZTEST(parser, test_urc_ncellmeas_complex)
 	zassert_equal(param.cells[2].rsrp, 60, "cells[2].rsrp not equal");
 	zassert_equal(param.cells[2].rsrq, 9, "cells[2].rsrq not equal");
 	zassert_equal(param.cells[2].neighbor_count, 1, "cells[2].neighbor_count not equal");
-	zassert_equal(param.cells[2].ncells, &param.ncells[3], "cells[2].ncells not equal pointer");
+	zassert_equal(param.cells[2].ncell_first, 3, "cells[2].ncell_first not equal");
 
 	zassert_equal(param.ncells[0].earfcn, 2300, "ncells[0].earfcn not equal");
 	zassert_equal(param.ncells[0].pci, 8, "ncells[0].pci not equal");
@@ -444,6 +444,54 @@ ZTEST(parser, test_urc_ncellmeas_complex)
 	zassert_equal(param.ncells[3].rsrp, 55, "ncells[3].rsrp not equal");
 	zassert_equal(param.ncells[3].rsrq, 26, "ncells[3].rsrq not equal");
 	zassert_equal(param.ncells[3].time_diff, 184, "ncells[3].time_diff not equal");
+}
+
+/* The neighbors of the second cell follow those of the first one. */
+ZTEST(parser, test_urc_ncellmeas_two_cells_neighbors)
+{
+	struct hio_lte_ncellmeas_param param;
+	int ret = hio_lte_parse_urc_ncellmeas(
+		"0,\"00011B07\",\"26295\",\"00B7\",10512,9034,2300,7,63,31,150344527,1,2,"
+		"2300,8,60,29,92,2400,10,56,27,162,"
+		"\"00011B08\",\"23003\",\"8DCC\",65535,0,3544,9,62,30,150345527,0,1,"
+		"6300,11,40,20,10",
+		5, &param);
+
+	zassert_ok(ret);
+	zassert_equal(param.num_cells, 2);
+	zassert_equal(param.num_ncells, 3);
+	zassert_equal(param.cells[0].ncell_first, 0);
+	zassert_equal(param.cells[0].neighbor_count, 2);
+	zassert_equal(param.cells[1].ncell_first, param.cells[0].neighbor_count);
+	zassert_equal(param.cells[1].neighbor_count, 1);
+	zassert_equal(param.ncells[param.cells[1].ncell_first].earfcn, 6300);
+	zassert_equal(param.ncells[param.cells[1].ncell_first].pci, 11);
+	zassert_equal(param.ncells[param.cells[1].ncell_first].time_diff, 10);
+}
+
+/* Cut at HIO_LTE_NCELLMEAS_NCELL_MAX: the last cell counts its stored neighbors only. */
+ZTEST(parser, test_urc_ncellmeas_ncells_truncated)
+{
+	struct hio_lte_ncellmeas_param param;
+	int ret = hio_lte_parse_urc_ncellmeas(
+		"0,\"00011B07\",\"26295\",\"00B7\",10512,9034,2300,7,63,31,150344527,1,4,"
+		"2300,8,60,29,92,2300,9,59,28,100,2400,10,56,27,162,2400,11,55,26,184,"
+		"\"00011B08\",\"23003\",\"8DCC\",65535,0,3544,9,62,30,150345527,0,8,"
+		"6300,20,40,20,10,6300,21,40,20,10,6300,22,40,20,10,6300,23,40,20,10,"
+		"6300,24,40,20,10,6300,25,40,20,10,6300,26,40,20,10,6300,27,40,20,10",
+		5, &param);
+
+	zassert_equal(ret, -EMSGSIZE);
+	zassert_equal(param.num_cells, 2);
+	zassert_equal(param.num_ncells, HIO_LTE_NCELLMEAS_NCELL_MAX);
+	zassert_equal(param.cells[0].ncell_first, 0);
+	zassert_equal(param.cells[0].neighbor_count, 4);
+	zassert_equal(param.cells[1].ncell_first, 4);
+	zassert_equal(param.cells[1].neighbor_count, 6);
+	zassert_true(param.cells[1].ncell_first + param.cells[1].neighbor_count <=
+		     param.num_ncells);
+	zassert_equal(param.ncells[param.cells[1].ncell_first].pci, 20);
+	zassert_equal(param.ncells[HIO_LTE_NCELLMEAS_NCELL_MAX - 1].pci, 25);
 }
 
 ZTEST(parser, test_urc_ncellmeas_complex_b)

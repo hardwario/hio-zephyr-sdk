@@ -1165,9 +1165,6 @@ static int print_ncellmeas(const struct shell *shell)
 	hio_util_fmt_duration(k_uptime_seconds() - param.uptime_s, ago, sizeof(ago));
 	shell_print(shell, "ncellmeas: %s ago, %s", ago, result);
 
-	/* By index: the ncells pointers do not survive the copies. */
-	size_t ncell = 0;
-
 	for (size_t i = 0; i < param.num_cells; i++) {
 		const struct hio_lte_ncellmeas_cell_param *c = &param.cells[i];
 		char plmn[12];
@@ -1179,8 +1176,10 @@ static int print_ncellmeas(const struct shell *shell)
 			    c->eci, plmn, c->tac, c->earfcn, c->pci, rsrp_dbm(c->rsrp),
 			    c->serving ? ", serving" : "");
 
-		for (size_t j = 0; j < c->neighbor_count && ncell < param.num_ncells; j++) {
-			const struct hio_lte_ncellmeas_ncell_param *n = &param.ncells[ncell++];
+		for (size_t j = 0; j < c->neighbor_count && c->ncell_first + j < param.num_ncells;
+		     j++) {
+			const struct hio_lte_ncellmeas_ncell_param *n =
+				&param.ncells[c->ncell_first + j];
 
 			shell_print(shell, "  neighbour: earfcn: %u, pci: %u, rsrp: %d dBm",
 				    n->earfcn, n->pci, rsrp_dbm(n->rsrp));

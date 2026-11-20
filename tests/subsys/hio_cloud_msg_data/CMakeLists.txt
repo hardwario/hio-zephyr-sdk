@@ -19,10 +19,16 @@ endif()
 add_compile_definitions(CONFIG_HIO_CLOUD_ENCODE_ZCBOR_STATES=${TEST_ZCBOR_STATES})
 add_compile_definitions(CONFIG_HIO_LTE_SCAN_MAX_ENTRIES=10)
 add_compile_definitions(CONFIG_HIO_LTE_SCAN_MAX_CELLS=14)
+add_compile_definitions(CONFIG_HIO_LTE_LOG_LEVEL=3)
 
 set(HIO_CLOUD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../subsys/hio_cloud)
+# The NCELLMEAS parser feeds the encoder test
+set(HIO_LTE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../subsys/hio_lte)
 
 include_directories(${HIO_CLOUD_DIR})
+include_directories(${HIO_LTE_DIR})
 target_sources(app PRIVATE ${HIO_CLOUD_DIR}/hio_cloud_msg_data.c)
 target_sources(app PRIVATE ${HIO_CLOUD_DIR}/hio_cloud_cbor.c)
+target_sources(app PRIVATE ${HIO_LTE_DIR}/hio_lte_parse.c)
 target_sources(app PRIVATE src/test_pack_data.c)
+target_sources(app PRIVATE src/test_cbor_ncellmeas.c)

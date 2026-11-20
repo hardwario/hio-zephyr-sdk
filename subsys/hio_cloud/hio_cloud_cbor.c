@@ -9,6 +9,9 @@
 
 #include "hio_cloud_msg.h"
 
+/* Zephyr includes */
+#include <zephyr/sys/util.h>
+
 /* Standard includes */
 #include <errno.h>
 #include <string.h>
@@ -56,9 +59,14 @@ int hio_cloud_cbor_ncellmeas_put(zcbor_state_t *zs, const struct hio_lte_ncellme
 		zcbor_uint32_put(zs, cell->pci);
 		zcbor_float32_put(zs, rsrp_idx_to_dbm(cell->rsrp));
 		zcbor_float32_put(zs, rsrq_idx_to_db(cell->rsrq));
-		zcbor_uint32_put(zs, cell->neighbor_count);
-		for (uint8_t j = 0; j < cell->neighbor_count; j++) {
-			const struct hio_lte_ncellmeas_ncell_param *ncell = &cell->ncells[j];
+		/* Only the stored neighbors, so that the count is the length of the list */
+		uint8_t first = MIN(cell->ncell_first, param->num_ncells);
+		uint8_t count = MIN(cell->neighbor_count, param->num_ncells - first);
+
+		zcbor_uint32_put(zs, count);
+		for (uint8_t j = 0; j < count; j++) {
+			const struct hio_lte_ncellmeas_ncell_param *ncell =
+				&param->ncells[first + j];
 			zcbor_uint32_put(zs, ncell->earfcn);
 			zcbor_uint32_put(zs, ncell->pci);
 			zcbor_float32_put(zs, rsrp_idx_to_dbm(ncell->rsrp));
