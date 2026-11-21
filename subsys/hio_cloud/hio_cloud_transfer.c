@@ -25,6 +25,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
@@ -39,9 +40,10 @@
 
 /* A failed exchange is retried by resending the very same packet with the same
  * sequence: the server treats it as a duplicate and replays the cached
- * response, so no progress is lost. Resending continues until the caller's
- * timeout expires rather than for a fixed count, which lets a slow network
- * (few connection grants) eventually get the packet through.
+ * response, so no progress is lost. Resending continues until the deadline
+ * of the uplink or downlink call rather than for a fixed count, which lets a
+ * slow network (few connection grants) eventually get the packet through.
+ * Each attempt gets the time left, and a backoff ends at the deadline.
  *
  * The backoff before a resend depends on why the previous attempt failed:
  * a lost reply (-ETIMEDOUT) can be re-solicited promptly, while the network
@@ -50,10 +52,20 @@
 #define TRANSFER_BACKOFF_LOST_REPLY K_SECONDS(1)
 #define TRANSFER_BACKOFF_NO_CONN    K_SECONDS(30)
 
+/* An attempt is not made with less time left than the floor of one send in the
+ * LTE layer (HIO_LTE_UTIL_SEND_TIMEOUT_MIN_SEC, private to hio_lte): it would
+ * end at the deadline, mostly before the packet is on the air, and count
+ * against the server address in the failover. */
+#define TRANSFER_ATTEMPT_MIN K_SECONDS(5)
+
 /* How many times a stale (lagging) ACK is answered by re-sending the same
  * poll/ack before the transfer is restarted, bounding the every-other-packet
  * RAI handshake so a persistently out-of-step peer cannot spin forever. */
 #define TRANSFER_REPEAT_LIMIT 3
+
+/* A restart waits too, and not past the deadline, so that a peer out of step
+ * cannot make the transfer spin. */
+#define TRANSFER_BACKOFF_RESTART K_SECONDS(1)
 
 /* Internal cap applied to a K_FOREVER wait_ready. The LTE layer sets
  * CONNECTED_BIT only after the socket opens, and with DTLS against a dead
@@ -213,8 +225,24 @@ static size_t transfer_mode_max_data_size(void)
 		return 0;
 	}
 }
+
+/* Sleep for the backoff, but not past the deadline; false if no time is left
+ * after it */
+static bool backoff(k_timeout_t delay, k_timepoint_t end)
+{
+	k_timepoint_t until = sys_timepoint_calc(delay);
+
+	if (sys_timepoint_cmp(until, end) > 0) {
+		until = end;
+	}
+
+	k_sleep(sys_timepoint_timeout(until));
+
+	return !sys_timepoint_expired(end);
+}
+
 static int transfer(struct hio_cloud_packet *pck_send, struct hio_cloud_packet *pck_recv, bool rai,
-		    k_timeout_t timeout)
+		    k_timepoint_t end)
 {
 	int ret;
 
@@ -251,11 +279,22 @@ static int transfer(struct hio_cloud_packet *pck_send, struct hio_cloud_packet *
 
 	/* The packet is serialized into send_buf once above. On a failed exchange
 	 * resend the same bytes with the same sequence (the server replays its
-	 * cached response, so the transfer keeps its place) until the caller's
-	 * timeout expires. Resending is only meaningful when a response is
-	 * expected (pck_recv set). */
-	k_timepoint_t end = sys_timepoint_calc(timeout);
+	 * cached response, so the transfer keeps its place) until the deadline. */
+	ret = -ETIMEDOUT;
+
 	for (int attempt = 0; ; attempt++) {
+		/* The time left is read once: the attempt gets all of it, and is
+		 * neither made nor counted by the failover below the floor.
+		 * K_FOREVER never is. */
+		k_timeout_t timeout = sys_timepoint_timeout(end);
+
+		if (!K_TIMEOUT_EQ(timeout, K_FOREVER) &&
+		    timeout.ticks < TRANSFER_ATTEMPT_MIN.ticks) {
+			LOG_ERR("Too little time left for packet Sequence: %u, last error: %d",
+				pck_send->sequence, ret);
+			return ret;
+		}
+
 		len = 0;
 
 		struct hio_lte_send_recv_param param = {
@@ -293,20 +332,22 @@ static int transfer(struct hio_cloud_packet *pck_send, struct hio_cloud_packet *
 			break;
 		}
 
-		/* Only an exchange that expects a reply is worth resending, and
-		 * only while the caller's deadline has not passed. */
-		bool retryable = pck_recv && (ret == -ETIMEDOUT || ret == -ENOTCONN);
-		if (retryable && !sys_timepoint_expired(end)) {
-			k_timeout_t backoff = (ret == -ENOTCONN) ? TRANSFER_BACKOFF_NO_CONN
-								  : TRANSFER_BACKOFF_LOST_REPLY;
-			LOG_WRN("Exchange failed (%d), resending packet after backoff (attempt %d)",
-				ret, attempt + 2);
-			k_sleep(backoff);
-			continue;
+		/* Without a connection (-ENOTCONN) the packet is sent again, the
+		 * final ACK of a downlink too: the server does not resend a
+		 * downlink whose ACK it misses, it confirms it only when the next
+		 * packet of the device comes. A lost reply (-ETIMEDOUT) is asked
+		 * for again only if one is expected. */
+		if (ret != -ENOTCONN && !(pck_recv && ret == -ETIMEDOUT)) {
+			LOG_ERR("Call `hio_lte_send_recv` failed: %d", ret);
+			return ret;
 		}
 
-		LOG_ERR("Call `hio_lte_send_recv` failed: %d", ret);
-		return ret;
+		LOG_WRN("Exchange failed (%d), resending packet after backoff (attempt %d)", ret,
+			attempt + 2);
+
+		/* If too little time is left after it, the check above returns */
+		backoff(ret == -ENOTCONN ? TRANSFER_BACKOFF_NO_CONN : TRANSFER_BACKOFF_LOST_REPLY,
+			end);
 	}
 
 	if (pck_recv) {
@@ -436,6 +477,8 @@ int hio_cloud_transfer_uplink(struct hio_buf *buf, bool *has_downlink, k_timeout
 	size_t len = 0;
 	int part = 0;
 	int fragments = 0;
+	int restarts = 0;
+	k_timepoint_t end = sys_timepoint_calc(timeout);
 
 	if (has_downlink) {
 		*has_downlink = false;
@@ -448,6 +491,12 @@ int hio_cloud_transfer_uplink(struct hio_buf *buf, bool *has_downlink, k_timeout
 	}
 
 restart:
+	if (restarts++ && !backoff(TRANSFER_BACKOFF_RESTART, end)) {
+		LOG_ERR("No time left for a restart");
+		res = -ETIMEDOUT;
+		goto exit;
+	}
+
 	part = 0;
 
 	if (buf) {
@@ -482,7 +531,7 @@ restart:
 
 		int repeats = 0;
 	resend_uplink:
-		ret = transfer(&m_pck_send, &m_pck_recv, rai, timeout);
+		ret = transfer(&m_pck_send, &m_pck_recv, rai, end);
 		if (ret == TRANSFER_ADDR_SWITCHED) {
 			LOG_WRN("Address switched, restarting uplink from first part");
 			m_sequence = 0;
@@ -575,6 +624,8 @@ int hio_cloud_transfer_downlink(struct hio_buf *buf, bool *has_downlink, k_timeo
 	int res = 0;
 	int part = 0;
 	bool quit;
+	int restarts = 0;
+	k_timepoint_t end = sys_timepoint_calc(timeout);
 
 	if (has_downlink) {
 		*has_downlink = false;
@@ -583,6 +634,11 @@ int hio_cloud_transfer_downlink(struct hio_buf *buf, bool *has_downlink, k_timeo
 	size_t buf_used = hio_buf_get_used(buf);
 
 restart:
+	if (restarts++ && !backoff(TRANSFER_BACKOFF_RESTART, end)) {
+		LOG_ERR("No time left for a restart");
+		res = -ETIMEDOUT;
+		goto exit;
+	}
 
 	part = 0;
 	quit = false;
@@ -602,17 +658,23 @@ restart:
 		if (quit) {
 			bool rai = has_downlink ? !*has_downlink
 						: true; /* use RAI if no downlink is expected */
-			ret = transfer(&m_pck_send, NULL, rai, timeout);
+			ret = transfer(&m_pck_send, NULL, rai, end);
 			if (ret == TRANSFER_ADDR_SWITCHED) {
-				LOG_WRN("Address switched, restarting downlink");
-				m_sequence = 0;
-				m_last_recv_sequence = 0;
-				goto restart;
+				/* The server at the new address knows nothing of this
+				 * downlink and delivers it again at the next poll, so
+				 * it is dropped, not restarted. */
+				LOG_WRN("Address switched at the final ACK, dropping the downlink");
+				hio_buf_seek(buf, buf_used);
+				res = -ECONNRESET;
+				goto exit;
 			}
 			if (ret) {
-				LOG_ERR("Call `transfer` failed: %d", ret);
-				res = ret;
-				goto exit;
+				/* All the data is in: the server takes the next packet,
+				 * from sequence 0, as the missed ACK and confirms the
+				 * downlink, so it is kept. */
+				LOG_WRN("Final ACK failed: %d, keeping the downlink", ret);
+				m_sequence = 0;
+				m_last_recv_sequence = 0;
 			}
 			break;
 		}
@@ -621,7 +683,7 @@ restart:
 
 		LOG_INF("Downlink: Starting send_recv");
 
-		ret = transfer(&m_pck_send, &m_pck_recv, rai, timeout);
+		ret = transfer(&m_pck_send, &m_pck_recv, rai, end);
 		if (ret == TRANSFER_ADDR_SWITCHED) {
 			LOG_WRN("Address switched, restarting downlink");
 			m_sequence = 0;

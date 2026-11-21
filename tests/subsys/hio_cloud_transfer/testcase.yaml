@@ -1,0 +1,7 @@
+tests:
+  hio_cloud.transfer:
+    tags: hio hio_cloud
+    platform_allow:
+      - native_sim
+    integration_platforms:
+      - native_sim
